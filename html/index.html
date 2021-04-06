@@ -1,0 +1,96 @@
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <title>wemos</title>
+  <style>
+    table,
+    th,
+    td {
+      border: 1px solid black;
+    }
+  </style>
+</head>
+
+<body>
+  <script>
+    function drawTable(selector, myList) {
+      $(selector).empty();
+      var columns = addAllColumnHeaders(myList, selector);
+      for (var i = 0; i < myList.length; i++) {
+        var row$ = $('<tr/>');
+        for (var colIndex = 0; colIndex < columns.length; colIndex++) {
+          var cellValue = myList[i][columns[colIndex]];
+          if (cellValue == null) cellValue = "";
+          row$.append($('<td/>').html(cellValue));
+        }
+        $(selector).append(row$);
+      }
+    }
+    function addAllColumnHeaders(myList, selector) {
+      var columnSet = [];
+      var headerTr$ = $('<tr/>');
+      for (var i = 0; i < myList.length; i++) {
+        var rowHash = myList[i];
+        for (var key in rowHash) {
+          if ($.inArray(key, columnSet) == -1) {
+            columnSet.push(key);
+            headerTr$.append($('<th/>').html(key));
+          }
+        }
+      }
+      $(selector).append(headerTr$);
+      return columnSet;
+    }
+    function render(info) {
+      $("#p-date").text("Date: " + info["Date"]);
+      $("#p-time").text("Time: " + info["Time"]);
+      $("#p-uptime").text("Uptime: " + info["Uptime"]);
+      drawTable("#t-sensors", info["Inputs"]);
+      drawTable("#t-schedule", info["Outputs"]);
+    }
+    function refresh() {
+      setTimeout(refresh, 5*1000);
+      var info = {
+        "Date": Date(Date.now()),
+        "Time": "time",
+        "Uptime": "uptime",
+        "Inputs": [
+          {
+            "Port": "a0",
+            "Value": (Math.random() * 1024).toFixed()
+          }
+        ],
+        "Outputs": [
+          {
+            "Port": "gpio0",
+            "Value": "0"
+          }
+        ]
+      };
+      render(info);
+      /*$.getJSON("data.json", function (data) {
+        render(data);
+      });*/
+    }
+    $(function onReady() {
+      refresh();
+    });
+  </script>
+  <h1>WEMOS</h1>
+  <h2>Status</h2>
+  <p id="p-date"></p>
+  <p id="p-time"></p>
+  <p id="p-uptime"></p>
+  <h2>Inputs</h2>
+  <p>
+  <table id="t-sensors"></table>
+  </p>
+  <h2>Outputs</h2>
+  <p>
+  <table id="t-schedule"></table>
+  </p>
+</body>
+
+</html>
