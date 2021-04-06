@@ -48,11 +48,9 @@ void handleDataJson()
   doc["Time"] = "time";
   doc["Uptime"] = "uptime";
   JsonObject Inputs_0 = doc["Inputs"].createNestedObject();
-  Inputs_0["Port"] = "a0";
-  Inputs_0["Value"] = analogRead(A0);
+  Inputs_0["A0"] = analogRead(A0);
   JsonObject Outputs_0 = doc["Outputs"].createNestedObject();
-  Outputs_0["Port"] = "gpio0";
-  Outputs_0["Value"] = "0";
+  Outputs_0["gpio0"] = 0;
   
   serializeJson(doc, output);
 
