@@ -9,4 +9,8 @@ Automatic irrigation and monitoring system.
 - Local WebServer
 - Cloud based logging
 
-# TODO
+## Useful Links
+
+[Arduino core for the ESP32](https://github.com/espressif/arduino-esp32)
+
+[Espressif IoT Development Framework](https://github.com/espressif/esp-idf)
