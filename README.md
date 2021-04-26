@@ -1,7 +1,7 @@
 # ESP Garden
 
 Automatic irrigation and monitoring system.
-- Based on Wemos D1 mini PRO (ESP8622)
+- Based on Wemos D1 mini PRO (ESP8622) and NodeMCU ESP32S
 - Using Arduino IDE.
 
 ## Features
