@@ -13,9 +13,9 @@
   <div class="container">
     <h1>ESP Garden</h1>
     <h2>Status</h2>
-    <p id="p-date"></p>
-    <p id="p-time"></p>
-    <p id="p-uptime"></p>
+    <table class="table table-striped">
+      <tbody id="tbody-status"></tbody>
+    </table>
     <h2>Inputs</h2>
     <table class="table table-striped">
       <thead>
@@ -34,7 +34,6 @@
           <th scope="col">#</th>
           <th scope="col">Port</th>
           <th scope="col">Value</th>
-          <th scope="col">Control</th>
         </tr>
       </thead>
       <tbody id="tbody-outputs"></tbody>
@@ -47,29 +46,15 @@
     integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
     crossorigin="anonymous"></script>
   <script>
-    function fillTable(id, data, control=false) {
+    function fillTable(id, data, index=true) {
       var tbody = $(id);
       tbody.empty();
       for (var i = 0; i < data.length; i++) {
         var tr = $('<tr/>');
-        tr.append($('<th/>').html(i).attr("scope", "row"));
+        if (index) tr.append($('<th/>').html(i).attr("scope", "row"));
         for (var key in data[i]) {
           tr.append($('<td/>').html(key));
           tr.append($('<td/>').html(data[i][key]));
-          if (control) {
-            var td = $('<td/>');
-            var setButton = $('<button/>');
-            setButton.attr("type","button");
-            setButton.attr("class","btn btn-primary");
-            setButton.html("On");
-            td.append(setButton);
-            var resetButton = $('<button/>');
-            resetButton.attr("type","button");
-            resetButton.attr("class","btn btn-primary");
-            resetButton.html("Off");
-            td.append(resetButton);
-            tr.append(td);
-          }
         }
         tbody.append(tr);
       }
@@ -79,9 +64,11 @@
       setTimeout(refresh, 1 * 1000);
 
       var info = {
-        "Date": Date(Date.now()),
-        "Time": "time",
-        "Uptime": "uptime",
+        "Status": [
+          { "Date": Date(Date.now()) },
+          { "Time": "time" },
+          { "Uptime": "uptime" }
+        ],
         "Inputs": [
           { "a0": (Math.random() * 4096).toFixed() },
           { "a1": (Math.random() * 4096).toFixed() },
@@ -95,11 +82,9 @@
       };
 
       //$.getJSON("/data.json", function (info) {
-        $("#p-date").text("Date: " + info["Date"]);
-        $("#p-time").text("Time: " + info["Time"]);
-        $("#p-uptime").text("Uptime: " + info["Uptime"]);
+        fillTable("#tbody-status", info["Status"], false);
         fillTable("#tbody-inputs", info["Inputs"]);
-        fillTable("#tbody-outputs", info["Outputs"], true);
+        fillTable("#tbody-outputs", info["Outputs"]);
       //});
     }
 
