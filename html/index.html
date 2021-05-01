@@ -38,60 +38,59 @@
       </thead>
       <tbody id="tbody-outputs"></tbody>
     </table>
-  </div>
 
-  <script src="https://code.jquery.com/jquery-3.6.0.min.js"
-    integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js"
-    integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
-    crossorigin="anonymous"></script>
-  <script>
-    function fillTable(id, data, index=true) {
-      var tbody = $(id);
-      tbody.empty();
-      for (var i = 0; i < data.length; i++) {
-        var tr = $('<tr/>');
-        if (index) tr.append($('<th/>').html(i).attr("scope", "row"));
-        for (var key in data[i]) {
-          tr.append($('<td/>').html(key));
-          tr.append($('<td/>').html(data[i][key]));
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"
+      integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js"
+      integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
+      crossorigin="anonymous"></script>
+    <script>
+      function fillTable(id, data, index = true) {
+        var tbody = $(id);
+        tbody.empty();
+        for (var i = 0; i < data.length; i++) {
+          var tr = $('<tr/>');
+          if (index) tr.append($('<th/>').html(i).attr("scope", "row"));
+          for (var key in data[i]) {
+            tr.append($('<td/>').html(key));
+            tr.append($('<td/>').html(data[i][key]));
+          }
+          tbody.append(tr);
         }
-        tbody.append(tr);
       }
-    }
 
-    function refresh() {
-      setTimeout(refresh, 1 * 1000);
+      function refresh() {
+        setTimeout(refresh, 1 * 1000);
 
-      var info = {
-        "Status": [
-          { "Date": Date(Date.now()) },
-          { "Time": "time" },
-          { "Uptime": "uptime" }
-        ],
-        "Inputs": [
-          { "a0": (Math.random() * 4096).toFixed() },
-          { "a1": (Math.random() * 4096).toFixed() },
-          { "a2": (Math.random() * 4096).toFixed() }
-        ],
-        "Outputs": [
-          { "gpio0": "0" },
-          { "gpio1": "1" },
-          { "gpio2": "2" }
-        ]
-      };
+        var info = {
+          "Status": [
+            { "Date": Date(Date.now()) },
+            { "Time": "time" },
+            { "Uptime": "uptime" }
+          ],
+          "Inputs": [
+            { "a0": (Math.random() * 4096).toFixed() },
+            { "a1": (Math.random() * 4096).toFixed() },
+            { "a2": (Math.random() * 4096).toFixed() }
+          ],
+          "Outputs": [
+            { "gpio0": "0" },
+            { "gpio1": "1" },
+            { "gpio2": "2" }
+          ]
+        };
 
-      //$.getJSON("/data.json", function (info) {
+        //$.getJSON("/data.json", function (info) {
         fillTable("#tbody-status", info["Status"], false);
         fillTable("#tbody-inputs", info["Inputs"]);
         fillTable("#tbody-outputs", info["Outputs"]);
-      //});
-    }
+        //});
+      }
 
-    $(function onReady() {
-      refresh();
-    });
-  </script>
+      $(function onReady() {
+        refresh();
+      });
+    </script>
 </body>
 <footer></footer>
 
