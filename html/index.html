@@ -62,29 +62,16 @@
       function refresh() {
         setTimeout(refresh, 1 * 1000);
 
-        var info = {
-          "Status": [
-            { "Date": Date(Date.now()) },
-            { "Time": "time" },
-            { "Uptime": "uptime" }
-          ],
-          "Inputs": [
-            { "a0": (Math.random() * 4096).toFixed() },
-            { "a1": (Math.random() * 4096).toFixed() },
-            { "a2": (Math.random() * 4096).toFixed() }
-          ],
-          "Outputs": [
-            { "gpio0": "0" },
-            { "gpio1": "1" },
-            { "gpio2": "2" }
-          ]
-        };
-
-        //$.getJSON("/data.json", function (info) {
-        fillTable("#tbody-status", info["Status"], false);
-        fillTable("#tbody-inputs", info["Inputs"]);
-        fillTable("#tbody-outputs", info["Outputs"]);
-        //});
+        $.ajax({
+          dataType: "json",
+          url: "/data.json",
+          timeout: 500,
+          success: function (info) {
+            fillTable("#tbody-status", info["Status"], false);
+            fillTable("#tbody-inputs", info["Inputs"]);
+            fillTable("#tbody-outputs", info["Outputs"]);
+          }
+        });
       }
 
       $(function onReady() {
