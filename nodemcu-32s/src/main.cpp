@@ -29,6 +29,7 @@ static WebServer server(80);
 static WiFiClient client;
 
 static time_t bootTime = 0;
+static unsigned packagesSent = 0;
 static unsigned tsErrors = 0;
 static time_t tsLastError = 0;
 static int tsLastCode = 200;
@@ -79,7 +80,8 @@ handleDataJson()
            hours % 24,
            minutes % 60,
            uptime % 60);
-  json += "{\"Uptime\":\"" + String(buffer) + "\"}";
+  json += "{\"Uptime\":\"" + String(buffer) + "\"},";
+  json += "{\"PackagesSent\":\"" + String(packagesSent) + "\"}";
   if (tsErrors > 0) {
     json += ",{\"Errors\":\"" + String(tsErrors) + "\"}";
     strftime(buffer, sizeof(buffer), "%T", localtime(&tsLastError));
@@ -166,6 +168,7 @@ tsTask(void*)
       digitalWrite(LED_BUILTIN, 0);
 
       if (status == 200) {
+        ++packagesSent;
         break;
       }
 
