@@ -1,47 +1,58 @@
-#include <WiFi.h>
-#include <WiFiClient.h>
-#include <WebServer.h>
 #include <ESPmDNS.h>
 #include <ThingSpeak.h>
+#include <WebServer.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
 #include <time.h>
+
 #include "secret.h"
 
-const char indexHtml[] PROGMEM = R"EOF(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6" crossorigin="anonymous"><title>ESP Garden</title></head><body><div class="container"><h1>ESP Garden</h1><h2>Status</h2><table class="table table-striped"><tbody id="tbody-status"></tbody></table><h2>Inputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-inputs"></tbody></table><h2>Outputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-outputs"></tbody></table><script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js" integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf" crossorigin="anonymous"></script><script>function fillTable(id, data, index=true){ var tbody=$(id); tbody.empty(); for (var i=0; i < data.length; i++){ var tr=$('<tr/>'); if (index) tr.append($('<th/>').html(i).attr("scope", "row")); for (var key in data[i]){ tr.append($('<td/>').html(key)); tr.append($('<td/>').html(data[i][key]));} tbody.append(tr);}} function refresh(){ setTimeout(refresh, 1 * 1000); $.ajax({ dataType: "json", url: "/data.json", timeout: 500, success: function (info){ fillTable("#tbody-status", info["Status"], false); fillTable("#tbody-inputs", info["Inputs"]); fillTable("#tbody-outputs", info["Outputs"]);}});} $(function onReady(){ refresh();}); </script></body><footer></footer></html>
-)EOF";
+// TODO: ota update, circular buffer
 
-const int ADC_READ_SIZE = 3;
-const int A0_INDEX = 0;
-const int A3_INDEX = 1;
-const int A6_INDEX = 2;
+static const char indexHtml[] PROGMEM =
+  R"EOF(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6" crossorigin="anonymous"><title>ESP Garden</title></head><body><div class="container"><h1>ESP Garden</h1><h2>Status</h2><table class="table table-striped"><tbody id="tbody-status"></tbody></table><h2>Inputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-inputs"></tbody></table><h2>Outputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-outputs"></tbody></table><script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js" integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf" crossorigin="anonymous"></script><script>function fillTable(id, data, index=true){ var tbody=$(id); tbody.empty(); for (var i=0; i < data.length; i++){ var tr=$('<tr/>'); if (index) tr.append($('<th/>').html(i).attr("scope", "row")); for (var key in data[i]){ tr.append($('<td/>').html(key)); tr.append($('<td/>').html(data[i][key]));} tbody.append(tr);}} function refresh(){ setTimeout(refresh, 1 * 1000); $.ajax({ dataType: "json", url: "/data.json", timeout: 500, success: function (info){ fillTable("#tbody-status", info["Status"], false); fillTable("#tbody-inputs", info["Inputs"]); fillTable("#tbody-outputs", info["Outputs"]);}});} $(function onReady(){ refresh();}); </script></body><footer></footer></html>
+  )EOF";
 
-const int GPIO_READ_SIZE = 2;
-const int GPIO0_INDEX = 0;
-const int GPIO23_INDEX = 1;
+static const unsigned ADC_READ_SIZE = 3;
+static const unsigned A0_INDEX = 0;
+static const unsigned A3_INDEX = 1;
+static const unsigned A6_INDEX = 2;
 
-WebServer server(80);
-WiFiClient client;
+static const unsigned GPIO_READ_SIZE = 2;
+static const unsigned GPIO0_INDEX = 0;
+static const unsigned GPIO23_INDEX = 1;
 
-time_t bootTime = 0;
-int tsErrors = 0;
-time_t tsLastError = 0;
-uint16_t adcRead[ADC_READ_SIZE];
-uint8_t gpioRead[GPIO_READ_SIZE];
+static const unsigned MAX_RETRIES = 3;
+static const unsigned RETRY_DELAY = 5000;
 
-void syncClock()
+static WebServer server(80);
+static WiFiClient client;
+
+static time_t bootTime = 0;
+static unsigned tsErrors = 0;
+static time_t tsLastError = 0;
+static int tsLastCode = 200;
+static uint16_t adcRead[ADC_READ_SIZE];
+static uint8_t gpioRead[GPIO_READ_SIZE];
+
+void
+syncClock()
 {
   Serial.println("Updating clock...");
   configTime(0, -3 * 60 * 60, "pool.ntp.org");
-  delay(1000);
+  delay(2000);
 }
 
-void handleRoot()
+void
+handleRoot()
 {
   digitalWrite(LED_BUILTIN, 1);
   server.send(200, "text/html", indexHtml);
   digitalWrite(LED_BUILTIN, 0);
 }
 
-void handleDataJson()
+void
+handleDataJson()
 {
   digitalWrite(LED_BUILTIN, 1);
 
@@ -61,13 +72,19 @@ void handleDataJson()
   json += "{\"Date\":\"" + String(buffer) + "\"},";
   strftime(buffer, sizeof(buffer), "%T", &timeinfo);
   json += "{\"Time\":\"" + String(buffer) + "\"},";
-  snprintf(buffer, sizeof(buffer), "%dd %dh %dm %ds", days, hours % 24, minutes % 60, uptime % 60);
+  snprintf(buffer,
+           sizeof(buffer),
+           "%dd %dh %dm %ds",
+           days,
+           hours % 24,
+           minutes % 60,
+           uptime % 60);
   json += "{\"Uptime\":\"" + String(buffer) + "\"}";
-  if (tsErrors > 0)
-  {
+  if (tsErrors > 0) {
     json += ",{\"Errors\":\"" + String(tsErrors) + "\"}";
     strftime(buffer, sizeof(buffer), "%T", localtime(&tsLastError));
-    json += ",{\"tsLastError\":\"" + String(buffer) + "\"}";
+    json += ",{\"LastError\":\"" + String(buffer) + "\"}";
+    json += ",{\"LastCode\":\"" + String(tsLastCode) + "\"}";
   }
   json += "],";
 
@@ -89,12 +106,12 @@ void handleDataJson()
   digitalWrite(LED_BUILTIN, 0);
 }
 
-void handleSet()
+void
+handleSet()
 {
   digitalWrite(LED_BUILTIN, 1);
 
-  for (int i = 0; i < server.args(); ++i)
-  {
+  for (int i = 0; i < server.args(); ++i) {
     Serial.println(server.argName(i) + " = " + server.arg(i));
   }
 
@@ -103,22 +120,22 @@ void handleSet()
   digitalWrite(LED_BUILTIN, 0);
 }
 
-void serverTask(void *)
+void
+serverTask(void*)
 {
-  for (;;)
-  {
+  for (;;) {
     server.handleClient();
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
-void sensorsTask(void *)
+void
+sensorsTask(void*)
 {
   memset(adcRead, 0, sizeof(adcRead));
   memset(gpioRead, 0, sizeof(gpioRead));
 
-  for (;;)
-  {
+  for (;;) {
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     adcRead[A0_INDEX] = analogRead(A0);
@@ -130,49 +147,59 @@ void sensorsTask(void *)
   }
 }
 
-void tsTask(void *)
+void
+tsTask(void*)
 {
   ThingSpeak.begin(client);
   ThingSpeak.setField(8, bootTime);
 
-  for (;;)
-  {
+  for (;;) {
     vTaskDelay(pdMS_TO_TICKS(30 * 1000));
 
-    digitalWrite(LED_BUILTIN, 1);
+    int retries = 0;
+    while (retries < MAX_RETRIES) {
+      ThingSpeak.setField(1, adcRead[A0_INDEX]);
+      ThingSpeak.setField(2, adcRead[A3_INDEX]);
 
-    ThingSpeak.setField(1, adcRead[A0_INDEX]);
-    ThingSpeak.setField(2, adcRead[A3_INDEX]);
-    int status = ThingSpeak.writeFields(channelNumber, apiKey);
-    if (status != 200)
-    {
-      ++tsErrors;
-      tsLastError = time(NULL);
-      Serial.println("ThingSpeak.writeFields failed with code " + String(status));
+      digitalWrite(LED_BUILTIN, 1);
+      int status = ThingSpeak.writeFields(channelNumber, apiKey);
+      digitalWrite(LED_BUILTIN, 0);
+
+      if (status == 200) {
+        break;
+      }
+
+      ++retries;
+      if (retries >= MAX_RETRIES) {
+        ++tsErrors;
+        tsLastError = time(NULL);
+        tsLastCode = status;
+        break;
+      }
+
+      vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY));
     }
-
-    digitalWrite(LED_BUILTIN, 0);
   }
 }
 
-void clockUpdateTask(void *)
+void
+clockUpdateTask(void*)
 {
   int minutes = 0;
 
-  for (;;)
-  {
+  for (;;) {
     vTaskDelay(pdMS_TO_TICKS(60 * 1000));
 
     ++minutes;
-    if (minutes >= 24 * 60)
-    {
+    if (minutes >= 24 * 60) {
       minutes = 0;
       syncClock();
     }
   }
 }
 
-void setup(void)
+void
+setup(void)
 {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, 0);
@@ -188,8 +215,7 @@ void setup(void)
   WiFi.begin(ssid, password);
   Serial.println("");
   // Wait for connection
-  while (WiFi.status() != WL_CONNECTED)
-  {
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
@@ -200,8 +226,7 @@ void setup(void)
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
-  if (MDNS.begin("esp32"))
-  {
+  if (MDNS.begin("esp32")) {
     Serial.println("MDNS responder started");
   }
 
@@ -220,6 +245,6 @@ void setup(void)
   xTaskCreate(clockUpdateTask, "clockUpdateTask", 4 * 1024, NULL, 1, NULL);
 }
 
-void loop(void)
-{
-}
+void
+loop(void)
+{}
