@@ -26,20 +26,20 @@ static const unsigned GPIO0_INDEX = 0;
 static const unsigned MAX_RETRIES = 3;
 static const unsigned RETRY_DELAY = 5000;
 
-static WebServer server(80);
-static WiFiClient client;
+static WebServer g_webServer(80);
+static WiFiClient g_wifiClient;
 
-static time_t bootTime = 0;
-static unsigned packagesSent = 0;
-static unsigned tsErrors = 0;
-static time_t tsLastError = 0;
-static int tsLastCode = 200;
-static uint16_t adcRead[ADC_READ_SIZE];
-static uint8_t gpioRead[GPIO_READ_SIZE];
+static time_t g_bootTime = 0;
+static unsigned g_packagesSent = 0;
+static unsigned g_tsErrors = 0;
+static time_t g_tsLastError = 0;
+static int g_tsLastCode = 200;
+static uint16_t g_adcRead[ADC_READ_SIZE];
+static uint8_t g_gpioRead[GPIO_READ_SIZE];
 
-static DHT_Unified dht(23, DHT11);
-static float temperature = 0.0;
-static float airHumidity = 0.0;
+static DHT_Unified g_dht(23, DHT11);
+static float g_temperature = 0.0;
+static float g_airHumidity = 0.0;
 
 void
 syncClock()
@@ -53,7 +53,7 @@ void
 handleRoot()
 {
   digitalWrite(LED_BUILTIN, 1);
-  server.send(200, "text/html", indexHtml);
+  g_webServer.send(200, "text/html", indexHtml);
   digitalWrite(LED_BUILTIN, 0);
 }
 
@@ -65,7 +65,7 @@ handleDataJson()
   struct tm timeinfo;
   getLocalTime(&timeinfo);
   time_t now = mktime(&timeinfo);
-  int uptime = now - bootTime;
+  int uptime = now - g_bootTime;
   int minutes = uptime / 60;
   int hours = minutes / 60;
   int days = hours / 24;
@@ -86,30 +86,30 @@ handleDataJson()
            minutes % 60,
            uptime % 60);
   json += "{\"Uptime\":\"" + String(buffer) + "\"},";
-  json += "{\"PackagesSent\":\"" + String(packagesSent) + "\"}";
-  if (tsErrors > 0) {
-    json += ",{\"Errors\":\"" + String(tsErrors) + "\"}";
-    strftime(buffer, sizeof(buffer), "%T", localtime(&tsLastError));
+  json += "{\"PackagesSent\":\"" + String(g_packagesSent) + "\"}";
+  if (g_tsErrors > 0) {
+    json += ",{\"Errors\":\"" + String(g_tsErrors) + "\"}";
+    strftime(buffer, sizeof(buffer), "%T", localtime(&g_tsLastError));
     json += ",{\"LastError\":\"" + String(buffer) + "\"}";
-    json += ",{\"LastCode\":\"" + String(tsLastCode) + "\"}";
+    json += ",{\"LastCode\":\"" + String(g_tsLastCode) + "\"}";
   }
   json += "],";
 
   json += "\"Inputs\":[";
-  json += "{\"A0\":\"" + String(adcRead[A0_INDEX]) + "\"},";
-  json += "{\"A3\":\"" + String(adcRead[A3_INDEX]) + "\"},";
-  json += "{\"Temperature\":\"" + String(temperature) + "\"},";
-  json += "{\"AirHumidity\":\"" + String(airHumidity) + "\"},";
-  json += "{\"GPIO0\":\"" + String(gpioRead[GPIO0_INDEX]) + "\"}";
+  json += "{\"A0\":\"" + String(g_adcRead[A0_INDEX]) + "\"},";
+  json += "{\"A3\":\"" + String(g_adcRead[A3_INDEX]) + "\"},";
+  json += "{\"Temperature\":\"" + String(g_temperature) + "\"},";
+  json += "{\"AirHumidity\":\"" + String(g_airHumidity) + "\"},";
+  json += "{\"GPIO0\":\"" + String(g_gpioRead[GPIO0_INDEX]) + "\"}";
   json += "]";
 
   /*json += "\"Outputs\":[";
-  json += "{\"GPIO23\":\"" + String(gpioRead[GPIO23_INDEX]) + "\"}";
+  json += "{\"GPIO23\":\"" + String(g_gpioRead[GPIO23_INDEX]) + "\"}";
   json += "]";*/
 
   json += "}";
 
-  server.send(200, "text/json", json);
+  g_webServer.send(200, "text/json", json);
 
   digitalWrite(LED_BUILTIN, 0);
 }
@@ -119,11 +119,11 @@ handleSet()
 {
   digitalWrite(LED_BUILTIN, 1);
 
-  for (int i = 0; i < server.args(); ++i) {
-    Serial.println(server.argName(i) + " = " + server.arg(i));
+  for (int i = 0; i < g_webServer.args(); ++i) {
+    Serial.println(g_webServer.argName(i) + " = " + g_webServer.arg(i));
   }
 
-  server.send(200, "text/html", "");
+  g_webServer.send(200, "text/html", "");
 
   digitalWrite(LED_BUILTIN, 0);
 }
@@ -132,7 +132,7 @@ void
 serverTask(void*)
 {
   for (;;) {
-    server.handleClient();
+    g_webServer.handleClient();
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -140,60 +140,60 @@ serverTask(void*)
 void
 sensorsTask(void*)
 {
-  memset(adcRead, 0, sizeof(adcRead));
-  memset(gpioRead, 0, sizeof(gpioRead));
+  memset(g_adcRead, 0, sizeof(g_adcRead));
+  memset(g_gpioRead, 0, sizeof(g_gpioRead));
 
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    adcRead[A0_INDEX] = analogRead(A0);
-    adcRead[A3_INDEX] = analogRead(A3);
+    g_adcRead[A0_INDEX] = analogRead(A0);
+    g_adcRead[A3_INDEX] = analogRead(A3);
 
     sensors_event_t event;
-    dht.temperature().getEvent(&event);
+    g_dht.temperature().getEvent(&event);
     if (isnan(event.temperature) == false) {
-      temperature = event.temperature;
+      g_temperature = event.temperature;
     }
-    dht.humidity().getEvent(&event);
+    g_dht.humidity().getEvent(&event);
     if (isnan(event.relative_humidity) == false) {
-      airHumidity = event.relative_humidity;
+      g_airHumidity = event.relative_humidity;
     }
 
-    gpioRead[GPIO0_INDEX] = digitalRead(0);
+    g_gpioRead[GPIO0_INDEX] = digitalRead(0);
   }
 }
 
 void
 tsTask(void*)
 {
-  ThingSpeak.begin(client);
-  ThingSpeak.setField(8, bootTime);
+  ThingSpeak.begin(g_wifiClient);
+  ThingSpeak.setField(8, g_bootTime);
 
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(30 * 1000));
 
     int retries = 0;
     while (retries < MAX_RETRIES) {
-      ThingSpeak.setField(1, adcRead[A0_INDEX]);
-      ThingSpeak.setField(2, adcRead[A3_INDEX]);
+      ThingSpeak.setField(1, g_adcRead[A0_INDEX]);
+      ThingSpeak.setField(2, g_adcRead[A3_INDEX]);
 
-      ThingSpeak.setField(6, temperature);
-      ThingSpeak.setField(7, airHumidity);
+      ThingSpeak.setField(6, g_temperature);
+      ThingSpeak.setField(7, g_airHumidity);
 
       digitalWrite(LED_BUILTIN, 1);
-      int status = ThingSpeak.writeFields(channelNumber, apiKey);
+      int status = ThingSpeak.writeFields(g_channelNumber, g_apiKey);
       digitalWrite(LED_BUILTIN, 0);
 
       if (status == 200) {
-        ++packagesSent;
+        ++g_packagesSent;
         break;
       }
 
       ++retries;
       if (retries >= MAX_RETRIES) {
-        ++tsErrors;
-        tsLastError = time(NULL);
-        tsLastCode = status;
+        ++g_tsErrors;
+        g_tsLastError = time(NULL);
+        g_tsLastCode = status;
         break;
       }
 
@@ -228,10 +228,10 @@ setup(void)
 
   pinMode(0, INPUT);
 
-  dht.begin();
+  g_dht.begin();
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.begin(g_ssid, g_password);
   Serial.println("");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -240,7 +240,7 @@ setup(void)
 
   Serial.println("");
   Serial.print("Connected to ");
-  Serial.println(ssid);
+  Serial.println(g_ssid);
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
@@ -248,14 +248,14 @@ setup(void)
     Serial.println("MDNS responder started");
   }
 
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/data.json", HTTP_GET, handleDataJson);
-  server.on("/set", HTTP_POST, handleSet);
-  server.begin();
-  Serial.println("HTTP server started");
+  g_webServer.on("/", HTTP_GET, handleRoot);
+  g_webServer.on("/data.json", HTTP_GET, handleDataJson);
+  g_webServer.on("/set", HTTP_POST, handleSet);
+  g_webServer.begin();
+  Serial.println("HTTP g_webServer started");
 
   syncClock();
-  bootTime = time(NULL);
+  g_bootTime = time(NULL);
 
   xTaskCreate(sensorsTask, "sensorsTask", 1024, NULL, 2, NULL);
   xTaskCreate(serverTask, "serverTask", 4 * 1024, NULL, 2, NULL);
