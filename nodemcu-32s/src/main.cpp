@@ -1,4 +1,5 @@
 #include <Adafruit_Sensor.h>
+#include <AsyncElegantOTA.h>
 #include <AsyncTCP.h>
 #include <DHT.h>
 #include <DHT_U.h>
@@ -11,7 +12,7 @@
 
 #include "secret.h"
 
-// TODO: ota update, circular buffer
+// TODO: circular buffer
 
 static const char indexHtml[] PROGMEM =
   R"EOF(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6" crossorigin="anonymous"><title>ESP Garden</title></head><body><div class="container"><h1>ESP Garden</h1><h2>Status</h2><table class="table table-striped"><tbody id="tbody-status"></tbody></table><h2>Inputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-inputs"></tbody></table><h2>Outputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-outputs"></tbody></table><script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js" integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf" crossorigin="anonymous"></script><script>function fillTable(id, data, index=true){ var tbody=$(id); tbody.empty(); for (var i=0; i < data.length; i++){ var tr=$('<tr/>'); if (index) tr.append($('<th/>').html(i).attr("scope", "row")); for (var key in data[i]){ tr.append($('<td/>').html(key)); tr.append($('<td/>').html(data[i][key]));} tbody.append(tr);}} function refresh(){ setTimeout(refresh, 1 * 1000); $.ajax({ dataType: "json", url: "/data.json", timeout: 500, success: function (info){ fillTable("#tbody-status", info["Status"], false); fillTable("#tbody-inputs", info["Inputs"]); fillTable("#tbody-outputs", info["Outputs"]);}});} $(function onReady(){ refresh();}); </script></body><footer></footer></html>)EOF";
@@ -31,9 +32,11 @@ static WiFiClient g_wifiClient;
 
 static time_t g_bootTime = 0;
 static unsigned g_packagesSent = 0;
+
 static unsigned g_tsErrors = 0;
 static time_t g_tsLastError = 0;
 static int g_tsLastCode = 200;
+
 static uint16_t g_adcRead[ADC_READ_SIZE];
 static uint8_t g_gpioRead[GPIO_READ_SIZE];
 
@@ -104,7 +107,7 @@ handleDataJson(AsyncWebServerRequest* request)
   json += "],";
 
   json += "\"Outputs\":[";
-  //json += "{\"GPIO23\":\"" + String(g_gpioRead[GPIO23_INDEX]) + "\"}";
+  // json += "{\"GPIO23\":\"" + String(g_gpioRead[GPIO23_INDEX]) + "\"}";
   json += "]";
 
   json += "}";
@@ -252,6 +255,8 @@ setup(void)
   g_webServer.on("/", HTTP_GET, handleRoot);
   g_webServer.on("/data.json", HTTP_GET, handleDataJson);
   g_webServer.on("/set", HTTP_POST, handleSet);
+
+  AsyncElegantOTA.begin(&g_webServer, g_otaUser, g_otaPassword);
   g_webServer.begin();
   Serial.println("HTTP server started");
 
@@ -265,4 +270,6 @@ setup(void)
 
 void
 loop(void)
-{}
+{
+  AsyncElegantOTA.loop();
+}
