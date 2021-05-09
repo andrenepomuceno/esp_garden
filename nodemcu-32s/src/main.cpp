@@ -1,9 +1,10 @@
 #include <Adafruit_Sensor.h>
+#include <AsyncTCP.h>
 #include <DHT.h>
 #include <DHT_U.h>
+#include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 #include <ThingSpeak.h>
-#include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <time.h>
@@ -13,8 +14,7 @@
 // TODO: ota update, circular buffer
 
 static const char indexHtml[] PROGMEM =
-  R"EOF(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6" crossorigin="anonymous"><title>ESP Garden</title></head><body><div class="container"><h1>ESP Garden</h1><h2>Status</h2><table class="table table-striped"><tbody id="tbody-status"></tbody></table><h2>Inputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-inputs"></tbody></table><h2>Outputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-outputs"></tbody></table><script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js" integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf" crossorigin="anonymous"></script><script>function fillTable(id, data, index=true){ var tbody=$(id); tbody.empty(); for (var i=0; i < data.length; i++){ var tr=$('<tr/>'); if (index) tr.append($('<th/>').html(i).attr("scope", "row")); for (var key in data[i]){ tr.append($('<td/>').html(key)); tr.append($('<td/>').html(data[i][key]));} tbody.append(tr);}} function refresh(){ setTimeout(refresh, 1 * 1000); $.ajax({ dataType: "json", url: "/data.json", timeout: 500, success: function (info){ fillTable("#tbody-status", info["Status"], false); fillTable("#tbody-inputs", info["Inputs"]); fillTable("#tbody-outputs", info["Outputs"]);}});} $(function onReady(){ refresh();}); </script></body><footer></footer></html>
-  )EOF";
+  R"EOF(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6" crossorigin="anonymous"><title>ESP Garden</title></head><body><div class="container"><h1>ESP Garden</h1><h2>Status</h2><table class="table table-striped"><tbody id="tbody-status"></tbody></table><h2>Inputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-inputs"></tbody></table><h2>Outputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-outputs"></tbody></table><script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js" integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf" crossorigin="anonymous"></script><script>function fillTable(id, data, index=true){ var tbody=$(id); tbody.empty(); for (var i=0; i < data.length; i++){ var tr=$('<tr/>'); if (index) tr.append($('<th/>').html(i).attr("scope", "row")); for (var key in data[i]){ tr.append($('<td/>').html(key)); tr.append($('<td/>').html(data[i][key]));} tbody.append(tr);}} function refresh(){ setTimeout(refresh, 1 * 1000); $.ajax({ dataType: "json", url: "/data.json", timeout: 500, success: function (info){ fillTable("#tbody-status", info["Status"], false); fillTable("#tbody-inputs", info["Inputs"]); fillTable("#tbody-outputs", info["Outputs"]);}});} $(function onReady(){ refresh();}); </script></body><footer></footer></html>)EOF";
 
 static const unsigned ADC_READ_SIZE = 2;
 static const unsigned A0_INDEX = 0;
@@ -26,7 +26,7 @@ static const unsigned GPIO0_INDEX = 0;
 static const unsigned MAX_RETRIES = 3;
 static const unsigned RETRY_DELAY = 5000;
 
-static WebServer g_webServer(80);
+static AsyncWebServer g_webServer(80);
 static WiFiClient g_wifiClient;
 
 static time_t g_bootTime = 0;
@@ -50,15 +50,15 @@ syncClock()
 }
 
 void
-handleRoot()
+handleRoot(AsyncWebServerRequest* request)
 {
   digitalWrite(LED_BUILTIN, 1);
-  g_webServer.send(200, "text/html", indexHtml);
+  request->send_P(200, "text/html", indexHtml);
   digitalWrite(LED_BUILTIN, 0);
 }
 
 void
-handleDataJson()
+handleDataJson(AsyncWebServerRequest* request)
 {
   digitalWrite(LED_BUILTIN, 1);
 
@@ -101,47 +101,44 @@ handleDataJson()
   json += "{\"Temperature\":\"" + String(g_temperature) + "\"},";
   json += "{\"AirHumidity\":\"" + String(g_airHumidity) + "\"},";
   json += "{\"GPIO0\":\"" + String(g_gpioRead[GPIO0_INDEX]) + "\"}";
-  json += "]";
+  json += "],";
 
-  /*json += "\"Outputs\":[";
-  json += "{\"GPIO23\":\"" + String(g_gpioRead[GPIO23_INDEX]) + "\"}";
-  json += "]";*/
+  json += "\"Outputs\":[";
+  //json += "{\"GPIO23\":\"" + String(g_gpioRead[GPIO23_INDEX]) + "\"}";
+  json += "]";
 
   json += "}";
 
-  g_webServer.send(200, "text/json", json);
+  request->send(200, "text/json", json);
 
   digitalWrite(LED_BUILTIN, 0);
 }
 
 void
-handleSet()
+handleSet(AsyncWebServerRequest* request)
 {
   digitalWrite(LED_BUILTIN, 1);
 
-  for (int i = 0; i < g_webServer.args(); ++i) {
-    Serial.println(g_webServer.argName(i) + " = " + g_webServer.arg(i));
+  for (int i = 0; i < request->params(); ++i) {
+    AsyncWebParameter* param = request->getParam(i);
+    Serial.println(param->name() + " = " + param->value());
   }
 
-  g_webServer.send(200, "text/html", "");
+  request->send(200);
 
   digitalWrite(LED_BUILTIN, 0);
-}
-
-void
-serverTask(void*)
-{
-  for (;;) {
-    g_webServer.handleClient();
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
 }
 
 void
 sensorsTask(void*)
 {
+  unsigned count = 0;
+
   memset(g_adcRead, 0, sizeof(g_adcRead));
   memset(g_gpioRead, 0, sizeof(g_gpioRead));
+
+  g_temperature = 0.0;
+  g_airHumidity = 0.0;
 
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -149,17 +146,21 @@ sensorsTask(void*)
     g_adcRead[A0_INDEX] = analogRead(A0);
     g_adcRead[A3_INDEX] = analogRead(A3);
 
-    sensors_event_t event;
-    g_dht.temperature().getEvent(&event);
-    if (isnan(event.temperature) == false) {
-      g_temperature = event.temperature;
-    }
-    g_dht.humidity().getEvent(&event);
-    if (isnan(event.relative_humidity) == false) {
-      g_airHumidity = event.relative_humidity;
+    if ((count % 5) == 0) {
+      sensors_event_t event;
+      g_dht.temperature().getEvent(&event);
+      if (isnan(event.temperature) == false) {
+        g_temperature = event.temperature;
+      }
+      g_dht.humidity().getEvent(&event);
+      if (isnan(event.relative_humidity) == false) {
+        g_airHumidity = event.relative_humidity;
+      }
     }
 
     g_gpioRead[GPIO0_INDEX] = digitalRead(0);
+
+    ++count;
   }
 }
 
@@ -258,7 +259,6 @@ setup(void)
   g_bootTime = time(NULL);
 
   xTaskCreate(sensorsTask, "sensorsTask", 2 * 1024, NULL, 2, NULL);
-  xTaskCreate(serverTask, "serverTask", 4 * 1024, NULL, 2, NULL);
   xTaskCreate(tsTask, "tsTask", 4 * 1024, NULL, 2, NULL);
   xTaskCreate(clockUpdateTask, "clockUpdateTask", 4 * 1024, NULL, 1, NULL);
 }
