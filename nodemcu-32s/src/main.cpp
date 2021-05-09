@@ -252,12 +252,12 @@ setup(void)
   g_webServer.on("/data.json", HTTP_GET, handleDataJson);
   g_webServer.on("/set", HTTP_POST, handleSet);
   g_webServer.begin();
-  Serial.println("HTTP g_webServer started");
+  Serial.println("HTTP server started");
 
   syncClock();
   g_bootTime = time(NULL);
 
-  xTaskCreate(sensorsTask, "sensorsTask", 1024, NULL, 2, NULL);
+  xTaskCreate(sensorsTask, "sensorsTask", 2 * 1024, NULL, 2, NULL);
   xTaskCreate(serverTask, "serverTask", 4 * 1024, NULL, 2, NULL);
   xTaskCreate(tsTask, "tsTask", 4 * 1024, NULL, 2, NULL);
   xTaskCreate(clockUpdateTask, "clockUpdateTask", 4 * 1024, NULL, 1, NULL);
