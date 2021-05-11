@@ -6,6 +6,7 @@
 #include <DHT_U.h>
 #include <ESP32Ping.h>
 #include <ESPAsyncWebServer.h>
+#include <TaskScheduler.h>
 #include <ThingSpeak.h>
 #include <WiFi.h>
 #include <time.h>
@@ -131,94 +132,76 @@ handleSet(AsyncWebServerRequest* request)
 }
 
 void
-sensorsTask(void*)
+sensorsTask()
 {
-  unsigned count = 0;
+  static unsigned count = 0;
 
-  memset(g_adcRead, 0, sizeof(g_adcRead));
-  memset(g_gpioRead, 0, sizeof(g_gpioRead));
+  g_adcRead[A0_INDEX] = analogRead(A0);
+  g_adcRead[A3_INDEX] = analogRead(A3);
 
-  g_temperature = 0.0;
-  g_airHumidity = 0.0;
-
-  for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    g_adcRead[A0_INDEX] = analogRead(A0);
-    g_adcRead[A3_INDEX] = analogRead(A3);
-
-    if ((count % 5) == 0) {
-      sensors_event_t event;
-      g_dht.temperature().getEvent(&event);
-      if (isnan(event.temperature) == false) {
-        g_temperature = event.temperature;
-      }
-      g_dht.humidity().getEvent(&event);
-      if (isnan(event.relative_humidity) == false) {
-        g_airHumidity = event.relative_humidity;
-      }
+  if ((count % 5) == 0) {
+    sensors_event_t event;
+    g_dht.temperature().getEvent(&event);
+    if (isnan(event.temperature) == false) {
+      g_temperature = event.temperature;
     }
-
-    g_gpioRead[GPIO0_INDEX] = digitalRead(0);
-
-    ++count;
+    g_dht.humidity().getEvent(&event);
+    if (isnan(event.relative_humidity) == false) {
+      g_airHumidity = event.relative_humidity;
+    }
   }
+
+  g_gpioRead[GPIO0_INDEX] = digitalRead(0);
+
+  ++count;
 }
 
 void
-tsTask(void*)
+tsTask()
 {
-  ThingSpeak.begin(g_wifiClient);
-  ThingSpeak.setField(8, g_bootTime);
+  int retries = 0;
+  while (retries < MAX_RETRIES) {
+    ThingSpeak.setField(1, g_adcRead[A0_INDEX]);
+    ThingSpeak.setField(2, g_adcRead[A3_INDEX]);
 
-  for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(60 * 1000));
+    ThingSpeak.setField(6, g_temperature);
+    ThingSpeak.setField(7, g_airHumidity);
 
-    int retries = 0;
-    while (retries < MAX_RETRIES) {
-      ThingSpeak.setField(1, g_adcRead[A0_INDEX]);
-      ThingSpeak.setField(2, g_adcRead[A3_INDEX]);
+    digitalWrite(LED_BUILTIN, 1);
+    int status = ThingSpeak.writeFields(g_channelNumber, g_apiKey);
+    digitalWrite(LED_BUILTIN, 0);
 
-      ThingSpeak.setField(6, g_temperature);
-      ThingSpeak.setField(7, g_airHumidity);
+    if (status == 200) {
+      ++g_packagesSent;
+      break;
+    }
 
-      digitalWrite(LED_BUILTIN, 1);
-      int status = ThingSpeak.writeFields(g_channelNumber, g_apiKey);
-      digitalWrite(LED_BUILTIN, 0);
-
-      if (status == 200) {
-        ++g_packagesSent;
-        break;
-      }
-
-      ++retries;
-      if (retries >= MAX_RETRIES) {
-        ++g_tsErrors;
-        g_tsLastError = time(NULL);
-        g_tsLastCode = status;
-        break;
-      }
-
-      vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY));
+    ++retries;
+    if (retries >= MAX_RETRIES) {
+      ++g_tsErrors;
+      g_tsLastError = time(NULL);
+      g_tsLastCode = status;
+      break;
     }
   }
 }
 
 void
-clockUpdateTask(void*)
+clockUpdateTask()
 {
-  int minutes = 0;
+  static int minutes = 0;
 
-  for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(60 * 1000));
-
-    ++minutes;
-    if (minutes >= 24 * 60) {
-      minutes = 0;
-      syncClock();
-    }
+  ++minutes;
+  if (minutes >= 24 * 60) {
+    minutes = 0;
+    syncClock();
   }
 }
+
+Scheduler taskScheduler;
+Task _sensorsTask(1000, TASK_FOREVER, &sensorsTask, &taskScheduler, true);
+Task _tsTask(60 * 1000, TASK_FOREVER, &tsTask, &taskScheduler, true);
+Task _clockUpdateTask(60 * 1000, TASK_FOREVER, &clockUpdateTask, &taskScheduler, true);
 
 void
 setup(void)
@@ -268,9 +251,11 @@ setup(void)
   syncClock();
   g_bootTime = time(NULL);
 
-  xTaskCreate(sensorsTask, "sensorsTask", 2 * 1024, NULL, 2, NULL);
-  xTaskCreate(tsTask, "tsTask", 4 * 1024, NULL, 2, NULL);
-  xTaskCreate(clockUpdateTask, "clockUpdateTask", 4 * 1024, NULL, 1, NULL);
+  memset(g_adcRead, 0, sizeof(g_adcRead));
+  memset(g_gpioRead, 0, sizeof(g_gpioRead));
+
+  ThingSpeak.begin(g_wifiClient);
+  ThingSpeak.setField(8, g_bootTime);
 
   Serial.println("Setup done!");
 }
@@ -278,5 +263,6 @@ setup(void)
 void
 loop(void)
 {
+  taskScheduler.execute();
   AsyncElegantOTA.loop();
 }
