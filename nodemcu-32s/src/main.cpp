@@ -6,10 +6,8 @@
 #include <DHT_U.h>
 #include <ESP32Ping.h>
 #include <ESPAsyncWebServer.h>
-#include <ESPmDNS.h>
 #include <ThingSpeak.h>
 #include <WiFi.h>
-#include <WiFiClient.h>
 #include <time.h>
 
 // TODO: circular buffer
@@ -237,7 +235,7 @@ setup(void)
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(g_ssid, g_password);
-  
+
   digitalWrite(LED_BUILTIN, 1);
   Serial.println("Connecting to wifi...");
   while (WiFi.status() != WL_CONNECTED) {
@@ -252,10 +250,6 @@ setup(void)
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
-  if (MDNS.begin("esp32")) {
-    Serial.println("MDNS responder started");
-  }
-
   g_webServer.on("/", HTTP_GET, handleRoot);
   g_webServer.on("/data.json", HTTP_GET, handleDataJson);
   g_webServer.on("/set", HTTP_POST, handleSet);
@@ -266,7 +260,7 @@ setup(void)
 
   digitalWrite(LED_BUILTIN, 1);
   Serial.println("Checking internet conection...");
-  while (Ping.ping(IPAddress(8,8,8,8), 1) == false) {
+  while (Ping.ping(IPAddress(8, 8, 8, 8), 1) == false) {
     delay(1000);
     Serial.print(".");
   }
