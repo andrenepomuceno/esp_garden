@@ -45,6 +45,33 @@ static float g_temperature = 0.0;
 static float g_airHumidity = 0.0;
 
 void
+ioTaskHandler();
+void
+dhtTaskHandler();
+void
+tsTaskHandler();
+void
+syncClock();
+
+static Scheduler taskScheduler;
+static Task ioTask(1000, TASK_FOREVER, &ioTaskHandler, &taskScheduler, true);
+static Task dhtTask(10 * 1000,
+                    TASK_FOREVER,
+                    &dhtTaskHandler,
+                    &taskScheduler,
+                    true);
+static Task tsTask(60 * 1000,
+                   TASK_FOREVER,
+                   &tsTaskHandler,
+                   &taskScheduler,
+                   true);
+static Task clockUpdateTask(24 * 60 * 60 * 1000,
+                            TASK_FOREVER,
+                            &syncClock,
+                            &taskScheduler,
+                            true);
+
+void
 syncClock()
 {
   configTime(0, -3 * 60 * 60, "pool.ntp.org");
@@ -132,32 +159,30 @@ handleSet(AsyncWebServerRequest* request)
 }
 
 void
-sensorsTask()
+ioTaskHandler()
 {
-  static unsigned count = 0;
-
   g_adcRead[A0_INDEX] = analogRead(A0);
   g_adcRead[A3_INDEX] = analogRead(A3);
 
-  if ((count % 5) == 0) {
-    sensors_event_t event;
-    g_dht.temperature().getEvent(&event);
-    if (isnan(event.temperature) == false) {
-      g_temperature = event.temperature;
-    }
-    g_dht.humidity().getEvent(&event);
-    if (isnan(event.relative_humidity) == false) {
-      g_airHumidity = event.relative_humidity;
-    }
-  }
-
   g_gpioRead[GPIO0_INDEX] = digitalRead(0);
-
-  ++count;
 }
 
 void
-tsTask()
+dhtTaskHandler()
+{
+  sensors_event_t event;
+  g_dht.temperature().getEvent(&event);
+  if (isnan(event.temperature) == false) {
+    g_temperature = event.temperature;
+  }
+  g_dht.humidity().getEvent(&event);
+  if (isnan(event.relative_humidity) == false) {
+    g_airHumidity = event.relative_humidity;
+  }
+}
+
+void
+tsTaskHandler()
 {
   int retries = 0;
   while (retries < MAX_RETRIES) {
@@ -187,21 +212,10 @@ tsTask()
 }
 
 void
-clockUpdateTask()
+clockUpdateTaskHandler()
 {
-  static int minutes = 0;
-
-  ++minutes;
-  if (minutes >= 24 * 60) {
-    minutes = 0;
-    syncClock();
-  }
+  syncClock();
 }
-
-Scheduler taskScheduler;
-Task _sensorsTask(1000, TASK_FOREVER, &sensorsTask, &taskScheduler, true);
-Task _tsTask(60 * 1000, TASK_FOREVER, &tsTask, &taskScheduler, true);
-Task _clockUpdateTask(60 * 1000, TASK_FOREVER, &clockUpdateTask, &taskScheduler, true);
 
 void
 setup(void)
