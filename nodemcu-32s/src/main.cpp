@@ -1,16 +1,16 @@
+#include "secret.h"
 #include <Adafruit_Sensor.h>
 #include <AsyncElegantOTA.h>
 #include <AsyncTCP.h>
 #include <DHT.h>
 #include <DHT_U.h>
+#include <ESP32Ping.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 #include <ThingSpeak.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <time.h>
-
-#include "secret.h"
 
 // TODO: circular buffer
 
@@ -48,7 +48,6 @@ static float g_airHumidity = 0.0;
 void
 syncClock()
 {
-  Serial.println("Updating clock...");
   configTime(0, -3 * 60 * 60, "pool.ntp.org");
   delay(2000);
 }
@@ -175,7 +174,7 @@ tsTask(void*)
   ThingSpeak.setField(8, g_bootTime);
 
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(30 * 1000));
+    vTaskDelay(pdMS_TO_TICKS(60 * 1000));
 
     int retries = 0;
     while (retries < MAX_RETRIES) {
@@ -227,6 +226,7 @@ void
 setup(void)
 {
   Serial.begin(115200);
+  Serial.println("");
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, 0);
@@ -237,13 +237,16 @@ setup(void)
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(g_ssid, g_password);
-  Serial.println("");
+  
+  digitalWrite(LED_BUILTIN, 1);
+  Serial.println("Connecting to wifi...");
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    delay(1000);
     Serial.print(".");
   }
-
   Serial.println("");
+  digitalWrite(LED_BUILTIN, 0);
+
   Serial.print("Connected to ");
   Serial.println(g_ssid);
   Serial.print("IP address: ");
@@ -261,12 +264,24 @@ setup(void)
   g_webServer.begin();
   Serial.println("HTTP server started");
 
+  digitalWrite(LED_BUILTIN, 1);
+  Serial.println("Checking internet conection...");
+  while (Ping.ping(IPAddress(8,8,8,8), 1) == false) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("");
+  digitalWrite(LED_BUILTIN, 0);
+
+  Serial.println("Updating clock...");
   syncClock();
   g_bootTime = time(NULL);
 
   xTaskCreate(sensorsTask, "sensorsTask", 2 * 1024, NULL, 2, NULL);
   xTaskCreate(tsTask, "tsTask", 4 * 1024, NULL, 2, NULL);
   xTaskCreate(clockUpdateTask, "clockUpdateTask", 4 * 1024, NULL, 1, NULL);
+
+  Serial.println("Setup done!");
 }
 
 void
