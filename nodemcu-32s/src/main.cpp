@@ -237,7 +237,7 @@ setup(void)
   WiFi.begin(g_ssid, g_password);
 
   digitalWrite(LED_BUILTIN, 1);
-  Serial.println("Connecting to wifi...");
+  Serial.print("Connecting to wifi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
     Serial.print(".");
@@ -245,8 +245,6 @@ setup(void)
   Serial.println("");
   digitalWrite(LED_BUILTIN, 0);
 
-  Serial.print("Connected to ");
-  Serial.println(g_ssid);
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
@@ -256,10 +254,9 @@ setup(void)
 
   AsyncElegantOTA.begin(&g_webServer, g_otaUser, g_otaPassword);
   g_webServer.begin();
-  Serial.println("HTTP server started");
 
   digitalWrite(LED_BUILTIN, 1);
-  Serial.println("Checking internet conection...");
+  Serial.print("Checking internet conection");
   while (Ping.ping(IPAddress(8, 8, 8, 8), 1) == false) {
     delay(1000);
     Serial.print(".");
