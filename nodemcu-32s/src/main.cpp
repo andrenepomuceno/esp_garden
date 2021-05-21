@@ -121,15 +121,12 @@ handleDataJson(AsyncWebServerRequest* request)
   json += "],";
 
   json += "\"Inputs\":[";
-  json +=
-    "{\"Soil Moisture (A0)\":\"" + String(g_soilMoisture.getLast()) + "\"},";
-  json += "{\"Mean\":\"" + String(g_soilMoisture.getAverage()) + "\"},";
-  json += "{\"Luminosity (A3)\":\"" + String(g_luminosity.getLast()) + "\"},";
-  json += "{\"Mean\":\"" + String(g_luminosity.getAverage()) + "\"},";
+  json += "{\"Soil Moisture (A0)\":\"" + String(g_soilMoisture.getLast()) +
+          "/" + String(g_soilMoisture.getAverage()) + "\"},";
+  json += "{\"Luminosity (A3)\":\"" + String(g_luminosity.getLast()) + "/" +
+          String(g_luminosity.getAverage()) + "\"},";
   json += "{\"Temperature\":\"" + String(g_temperature.getLast()) + "\"},";
-  json += "{\"Mean\":\"" + String(g_temperature.getAverage()) + "\"},";
   json += "{\"Air Humidity\":\"" + String(g_airHumidity.getLast()) + "\"},";
-  json += "{\"Mean\":\"" + String(g_airHumidity.getAverage()) + "\"},";
   json += "{\"GPIO0\":\"" + String(g_gpioRead[GPIO0_INDEX]) + "\"}";
   json += "],";
 
@@ -189,32 +186,22 @@ dhtTaskHandler()
 void
 tsTaskHandler()
 {
-  int retries = 0;
-  while (retries < MAX_RETRIES) {
-    ThingSpeak.setField(1, g_soilMoisture.getAverage());
-    ThingSpeak.setField(2, g_luminosity.getAverage());
+  ThingSpeak.setField(1, g_soilMoisture.getAverage());
+  ThingSpeak.setField(2, g_luminosity.getAverage());
 
-    ThingSpeak.setField(6, g_temperature.getAverage());
-    ThingSpeak.setField(7, g_airHumidity.getAverage());
+  ThingSpeak.setField(6, g_temperature.getAverage());
+  ThingSpeak.setField(7, g_airHumidity.getAverage());
 
-    digitalWrite(LED_BUILTIN, 1);
-    int status = ThingSpeak.writeFields(g_channelNumber, g_apiKey);
-    digitalWrite(LED_BUILTIN, 0);
+  digitalWrite(LED_BUILTIN, 1);
+  int status = ThingSpeak.writeFields(g_channelNumber, g_apiKey);
+  digitalWrite(LED_BUILTIN, 0);
 
-    if (status == 200) {
-      ++g_packagesSent;
-      break;
-    }
-
-    // TODO adjust time delay for retry
-
-    ++retries;
-    if (retries >= MAX_RETRIES) {
-      ++g_tsErrors;
-      g_tsLastError = time(NULL);
-      g_tsLastCode = status;
-      break;
-    }
+  if (status == 200) {
+    ++g_packagesSent;
+  } else {
+    ++g_tsErrors;
+    g_tsLastError = time(NULL);
+    g_tsLastCode = status;
   }
 
   g_soilMoisture.resetAverage();
