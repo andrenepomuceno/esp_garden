@@ -1,3 +1,4 @@
+#include "measure.h"
 #include "secret.h"
 #include <Adafruit_Sensor.h>
 #include <AsyncElegantOTA.h>
@@ -11,14 +12,13 @@
 #include <WiFi.h>
 #include <time.h>
 
-// TODO: circular buffer
-
 static const char indexHtml[] PROGMEM =
   R"EOF(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6" crossorigin="anonymous"><title>ESP Garden</title></head><body><div class="container"><h1>&#x1F331; ESP Garden</h1><h2>Status</h2><table class="table table-striped"><tbody id="tbody-status"></tbody></table><h2>Inputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-inputs"></tbody></table><h2>Outputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-outputs"></tbody></table><script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js" integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf" crossorigin="anonymous"></script><script>function fillTable(id, data, index=true){ var tbody=$(id); tbody.empty(); for (var i=0; i < data.length; i++){ var tr=$('<tr/>'); if (index) tr.append($('<th/>').html(i).attr("scope", "row")); for (var key in data[i]){ tr.append($('<td/>').html(key)); tr.append($('<td/>').html(data[i][key]));} tbody.append(tr);}} function refresh(){ setTimeout(refresh, 1 * 1000); $.ajax({ dataType: "json", url: "/data.json", timeout: 500, success: function (info){ fillTable("#tbody-status", info["Status"], false); fillTable("#tbody-inputs", info["Inputs"]); fillTable("#tbody-outputs", info["Outputs"]);}});} $(function onReady(){ refresh();}); </script></body><footer></footer></html>)EOF";
 
-static const unsigned ADC_READ_SIZE = 2;
-static const unsigned A0_INDEX = 0;
-static const unsigned A3_INDEX = 1;
+Measure g_soilMoisture;
+Measure g_luminosity;
+Measure g_temperature;
+Measure g_airHumidity;
 
 static const unsigned GPIO_READ_SIZE = 1;
 static const unsigned GPIO0_INDEX = 0;
@@ -36,13 +36,11 @@ static unsigned g_tsErrors = 0;
 static time_t g_tsLastError = 0;
 static int g_tsLastCode = 200;
 
-static uint16_t g_adcRead[ADC_READ_SIZE];
 static uint8_t g_gpioRead[GPIO_READ_SIZE];
 
 static const unsigned g_dhtPin = 23;
 static DHT_Unified g_dht(g_dhtPin, DHT11);
-static float g_temperature = 0.0;
-static float g_airHumidity = 0.0;
+static unsigned g_dhtReadErrors = 0;
 
 void
 ioTaskHandler();
@@ -53,23 +51,20 @@ tsTaskHandler();
 void
 syncClock();
 
+static const unsigned g_tsTaskPeriod = 60 * 1000;
+static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
+
 static Scheduler taskScheduler;
-static Task ioTask(1000, TASK_FOREVER, &ioTaskHandler, &taskScheduler, true);
-static Task dhtTask(10 * 1000,
-                    TASK_FOREVER,
-                    &dhtTaskHandler,
-                    &taskScheduler,
-                    true);
-static Task tsTask(60 * 1000,
+static Task ioTask(1000, TASK_FOREVER, &ioTaskHandler, &taskScheduler);
+static Task dhtTask(10 * 1000, TASK_FOREVER, &dhtTaskHandler, &taskScheduler);
+static Task tsTask(g_tsTaskPeriod,
                    TASK_FOREVER,
                    &tsTaskHandler,
-                   &taskScheduler,
-                   true);
-static Task clockUpdateTask(24 * 60 * 60 * 1000,
+                   &taskScheduler);
+static Task clockUpdateTask(g_clockUpdateTaskPeriod,
                             TASK_FOREVER,
                             &syncClock,
-                            &taskScheduler,
-                            true);
+                            &taskScheduler);
 
 void
 syncClock()
@@ -115,20 +110,26 @@ handleDataJson(AsyncWebServerRequest* request)
            minutes % 60,
            uptime % 60);
   json += "{\"Uptime\":\"" + String(buffer) + "\"},";
-  json += "{\"PackagesSent\":\"" + String(g_packagesSent) + "\"}";
+  json += "{\"Packages Sent\":\"" + String(g_packagesSent) + "\"},";
+  json += "{\"DHT Read Errors\":\"" + String(g_dhtReadErrors) + "\"}";
   if (g_tsErrors > 0) {
     json += ",{\"Errors\":\"" + String(g_tsErrors) + "\"}";
     strftime(buffer, sizeof(buffer), "%T", localtime(&g_tsLastError));
-    json += ",{\"LastError\":\"" + String(buffer) + "\"}";
-    json += ",{\"LastCode\":\"" + String(g_tsLastCode) + "\"}";
+    json += ",{\"Last Error\":\"" + String(buffer) + "\"}";
+    json += ",{\"Last Code\":\"" + String(g_tsLastCode) + "\"}";
   }
   json += "],";
 
   json += "\"Inputs\":[";
-  json += "{\"A0\":\"" + String(g_adcRead[A0_INDEX]) + "\"},";
-  json += "{\"A3\":\"" + String(g_adcRead[A3_INDEX]) + "\"},";
-  json += "{\"Temperature\":\"" + String(g_temperature) + "\"},";
-  json += "{\"AirHumidity\":\"" + String(g_airHumidity) + "\"},";
+  json +=
+    "{\"Soil Moisture (A0)\":\"" + String(g_soilMoisture.getLast()) + "\"},";
+  json += "{\"Mean\":\"" + String(g_soilMoisture.getAverage()) + "\"},";
+  json += "{\"Luminosity (A3)\":\"" + String(g_luminosity.getLast()) + "\"},";
+  json += "{\"Mean\":\"" + String(g_luminosity.getAverage()) + "\"},";
+  json += "{\"Temperature\":\"" + String(g_temperature.getLast()) + "\"},";
+  json += "{\"Mean\":\"" + String(g_temperature.getAverage()) + "\"},";
+  json += "{\"Air Humidity\":\"" + String(g_airHumidity.getLast()) + "\"},";
+  json += "{\"Mean\":\"" + String(g_airHumidity.getAverage()) + "\"},";
   json += "{\"GPIO0\":\"" + String(g_gpioRead[GPIO0_INDEX]) + "\"}";
   json += "],";
 
@@ -161,8 +162,8 @@ handleSet(AsyncWebServerRequest* request)
 void
 ioTaskHandler()
 {
-  g_adcRead[A0_INDEX] = analogRead(A0);
-  g_adcRead[A3_INDEX] = analogRead(A3);
+  g_soilMoisture.add(analogRead(A0));
+  g_luminosity.add(analogRead(A3));
 
   g_gpioRead[GPIO0_INDEX] = digitalRead(0);
 }
@@ -173,11 +174,15 @@ dhtTaskHandler()
   sensors_event_t event;
   g_dht.temperature().getEvent(&event);
   if (isnan(event.temperature) == false) {
-    g_temperature = event.temperature;
+    g_temperature.add(event.temperature);
+  } else {
+    ++g_dhtReadErrors;
   }
   g_dht.humidity().getEvent(&event);
   if (isnan(event.relative_humidity) == false) {
-    g_airHumidity = event.relative_humidity;
+    g_airHumidity.add(event.relative_humidity);
+  } else {
+    ++g_dhtReadErrors;
   }
 }
 
@@ -186,11 +191,11 @@ tsTaskHandler()
 {
   int retries = 0;
   while (retries < MAX_RETRIES) {
-    ThingSpeak.setField(1, g_adcRead[A0_INDEX]);
-    ThingSpeak.setField(2, g_adcRead[A3_INDEX]);
+    ThingSpeak.setField(1, g_soilMoisture.getAverage());
+    ThingSpeak.setField(2, g_luminosity.getAverage());
 
-    ThingSpeak.setField(6, g_temperature);
-    ThingSpeak.setField(7, g_airHumidity);
+    ThingSpeak.setField(6, g_temperature.getAverage());
+    ThingSpeak.setField(7, g_airHumidity.getAverage());
 
     digitalWrite(LED_BUILTIN, 1);
     int status = ThingSpeak.writeFields(g_channelNumber, g_apiKey);
@@ -201,6 +206,8 @@ tsTaskHandler()
       break;
     }
 
+    // TODO adjust time delay for retry
+
     ++retries;
     if (retries >= MAX_RETRIES) {
       ++g_tsErrors;
@@ -209,6 +216,11 @@ tsTaskHandler()
       break;
     }
   }
+
+  g_soilMoisture.resetAverage();
+  g_luminosity.resetAverage();
+  g_temperature.resetAverage();
+  g_airHumidity.resetAverage();
 }
 
 void
@@ -265,11 +277,15 @@ setup(void)
   syncClock();
   g_bootTime = time(NULL);
 
-  memset(g_adcRead, 0, sizeof(g_adcRead));
   memset(g_gpioRead, 0, sizeof(g_gpioRead));
 
   ThingSpeak.begin(g_wifiClient);
   ThingSpeak.setField(8, g_bootTime);
+
+  ioTask.enable();
+  dhtTask.enable();
+  tsTask.enableDelayed(g_tsTaskPeriod);
+  clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
 
   Serial.println("Setup done!");
 }
