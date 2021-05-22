@@ -20,8 +20,11 @@ Accumulator g_luminosity;
 Accumulator g_temperature;
 Accumulator g_airHumidity;
 
-static const unsigned GPIO_READ_SIZE = 1;
-static const unsigned GPIO0_INDEX = 0;
+static const unsigned g_buttonGPIO = 0;
+static bool g_buttonState = false;
+
+static const unsigned g_wateringGPIO = 22;
+static bool g_wateringState = false;
 
 static AsyncWebServer g_webServer(80);
 static WiFiClient g_wifiClient;
@@ -32,8 +35,6 @@ static unsigned g_packagesSent = 0;
 static unsigned g_tsErrors = 0;
 static time_t g_tsLastError = 0;
 static int g_tsLastCode = 200;
-
-static uint8_t g_gpioRead[GPIO_READ_SIZE];
 
 static const unsigned g_dhtPin = 23;
 static DHT_Unified g_dht(g_dhtPin, DHT11);
@@ -47,29 +48,37 @@ void
 tsTaskHandler();
 void
 syncClock();
+void
+wateringTaskHandler();
 
 static const unsigned g_tsTaskPeriod = 60 * 1000;
 static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
 static const unsigned g_dhtTaskPeriod = 5 * 1000;
 static const unsigned g_ioTaskPeriod = 1000;
+static const unsigned g_wateringTaskPeriod = 1000;
+static const unsigned g_wateringIterations = 10;
 
-static Scheduler taskScheduler;
-static Task ioTask(g_ioTaskPeriod,
-                   TASK_FOREVER,
-                   &ioTaskHandler,
-                   &taskScheduler);
-static Task dhtTask(g_dhtTaskPeriod,
-                    TASK_FOREVER,
-                    &dhtTaskHandler,
-                    &taskScheduler);
-static Task tsTask(g_tsTaskPeriod,
-                   TASK_FOREVER,
-                   &tsTaskHandler,
-                   &taskScheduler);
-static Task clockUpdateTask(g_clockUpdateTaskPeriod,
-                            TASK_FOREVER,
-                            &syncClock,
-                            &taskScheduler);
+static Scheduler g_taskScheduler;
+static Task g_ioTask(g_ioTaskPeriod,
+                     TASK_FOREVER,
+                     &ioTaskHandler,
+                     &g_taskScheduler);
+static Task g_dhtTask(g_dhtTaskPeriod,
+                      TASK_FOREVER,
+                      &dhtTaskHandler,
+                      &g_taskScheduler);
+static Task g_tsTask(g_tsTaskPeriod,
+                     TASK_FOREVER,
+                     &tsTaskHandler,
+                     &g_taskScheduler);
+static Task g_clockUpdateTask(g_clockUpdateTaskPeriod,
+                              TASK_FOREVER,
+                              &syncClock,
+                              &g_taskScheduler);
+static Task g_wateringTask(g_wateringTaskPeriod,
+                           TASK_FOREVER,
+                           &wateringTaskHandler,
+                           &g_taskScheduler);
 
 void
 syncClock()
@@ -77,7 +86,6 @@ syncClock()
   int tzOffset = -3 * 60 * 60;
   configTime(
     0, tzOffset, "0.br.pool.ntp.org", "1.br.pool.ntp.org", "2.br.pool.ntp.org");
-  delay(1500);
 }
 
 void
@@ -128,17 +136,17 @@ handleDataJson(AsyncWebServerRequest* request)
   json += "],";
 
   json += "\"Inputs\":[";
-  json += "{\"Soil Moisture (A0)\":\"" + String(g_soilMoisture.getLast()) +
+  json += "{\"Soil Moisture\":\"" + String(g_soilMoisture.getLast()) +
           "/" + String(g_soilMoisture.getAverage()) + "\"},";
-  json += "{\"Luminosity (A3)\":\"" + String(g_luminosity.getLast()) + "/" +
+  json += "{\"Luminosity\":\"" + String(g_luminosity.getLast()) + "/" +
           String(g_luminosity.getAverage()) + "\"},";
   json += "{\"Temperature\":\"" + String(g_temperature.getLast()) + "\"},";
   json += "{\"Air Humidity\":\"" + String(g_airHumidity.getLast()) + "\"},";
-  json += "{\"GPIO0\":\"" + String(g_gpioRead[GPIO0_INDEX]) + "\"}";
+  json += "{\"Button State\":\"" + String(g_buttonState) + "\"}";
   json += "],";
 
   json += "\"Outputs\":[";
-  // json += "{\"GPIO23\":\"" + String(g_gpioRead[GPIO23_INDEX]) + "\"}";
+  json += "{\"Watering\":\"" + String(g_wateringState) + "\"}";
   json += "]";
 
   json += "}";
@@ -149,13 +157,15 @@ handleDataJson(AsyncWebServerRequest* request)
 }
 
 void
-handleSet(AsyncWebServerRequest* request)
+handleControl(AsyncWebServerRequest* request)
 {
   digitalWrite(LED_BUILTIN, 1);
 
   for (int i = 0; i < request->params(); ++i) {
     AsyncWebParameter* param = request->getParam(i);
-    Serial.println(param->name() + " = " + param->value());
+    if ((param->name() == "watering") && (param->value() == "enable")) {
+      g_wateringTask.enable();
+    }
   }
 
   request->send(200);
@@ -169,7 +179,8 @@ ioTaskHandler()
   g_soilMoisture.add(analogRead(A0));
   g_luminosity.add(analogRead(A3));
 
-  g_gpioRead[GPIO0_INDEX] = digitalRead(0);
+  g_buttonState = (digitalRead(g_buttonGPIO) > 0) ? (false) : (true);
+  g_wateringState = (digitalRead(g_wateringGPIO) > 0) ? (true) : (false);
 }
 
 void
@@ -218,9 +229,16 @@ tsTaskHandler()
 }
 
 void
-clockUpdateTaskHandler()
+wateringTaskHandler()
 {
-  syncClock();
+  auto runs = g_wateringTask.getRunCounter();
+
+  if (runs == 1) {
+    digitalWrite(g_wateringGPIO, 1);
+  } else if (runs > g_wateringIterations) {
+    digitalWrite(g_wateringGPIO, 0);
+    g_wateringTask.disable();
+  }
 }
 
 void
@@ -231,8 +249,10 @@ setup(void)
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, 0);
+  pinMode(g_wateringGPIO, OUTPUT);
+  digitalWrite(g_wateringGPIO, 0);
 
-  pinMode(0, INPUT);
+  pinMode(g_buttonGPIO, INPUT);
 
   g_dht.begin();
 
@@ -253,7 +273,7 @@ setup(void)
 
   g_webServer.on("/", HTTP_GET, handleRoot);
   g_webServer.on("/data.json", HTTP_GET, handleDataJson);
-  g_webServer.on("/set", HTTP_POST, handleSet);
+  g_webServer.on("/control", HTTP_POST, handleControl);
 
   AsyncElegantOTA.begin(&g_webServer, g_otaUser, g_otaPassword);
   g_webServer.begin();
@@ -269,17 +289,16 @@ setup(void)
 
   Serial.println("Updating clock...");
   syncClock();
+  delay(2000);
   g_bootTime = time(NULL);
-
-  memset(g_gpioRead, 0, sizeof(g_gpioRead));
 
   ThingSpeak.begin(g_wifiClient);
   ThingSpeak.setField(8, g_bootTime);
 
-  ioTask.enable();
-  dhtTask.enable();
-  tsTask.enableDelayed(g_tsTaskPeriod);
-  clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
+  g_ioTask.enable();
+  g_dhtTask.enable();
+  g_tsTask.enableDelayed(g_tsTaskPeriod);
+  g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
 
   Serial.println("Setup done!");
 }
@@ -287,6 +306,6 @@ setup(void)
 void
 loop(void)
 {
-  taskScheduler.execute();
+  g_taskScheduler.execute();
   AsyncElegantOTA.loop();
 }
