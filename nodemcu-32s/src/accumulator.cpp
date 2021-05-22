@@ -1,13 +1,13 @@
-#include "measure.h"
+#include "accumulator.h"
 
-Measure::Measure()
+Accumulator::Accumulator()
   : last(0.0)
   , sum(0.0)
   , samples(0)
 {}
 
 void
-Measure::add(float value)
+Accumulator::add(float value)
 {
   last = value;
   sum += value;
@@ -15,13 +15,13 @@ Measure::add(float value)
 }
 
 float
-Measure::getLast()
+Accumulator::getLast()
 {
   return last;
 }
 
 float
-Measure::getAverage()
+Accumulator::getAverage()
 {
   if (samples == 0) {
     return last;
@@ -30,7 +30,7 @@ Measure::getAverage()
 }
 
 void
-Measure::resetAverage()
+Accumulator::resetAverage()
 {
   sum = 0.0;
   samples = 0;

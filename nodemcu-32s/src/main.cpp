@@ -1,4 +1,4 @@
-#include "measure.h"
+#include "accumulator.h"
 #include "secret.h"
 #include <Adafruit_Sensor.h>
 #include <AsyncElegantOTA.h>
@@ -15,16 +15,13 @@
 static const char indexHtml[] PROGMEM =
   R"EOF(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6" crossorigin="anonymous"><title>ESP Garden</title></head><body><div class="container"><h1>&#x1F331; ESP Garden</h1><h2>Status</h2><table class="table table-striped"><tbody id="tbody-status"></tbody></table><h2>Inputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-inputs"></tbody></table><h2>Outputs</h2><table class="table table-striped"><thead><tr><th scope="col">#</th><th scope="col">Port</th><th scope="col">Value</th></tr></thead><tbody id="tbody-outputs"></tbody></table><script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js" integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf" crossorigin="anonymous"></script><script>function fillTable(id, data, index=true){ var tbody=$(id); tbody.empty(); for (var i=0; i < data.length; i++){ var tr=$('<tr/>'); if (index) tr.append($('<th/>').html(i).attr("scope", "row")); for (var key in data[i]){ tr.append($('<td/>').html(key)); tr.append($('<td/>').html(data[i][key]));} tbody.append(tr);}} function refresh(){ setTimeout(refresh, 1 * 1000); $.ajax({ dataType: "json", url: "/data.json", timeout: 500, success: function (info){ fillTable("#tbody-status", info["Status"], false); fillTable("#tbody-inputs", info["Inputs"]); fillTable("#tbody-outputs", info["Outputs"]);}});} $(function onReady(){ refresh();}); </script></body><footer></footer></html>)EOF";
 
-Measure g_soilMoisture;
-Measure g_luminosity;
-Measure g_temperature;
-Measure g_airHumidity;
+Accumulator g_soilMoisture;
+Accumulator g_luminosity;
+Accumulator g_temperature;
+Accumulator g_airHumidity;
 
 static const unsigned GPIO_READ_SIZE = 1;
 static const unsigned GPIO0_INDEX = 0;
-
-static const unsigned MAX_RETRIES = 3;
-static const unsigned RETRY_DELAY = 5000;
 
 static AsyncWebServer g_webServer(80);
 static WiFiClient g_wifiClient;
@@ -53,10 +50,18 @@ syncClock();
 
 static const unsigned g_tsTaskPeriod = 60 * 1000;
 static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
+static const unsigned g_dhtTaskPeriod = 5 * 1000;
+static const unsigned g_ioTaskPeriod = 1000;
 
 static Scheduler taskScheduler;
-static Task ioTask(1000, TASK_FOREVER, &ioTaskHandler, &taskScheduler);
-static Task dhtTask(10 * 1000, TASK_FOREVER, &dhtTaskHandler, &taskScheduler);
+static Task ioTask(g_ioTaskPeriod,
+                   TASK_FOREVER,
+                   &ioTaskHandler,
+                   &taskScheduler);
+static Task dhtTask(g_dhtTaskPeriod,
+                    TASK_FOREVER,
+                    &dhtTaskHandler,
+                    &taskScheduler);
 static Task tsTask(g_tsTaskPeriod,
                    TASK_FOREVER,
                    &tsTaskHandler,
@@ -69,8 +74,10 @@ static Task clockUpdateTask(g_clockUpdateTaskPeriod,
 void
 syncClock()
 {
-  configTime(0, -3 * 60 * 60, "pool.ntp.org");
-  delay(2000);
+  int tzOffset = -3 * 60 * 60;
+  configTime(
+    0, tzOffset, "0.br.pool.ntp.org", "1.br.pool.ntp.org", "2.br.pool.ntp.org");
+  delay(1500);
 }
 
 void

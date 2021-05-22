@@ -1,7 +1,7 @@
-class Measure
+class Accumulator
 {
 public:
-  Measure();
+  Accumulator();
 
   void add(float value);
   float getLast();
