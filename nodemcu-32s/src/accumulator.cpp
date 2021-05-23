@@ -9,29 +9,29 @@ Accumulator::Accumulator()
 void
 Accumulator::add(float value)
 {
-  last = value;
-  sum += value;
-  ++samples;
+    last = value;
+    sum += value;
+    ++samples;
 }
 
 float
 Accumulator::getLast()
 {
-  return last;
+    return last;
 }
 
 float
 Accumulator::getAverage()
 {
-  if (samples == 0) {
-    return last;
-  }
-  return (sum / samples);
+    if (samples == 0) {
+        return last;
+    }
+    return (sum / samples);
 }
 
 void
 Accumulator::resetAverage()
 {
-  sum = 0.0;
-  samples = 0;
+    sum = 0.0;
+    samples = 0;
 }

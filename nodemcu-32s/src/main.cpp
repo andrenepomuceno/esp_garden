@@ -5,18 +5,18 @@
 void
 setup(void)
 {
-  Serial.begin(115200);
-  Serial.println("");
+    Serial.begin(115200);
+    Serial.println("");
 
-  webSetup();
-  tasksSetup();
+    webSetup();
+    tasksSetup();
 
-  Serial.println("Setup done!");
+    Serial.println("Setup done!");
 }
 
 void
 loop(void)
 {
-  webLoop();
-  tasksLoop();
+    webLoop();
+    tasksLoop();
 }

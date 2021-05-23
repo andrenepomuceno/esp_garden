@@ -1,5 +1,7 @@
 #pragma once
 
-void webSetup();
+void
+webSetup();
 
-void webLoop();
+void
+webLoop();

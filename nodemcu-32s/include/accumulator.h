@@ -2,16 +2,16 @@
 
 class Accumulator
 {
-public:
-  Accumulator();
+  public:
+    Accumulator();
 
-  void add(float value);
-  float getLast();
-  float getAverage();
-  void resetAverage();
+    void add(float value);
+    float getLast();
+    float getAverage();
+    void resetAverage();
 
-private:
-  float last;
-  float sum;
-  unsigned samples;
+  private:
+    float last;
+    float sum;
+    unsigned samples;
 };
