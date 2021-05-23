@@ -7,6 +7,7 @@
 #include <DHT_U.h>
 #include <ESP32Ping.h>
 #include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
 #include <TaskScheduler.h>
 #include <ThingSpeak.h>
 #include <WiFi.h>
@@ -47,7 +48,7 @@ dhtTaskHandler();
 void
 tsTaskHandler();
 void
-syncClock();
+clockUpdateTaskHandler();
 void
 wateringTaskHandler();
 
@@ -73,20 +74,12 @@ static Task g_tsTask(g_tsTaskPeriod,
                      &g_taskScheduler);
 static Task g_clockUpdateTask(g_clockUpdateTaskPeriod,
                               TASK_FOREVER,
-                              &syncClock,
+                              &clockUpdateTaskHandler,
                               &g_taskScheduler);
 static Task g_wateringTask(g_wateringTaskPeriod,
                            TASK_FOREVER,
                            &wateringTaskHandler,
                            &g_taskScheduler);
-
-void
-syncClock()
-{
-  int tzOffset = -3 * 60 * 60;
-  configTime(
-    0, tzOffset, "0.br.pool.ntp.org", "1.br.pool.ntp.org", "2.br.pool.ntp.org");
-}
 
 void
 handleRoot(AsyncWebServerRequest* request)
@@ -136,8 +129,8 @@ handleDataJson(AsyncWebServerRequest* request)
   json += "],";
 
   json += "\"Inputs\":[";
-  json += "{\"Soil Moisture\":\"" + String(g_soilMoisture.getLast()) +
-          "/" + String(g_soilMoisture.getAverage()) + "\"},";
+  json += "{\"Soil Moisture\":\"" + String(g_soilMoisture.getLast()) + "/" +
+          String(g_soilMoisture.getAverage()) + "\"},";
   json += "{\"Luminosity\":\"" + String(g_luminosity.getLast()) + "/" +
           String(g_luminosity.getAverage()) + "\"},";
   json += "{\"Temperature\":\"" + String(g_temperature.getLast()) + "\"},";
@@ -229,6 +222,14 @@ tsTaskHandler()
 }
 
 void
+clockUpdateTaskHandler()
+{
+  int tzOffset = -3 * 60 * 60;
+  configTime(
+    0, tzOffset, "0.br.pool.ntp.org", "1.br.pool.ntp.org", "2.br.pool.ntp.org");
+}
+
+void
 wateringTaskHandler()
 {
   auto runs = g_wateringTask.getRunCounter();
@@ -271,6 +272,10 @@ setup(void)
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
+  if (MDNS.begin("esp32") == false) {
+    Serial.println("Error starting mDNS");
+  }
+
   g_webServer.on("/", HTTP_GET, handleRoot);
   g_webServer.on("/data.json", HTTP_GET, handleDataJson);
   g_webServer.on("/control", HTTP_POST, handleControl);
@@ -288,7 +293,7 @@ setup(void)
   digitalWrite(LED_BUILTIN, 0);
 
   Serial.println("Updating clock...");
-  syncClock();
+  clockUpdateTaskHandler();
   delay(2000);
   g_bootTime = time(NULL);
 
