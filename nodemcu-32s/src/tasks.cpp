@@ -30,7 +30,7 @@ unsigned g_dhtReadErrors = 0;
 
 static DHT_Unified g_dht(g_dhtPin, DHT11);
 
-static const unsigned g_wateringIterations = 10;
+static const unsigned g_wateringTime = 10;
 
 static void
 ioTaskHandler();
@@ -151,7 +151,7 @@ wateringTaskHandler()
 
     if (runs == 1) {
         digitalWrite(g_wateringPin, 1);
-    } else if (runs > g_wateringIterations) {
+    } else if (runs > g_wateringTime) {
         digitalWrite(g_wateringPin, 0);
         g_wateringTask.disable();
     }

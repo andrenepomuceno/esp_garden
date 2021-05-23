@@ -21,7 +21,7 @@
       <thead>
         <tr>
           <th scope="col">#</th>
-          <th scope="col">Port</th>
+          <th scope="col">Name</th>
           <th scope="col">Value</th>
         </tr>
       </thead>
@@ -32,14 +32,14 @@
       <thead>
         <tr>
           <th scope="col">#</th>
-          <th scope="col">Port</th>
+          <th scope="col">Name</th>
           <th scope="col">Value</th>
         </tr>
       </thead>
       <tbody id="tbody-outputs"></tbody>
     </table>
     <h2>Control</h2>
-    
+    <button id="button-watering" type="button" class="btn btn-primary">Watering</button>
 
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"
       integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
@@ -78,6 +78,11 @@
 
       $(function onReady() {
         refresh();
+      });
+
+      $("#button-watering").click(function (event) {
+        event.preventDefault();
+        $.post("/control", { "watering": "enable" });
       });
     </script>
 </body>
