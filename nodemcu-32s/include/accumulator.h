@@ -5,9 +5,9 @@ class Accumulator
   public:
     Accumulator();
 
-    void add(float value);
-    float getLast();
-    float getAverage();
+    void add(const float value);
+    float getLast() const;
+    float getAverage() const;
     void resetAverage();
 
   private:

@@ -1,5 +1,6 @@
 #include "tasks.h"
 #include "secret.h"
+#include "talkback.h"
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
@@ -7,11 +8,42 @@
 #include <ThingSpeak.h>
 #include <WiFi.h>
 
-static WiFiClient g_wifiClient;
+static void
+ioTaskHandler();
+static void
+dhtTaskHandler();
+static void
+thingSpeakTaskHandler();
+static void
+clockUpdateTaskHandler();
+static void
+wateringTaskHandler();
+static void
+talkBackTaskHandler();
 
 static const unsigned g_buttonPin = 0;
 static const unsigned g_wateringPin = 22;
 static const unsigned g_dhtPin = 23;
+
+static const unsigned g_thingSpeakTaskPeriod = 60 * 1000;
+static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
+static const unsigned g_dhtTaskPeriod = 10 * 1000;
+static const unsigned g_ioTaskPeriod = 1000;
+static const unsigned g_wateringTaskPeriod = 1000;
+static const unsigned g_talkBackTaskPeriod = 60 * 1000;
+
+static const unsigned g_soilMoistureField = 1;
+static const unsigned g_luminosityField = 2;
+static const unsigned g_wateringField = 3;
+static const unsigned g_temperatureField = 6;
+static const unsigned g_airHumidityField = 7;
+static const unsigned g_bootTimeField = 8;
+
+static const unsigned g_wateringTime = 10;
+
+static WiFiClient g_wifiClient;
+static TalkBack talkBack;
+static DHT_Unified g_dht(g_dhtPin, DHT11);
 
 Accumulator g_soilMoisture;
 Accumulator g_luminosity;
@@ -27,30 +59,6 @@ unsigned g_tsErrors = 0;
 time_t g_tsLastError = 0;
 int g_tsLastCode = 200;
 unsigned g_dhtReadErrors = 0;
-
-static DHT_Unified g_dht(g_dhtPin, DHT11);
-
-static const unsigned g_wateringTime = 10;
-
-static void
-ioTaskHandler();
-static void
-dhtTaskHandler();
-static void
-thingSpeakTaskHandler();
-static void
-clockUpdateTaskHandler();
-static void
-wateringTaskHandler();
-static void
-talkBackTaskHandler();
-
-static const unsigned g_thingSpeakTaskPeriod = 60 * 1000;
-static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
-static const unsigned g_dhtTaskPeriod = 5 * 1000;
-static const unsigned g_ioTaskPeriod = 1000;
-static const unsigned g_wateringTaskPeriod = 1000;
-static const unsigned g_talkBackTaskPeriod = 60 * 1000;
 
 static Scheduler g_taskScheduler;
 static Task g_ioTask(g_ioTaskPeriod,
@@ -109,14 +117,15 @@ dhtTaskHandler()
 static void
 thingSpeakTaskHandler()
 {
-    ThingSpeak.setField(1, g_soilMoisture.getAverage());
-    ThingSpeak.setField(2, g_luminosity.getAverage());
+    ThingSpeak.setField(g_soilMoistureField, g_soilMoisture.getAverage());
+    ThingSpeak.setField(g_luminosityField, g_luminosity.getAverage());
 
-    ThingSpeak.setField(6, g_temperature.getAverage());
-    ThingSpeak.setField(7, g_airHumidity.getAverage());
+    ThingSpeak.setField(g_temperatureField, g_temperature.getAverage());
+    ThingSpeak.setField(g_airHumidityField, g_airHumidity.getAverage());
 
     digitalWrite(LED_BUILTIN, 1);
-    int status = ThingSpeak.writeFields(g_channelNumber, g_apiKey);
+    int status =
+      ThingSpeak.writeFields(g_thingSpeakChannelNumber, g_thingSpeakAPIKey);
     digitalWrite(LED_BUILTIN, 0);
 
     if (status == 200) {
@@ -150,6 +159,7 @@ wateringTaskHandler()
     auto runs = g_wateringTask.getRunCounter();
 
     if (runs == 1) {
+        ThingSpeak.setField(g_wateringField, static_cast<int>(g_wateringTime));
         digitalWrite(g_wateringPin, 1);
     } else if (runs > g_wateringTime) {
         digitalWrite(g_wateringPin, 0);
@@ -160,7 +170,14 @@ wateringTaskHandler()
 static void
 talkBackTaskHandler()
 {
-    // TODO
+    String response;
+    if (talkBack.execute(response) == false) {
+        return;
+    }
+
+    if (response == "WATERING") {
+        startWatering();
+    }
 }
 
 void
@@ -179,10 +196,12 @@ tasksSetup()
     g_bootTime = time(NULL);
 
     ThingSpeak.begin(g_wifiClient);
-    ThingSpeak.setField(8, g_bootTime);
+    ThingSpeak.setField(g_bootTimeField, g_bootTime);
 
-    g_ioTask.enable();
-    g_dhtTask.enable();
+    talkBack.begin(g_wifiClient);
+
+    g_ioTask.enableDelayed(1000);
+    g_dhtTask.enableDelayed(1000);
     g_thingSpeakTask.enableDelayed(g_thingSpeakTaskPeriod);
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
 }

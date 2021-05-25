@@ -7,7 +7,7 @@ Accumulator::Accumulator()
 {}
 
 void
-Accumulator::add(float value)
+Accumulator::add(const float value)
 {
     last = value;
     sum += value;
@@ -15,13 +15,13 @@ Accumulator::add(float value)
 }
 
 float
-Accumulator::getLast()
+Accumulator::getLast() const
 {
     return last;
 }
 
 float
-Accumulator::getAverage()
+Accumulator::getAverage() const
 {
     if (samples == 0) {
         return last;
