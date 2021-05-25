@@ -198,6 +198,8 @@ tasksSetup()
     ThingSpeak.begin(g_wifiClient);
     ThingSpeak.setField(g_bootTimeField, g_bootTime);
 
+    talkBack.setTalkBackID(g_talkBackID);
+    talkBack.setAPIKey(g_talkBackAPIKey);
     talkBack.begin(g_wifiClient);
 
     g_ioTask.enableDelayed(1000);
