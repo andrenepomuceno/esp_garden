@@ -23,7 +23,13 @@ Automatic garden irrigation and monitoring system.
 
 ## Photos
 
+### First Prototype
+
 ![First Protype](docs/prototype.jpg)
+
+### Local Webserver Interface
+
+![Local Server](docs/local_server.png)
 
 ## Useful Links
 
