@@ -33,8 +33,8 @@ static const unsigned g_wateringTaskPeriod = 1000;
 static const unsigned g_talkBackTaskPeriod = 60 * 1000;
 
 static const unsigned g_soilMoistureField = 1;
-static const unsigned g_luminosityField = 2;
-static const unsigned g_wateringField = 3;
+static const unsigned g_wateringField = 2;
+static const unsigned g_luminosityField = 5;
 static const unsigned g_temperatureField = 6;
 static const unsigned g_airHumidityField = 7;
 static const unsigned g_bootTimeField = 8;
@@ -89,8 +89,10 @@ static Task g_talkBackTask(g_talkBackTaskPeriod,
 static void
 ioTaskHandler()
 {
-    g_soilMoisture.add(analogRead(A0));
-    g_luminosity.add(analogRead(A3));
+    float soilMoisture = 100.0 - (analogRead(A0) * 100.0) / 4095.0;
+    g_soilMoisture.add(soilMoisture);
+    float luminosity = (analogRead(A3) * 100.0) / 4095.0;
+    g_luminosity.add(luminosity);
 
     g_buttonState = (digitalRead(g_buttonPin) > 0) ? (false) : (true);
     g_wateringState = (digitalRead(g_wateringPin) > 0) ? (true) : (false);
