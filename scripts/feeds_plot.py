@@ -3,14 +3,14 @@ import matplotlib.pyplot as plt
 
 def plot_function(data, name):
     fig, ax = plt.subplots()
-    ax.plot(data, marker='o', lw=0.5, ms=0.5)
+    ax.plot(data, lw=0.5)
     fig.autofmt_xdate()
     plt.savefig(name)
     plt.clf()
 
 df = pd.read_csv('feeds.csv', parse_dates=['created_at'], index_col=['created_at'])
 
-sample_rate = '60T'
+sample_rate = '30T'
 moisture = df['field1'].resample(sample_rate).mean()
 plot_function(moisture, 'moisture.svg')
 
