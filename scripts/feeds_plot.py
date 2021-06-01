@@ -14,7 +14,7 @@ sample_rate = '30T'
 moisture = df['field1'].resample(sample_rate).mean()
 plot_function(moisture, 'moisture.svg')
 
-luminosity = df['field2'].resample(sample_rate).mean()
+luminosity = df['field5'].resample(sample_rate).mean()
 plot_function(luminosity, 'luminosity.svg')
 
 temperature = df['field6'].resample(sample_rate).mean()

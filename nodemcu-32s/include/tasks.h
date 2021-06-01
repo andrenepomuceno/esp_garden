@@ -20,6 +20,8 @@ extern int g_tsLastCode;
 
 extern unsigned g_dhtReadErrors;
 
+extern unsigned g_wateringCycles;
+
 void
 tasksSetup();
 

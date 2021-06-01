@@ -30,7 +30,7 @@ static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
 static const unsigned g_dhtTaskPeriod = 10 * 1000;
 static const unsigned g_ioTaskPeriod = 1000;
 static const unsigned g_wateringTaskPeriod = 1000;
-static const unsigned g_talkBackTaskPeriod = 60 * 1000;
+static const unsigned g_talkBackTaskPeriod = 5 * 60 * 1000;
 
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
@@ -59,6 +59,8 @@ unsigned g_tsErrors = 0;
 time_t g_tsLastError = 0;
 int g_tsLastCode = 200;
 unsigned g_dhtReadErrors = 0;
+
+unsigned g_wateringCycles = 0;
 
 static Scheduler g_taskScheduler;
 static Task g_ioTask(g_ioTaskPeriod,
@@ -173,11 +175,14 @@ static void
 talkBackTaskHandler()
 {
     String response;
+
+    digitalWrite(LED_BUILTIN, 1);
     if (talkBack.execute(response) == false) {
         return;
     }
+    digitalWrite(LED_BUILTIN, 0);
 
-    if (response == "WATERING") {
+    if (response.indexOf("watering") != -1) {
         startWatering();
     }
 }
@@ -192,10 +197,16 @@ tasksSetup()
 
     g_dht.begin();
 
-    Serial.println("Updating clock...");
-    clockUpdateTaskHandler();
-    delay(2000);
-    g_bootTime = time(NULL);
+    digitalWrite(LED_BUILTIN, 1);
+    Serial.print("Updating clock...");
+    do {
+        clockUpdateTaskHandler();
+        delay(2000);
+        g_bootTime = time(NULL);
+        Serial.print(".");
+    } while (g_bootTime < 60 * 60);
+    Serial.println("");
+    digitalWrite(LED_BUILTIN, 0);
 
     ThingSpeak.begin(g_wifiClient);
     ThingSpeak.setField(g_bootTimeField, g_bootTime);
@@ -208,6 +219,7 @@ tasksSetup()
     g_dhtTask.enableDelayed(1000);
     g_thingSpeakTask.enableDelayed(g_thingSpeakTaskPeriod);
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
+    g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
 }
 
 void
@@ -219,5 +231,6 @@ tasksLoop()
 void
 startWatering()
 {
+    ++g_wateringCycles;
     g_wateringTask.enable();
 }

@@ -49,6 +49,7 @@ handleDataJson(AsyncWebServerRequest* request)
              uptime % 60);
     json += "{\"Uptime\":\"" + String(buffer) + "\"},";
     json += "{\"Packages Sent\":\"" + String(g_packagesSent) + "\"},";
+    json += "{\"Watering Cycles\":\"" + String(g_wateringCycles) + "\"},";
     json += "{\"DHT Read Errors\":\"" + String(g_dhtReadErrors) + "\"}";
     if (g_tsErrors > 0) {
         json += ",{\"Errors\":\"" + String(g_tsErrors) + "\"}";
@@ -90,7 +91,7 @@ handleControl(AsyncWebServerRequest* request)
             startWatering();
         } else if ((param->name() == "teamSpeak") &&
                    (param->value() == "toogle")) {
-            // TODO
+            // TODO toogle TeamSpeak comm on/off
         }
     }
 
@@ -106,7 +107,7 @@ webSetup()
     WiFi.begin(g_ssid, g_password);
 
     digitalWrite(LED_BUILTIN, 1);
-    Serial.print("Connecting to wifi");
+    Serial.print("Connecting to wifi...");
     while (WiFi.status() != WL_CONNECTED) {
         delay(1000);
         Serial.print(".");
@@ -129,7 +130,7 @@ webSetup()
     g_webServer.begin();
 
     digitalWrite(LED_BUILTIN, 1);
-    Serial.print("Checking internet conection");
+    Serial.print("Checking internet conection...");
     while (Ping.ping(IPAddress(8, 8, 8, 8), 1) == false) {
         delay(1000);
         Serial.print(".");

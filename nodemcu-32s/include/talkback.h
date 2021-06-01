@@ -12,6 +12,8 @@ public:
     bool execute(String& response);
 
 private:
+    bool executeHelper(String& response);
+
     Client* client = nullptr;
     unsigned id;
     String apiKey;
