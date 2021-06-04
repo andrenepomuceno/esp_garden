@@ -21,6 +21,7 @@ extern int g_tsLastCode;
 extern unsigned g_dhtReadErrors;
 
 extern unsigned g_wateringCycles;
+extern time_t g_lastWateringCycle;
 
 void
 tasksSetup();

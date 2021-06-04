@@ -7,15 +7,16 @@ Automatic garden irrigation and monitoring system.
 
 ## Features
 
-- Local WebServer
+- Local WebServer UI
 - Cloud based logging and control
+- Over-The-Air Firmware Update
 
-## Metrics
+## Metrics/Sensors
 
-- Soil Moisture
-- Luminosity
-- Ambient Temperature
-- Relative Air Humidity
+- Soil Moisture (Capacitive Soil Moisture Sensor v2.0)
+- Luminosity (5mm LDR)
+- Ambient Temperature (DHT11)
+- Relative Air Humidity (DHT11)
 
 ## Live Data
 

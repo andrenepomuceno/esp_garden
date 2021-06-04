@@ -36,10 +36,8 @@ handleDataJson(AsyncWebServerRequest* request)
     String json = "{";
 
     json += "\"Status\":[";
-    strftime(buffer, sizeof(buffer), "%F", &timeinfo);
-    json += "{\"Date\":\"" + String(buffer) + "\"},";
-    strftime(buffer, sizeof(buffer), "%T", &timeinfo);
-    json += "{\"Time\":\"" + String(buffer) + "\"},";
+    strftime(buffer, sizeof(buffer), "%F %T", &timeinfo);
+    json += "{\"Date/Time\":\"" + String(buffer) + "\"},";
     snprintf(buffer,
              sizeof(buffer),
              "%dd %dh %dm %ds",
@@ -50,10 +48,14 @@ handleDataJson(AsyncWebServerRequest* request)
     json += "{\"Uptime\":\"" + String(buffer) + "\"},";
     json += "{\"Packages Sent\":\"" + String(g_packagesSent) + "\"},";
     json += "{\"Watering Cycles\":\"" + String(g_wateringCycles) + "\"},";
+    if (g_wateringCycles > 0) {
+        strftime(buffer, sizeof(buffer), "%F %T", localtime(&g_lastWateringCycle));
+        json += "{\"Last Watering Cycle\":\"" + String(buffer) + "\"},";
+    }
     json += "{\"DHT Read Errors\":\"" + String(g_dhtReadErrors) + "\"}";
     if (g_tsErrors > 0) {
         json += ",{\"Errors\":\"" + String(g_tsErrors) + "\"}";
-        strftime(buffer, sizeof(buffer), "%T", localtime(&g_tsLastError));
+        strftime(buffer, sizeof(buffer), "%F %T", localtime(&g_tsLastError));
         json += ",{\"Last Error\":\"" + String(buffer) + "\"}";
         json += ",{\"Last Code\":\"" + String(g_tsLastCode) + "\"}";
     }

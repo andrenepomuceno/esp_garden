@@ -61,6 +61,7 @@ int g_tsLastCode = 200;
 unsigned g_dhtReadErrors = 0;
 
 unsigned g_wateringCycles = 0;
+time_t g_lastWateringCycle = 0;
 
 static Scheduler g_taskScheduler;
 static Task g_ioTask(g_ioTaskPeriod,
@@ -232,5 +233,6 @@ void
 startWatering()
 {
     ++g_wateringCycles;
+    g_lastWateringCycle = time(NULL);
     g_wateringTask.enable();
 }
