@@ -8,6 +8,9 @@
 #include <ThingSpeak.h>
 #include <WiFi.h>
 
+#define FLOAT_TO_STRING(x) (String(x, 2))
+#define ADC_TO_PERCENT(x) ((x * 100.0) / 4095.0)
+
 static void
 ioTaskHandler();
 static void
@@ -92,10 +95,8 @@ static Task g_talkBackTask(g_talkBackTaskPeriod,
 static void
 ioTaskHandler()
 {
-    float soilMoisture = 100.0 - (analogRead(A0) * 100.0) / 4095.0;
-    g_soilMoisture.add(soilMoisture);
-    float luminosity = (analogRead(A3) * 100.0) / 4095.0;
-    g_luminosity.add(luminosity);
+    g_soilMoisture.add(100.0 - ADC_TO_PERCENT(analogRead(A0)));
+    g_luminosity.add(ADC_TO_PERCENT(analogRead(A3)));
 
     g_buttonState = (digitalRead(g_buttonPin) > 0) ? (false) : (true);
     g_wateringState = (digitalRead(g_wateringPin) > 0) ? (true) : (false);
@@ -122,11 +123,15 @@ dhtTaskHandler()
 static void
 thingSpeakTaskHandler()
 {
-    ThingSpeak.setField(g_soilMoistureField, g_soilMoisture.getAverage());
-    ThingSpeak.setField(g_luminosityField, g_luminosity.getAverage());
+    ThingSpeak.setField(g_soilMoistureField,
+                        FLOAT_TO_STRING(g_soilMoisture.getAverage()));
+    ThingSpeak.setField(g_luminosityField,
+                        FLOAT_TO_STRING(g_luminosity.getAverage()));
 
-    ThingSpeak.setField(g_temperatureField, g_temperature.getAverage());
-    ThingSpeak.setField(g_airHumidityField, g_airHumidity.getAverage());
+    ThingSpeak.setField(g_temperatureField,
+                        FLOAT_TO_STRING(g_temperature.getAverage()));
+    ThingSpeak.setField(g_airHumidityField,
+                        FLOAT_TO_STRING(g_airHumidity.getAverage()));
 
     digitalWrite(LED_BUILTIN, 1);
     int status =
