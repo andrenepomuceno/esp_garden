@@ -28,7 +28,7 @@ static const unsigned g_buttonPin = 0;
 static const unsigned g_wateringPin = 22;
 static const unsigned g_dhtPin = 23;
 
-static const unsigned g_thingSpeakTaskPeriod = 60 * 1000;
+static const unsigned g_thingSpeakTaskPeriod = 2 * 60 * 1000;
 static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
 static const unsigned g_dhtTaskPeriod = 10 * 1000;
 static const unsigned g_ioTaskPeriod = 1000;
@@ -43,6 +43,8 @@ static const unsigned g_airHumidityField = 7;
 static const unsigned g_bootTimeField = 8;
 
 static const unsigned g_wateringTime = 10;
+
+static const time_t g_safeTimestamp = 1609459200; // 01/01/2021
 
 static WiFiClient g_wifiClient;
 static TalkBack talkBack;
@@ -210,7 +212,7 @@ tasksSetup()
         delay(2000);
         g_bootTime = time(NULL);
         Serial.print(".");
-    } while (g_bootTime < 60 * 60);
+    } while (g_bootTime < g_safeTimestamp);
     Serial.println("");
     digitalWrite(LED_BUILTIN, 0);
 
