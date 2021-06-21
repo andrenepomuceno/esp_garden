@@ -25,14 +25,14 @@ static void
 talkBackTaskHandler();
 
 static const unsigned g_buttonPin = 0;
-static const unsigned g_wateringPin = 22;
+static const unsigned g_wateringPin = 15;
 static const unsigned g_dhtPin = 23;
 
 static const unsigned g_thingSpeakTaskPeriod = 2 * 60 * 1000;
 static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
 static const unsigned g_dhtTaskPeriod = 10 * 1000;
 static const unsigned g_ioTaskPeriod = 1000;
-static const unsigned g_wateringTaskPeriod = 1000;
+static const unsigned g_wateringTaskPeriod = 100;
 static const unsigned g_talkBackTaskPeriod = 5 * 60 * 1000;
 
 static const unsigned g_soilMoistureField = 1;
@@ -42,7 +42,11 @@ static const unsigned g_temperatureField = 6;
 static const unsigned g_airHumidityField = 7;
 static const unsigned g_bootTimeField = 8;
 
-static const unsigned g_wateringTime = 10;
+const unsigned int g_wateringDefaultTime = 5 * 1000;
+static const unsigned g_wateringMaxTime = 20 * 1000;
+static const unsigned g_wateringPWMChannel = 0;
+static const unsigned g_wateringPWMTime = 2 * 1000;
+static unsigned g_wateringTime = g_wateringDefaultTime;
 
 static const time_t g_safeTimestamp = 1609459200; // 01/01/2021
 
@@ -169,13 +173,22 @@ static void
 wateringTaskHandler()
 {
     auto runs = g_wateringTask.getRunCounter();
+    unsigned elapsedTime = (runs - 1) * g_wateringTaskPeriod;
 
     if (runs == 1) {
         ThingSpeak.setField(g_wateringField, static_cast<int>(g_wateringTime));
-        digitalWrite(g_wateringPin, 1);
-    } else if (runs > g_wateringTime) {
-        digitalWrite(g_wateringPin, 0);
+        // digitalWrite(g_wateringPin, 1);
+        ledcWrite(g_wateringPWMChannel, 0);
+    } else if (elapsedTime > g_wateringTime) {
+        // digitalWrite(g_wateringPin, 0);
+        ledcWrite(g_wateringPWMChannel, 0);
+        g_wateringTime = g_wateringDefaultTime;
         g_wateringTask.disable();
+    } else {
+        //start the pump gently
+        if (elapsedTime <= g_wateringPWMTime) {
+            ledcWrite(g_wateringPWMChannel, (elapsedTime * 255) / g_wateringPWMTime);
+        }
     }
 }
 
@@ -190,8 +203,9 @@ talkBackTaskHandler()
     }
     digitalWrite(LED_BUILTIN, 0);
 
-    if (response.indexOf("watering") != -1) {
-        startWatering();
+    if (response.indexOf("watering:") != -1) {
+        int wateringTime = response.toInt();
+        startWatering(wateringTime);
     }
 }
 
@@ -202,6 +216,9 @@ tasksSetup()
 
     pinMode(g_wateringPin, OUTPUT);
     digitalWrite(g_wateringPin, 0);
+    ledcAttachPin(g_wateringPin, 0);
+    ledcSetup(g_wateringPWMChannel, 10e3, 8);
+    ledcWrite(g_wateringPWMChannel, 0);
 
     g_dht.begin();
 
@@ -237,9 +254,16 @@ tasksLoop()
 }
 
 void
-startWatering()
+startWatering(unsigned int wateringTime)
 {
-    ++g_wateringCycles;
-    g_lastWateringCycle = time(NULL);
-    g_wateringTask.enable();
+    if ((wateringTime == 0) || (wateringTime > g_wateringMaxTime)) {
+        return;    
+    }
+
+    g_wateringTime = wateringTime;
+    if (g_wateringTask.isEnabled() == false) {
+        ++g_wateringCycles;
+        g_lastWateringCycle = time(NULL);
+        g_wateringTask.enable();
+    }
 }

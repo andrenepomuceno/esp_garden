@@ -20,6 +20,7 @@ extern int g_tsLastCode;
 
 extern unsigned g_dhtReadErrors;
 
+extern const unsigned int g_wateringDefaultTime;
 extern unsigned g_wateringCycles;
 extern time_t g_lastWateringCycle;
 
@@ -30,4 +31,4 @@ void
 tasksLoop();
 
 void
-startWatering();
+startWatering(unsigned int wateringTime = g_wateringDefaultTime);
