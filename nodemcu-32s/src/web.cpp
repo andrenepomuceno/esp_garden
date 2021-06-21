@@ -91,7 +91,9 @@ handleControl(AsyncWebServerRequest* request)
         AsyncWebParameter* param = request->getParam(i);
         if ((param->name() == "watering") && (param->value() == "enable")) {
             startWatering();
-        } else if ((param->name() == "teamSpeak") &&
+        } else if (param->name() == "wateringTime") {
+            startWatering(param->value().toInt());
+        }if ((param->name() == "teamSpeak") &&
                    (param->value() == "toogle")) {
             // TODO toogle TeamSpeak comm on/off
         }
