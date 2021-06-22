@@ -14,6 +14,7 @@ extern bool g_wateringState;
 extern time_t g_bootTime;
 extern unsigned g_packagesSent;
 
+extern bool g_thingSpeakEnable;
 extern unsigned g_tsErrors;
 extern time_t g_tsLastError;
 extern int g_tsLastCode;
@@ -32,3 +33,5 @@ tasksLoop();
 
 void
 startWatering(unsigned int wateringTime = g_wateringDefaultTime);
+
+void thingSpeakEnable(bool enable);

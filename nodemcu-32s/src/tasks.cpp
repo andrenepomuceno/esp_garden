@@ -63,6 +63,8 @@ bool g_buttonState = false;
 bool g_wateringState = false;
 
 time_t g_bootTime = 0;
+
+bool g_thingSpeakEnable = true;
 unsigned g_packagesSent = 0;
 unsigned g_tsErrors = 0;
 time_t g_tsLastError = 0;
@@ -129,6 +131,10 @@ dhtTaskHandler()
 static void
 thingSpeakTaskHandler()
 {
+    if (g_thingSpeakEnable == false) {
+        return;
+    }
+
     ThingSpeak.setField(g_soilMoistureField,
                         FLOAT_TO_STRING(g_soilMoisture.getAverage()));
     ThingSpeak.setField(g_luminosityField,
@@ -185,9 +191,10 @@ wateringTaskHandler()
         g_wateringTime = g_wateringDefaultTime;
         g_wateringTask.disable();
     } else {
-        //start the pump gently
+        // start the pump gently
         if (elapsedTime <= g_wateringPWMTime) {
-            ledcWrite(g_wateringPWMChannel, (elapsedTime * 255) / g_wateringPWMTime);
+            ledcWrite(g_wateringPWMChannel,
+                      (elapsedTime * 1023) / g_wateringPWMTime);
         }
     }
 }
@@ -195,6 +202,10 @@ wateringTaskHandler()
 static void
 talkBackTaskHandler()
 {
+    if (g_thingSpeakEnable == false) {
+        return;
+    }
+
     String response;
 
     digitalWrite(LED_BUILTIN, 1);
@@ -204,7 +215,8 @@ talkBackTaskHandler()
     digitalWrite(LED_BUILTIN, 0);
 
     if (response.indexOf("watering:") != -1) {
-        int wateringTime = response.toInt();
+        int index = response.indexOf(":");
+        int wateringTime = response.substring(index + 1).toInt();
         startWatering(wateringTime);
     }
 }
@@ -217,7 +229,7 @@ tasksSetup()
     pinMode(g_wateringPin, OUTPUT);
     digitalWrite(g_wateringPin, 0);
     ledcAttachPin(g_wateringPin, 0);
-    ledcSetup(g_wateringPWMChannel, 10e3, 8);
+    ledcSetup(g_wateringPWMChannel, 10e3, 10);
     ledcWrite(g_wateringPWMChannel, 0);
 
     g_dht.begin();
@@ -257,7 +269,7 @@ void
 startWatering(unsigned int wateringTime)
 {
     if ((wateringTime == 0) || (wateringTime > g_wateringMaxTime)) {
-        return;    
+        return;
     }
 
     g_wateringTime = wateringTime;
@@ -266,4 +278,10 @@ startWatering(unsigned int wateringTime)
         g_lastWateringCycle = time(NULL);
         g_wateringTask.enable();
     }
+}
+
+void
+thingSpeakEnable(bool enable)
+{
+    g_thingSpeakEnable = enable;
 }

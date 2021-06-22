@@ -41,11 +41,11 @@
     <h2>Control</h2>
     <div>
       <div class="form-check form-switch">
-        <input class="form-check-input" type="checkbox" id="flexSwitchCheckDefault">
-        <label class="form-check-label" for="flexSwitchCheckDefault">Remote Logging</label>
+        <input id="input-thingspeak" class="form-check-input" type="checkbox" id="flexSwitchCheckDefault">
+        <label class="form-check-label" for="flexSwitchCheckDefault">ThingSpeak</label>
       </div>
       <div class="form-check form-switch">
-        <input class="form-check-input" type="checkbox" id="flexSwitchCheckDefault">
+        <input id="input-watering" class="form-check-input" type="checkbox" id="flexSwitchCheckDefault">
         <label class="form-check-label" for="flexSwitchCheckDefault">Watering</label>
       </div>
       <button id="button-reset" type="button" class="btn btn-primary">Reset</button>
@@ -57,16 +57,15 @@
       integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
       crossorigin="anonymous"></script>
     <script>
-      function fillTable(id, data, index = true) {
+      function fillTable(id, data, indexCol = true) {
+        var i = 0;
         var tbody = $(id);
         tbody.empty();
-        for (var i = 0; i < data.length; i++) {
+        for (var key in data) {
           var tr = $('<tr/>');
-          if (index) tr.append($('<th/>').html(i).attr("scope", "row"));
-          for (var key in data[i]) {
-            tr.append($('<td/>').html(key));
-            tr.append($('<td/>').html(data[i][key]));
-          }
+          if (indexCol == true) tr.append($('<th/>').html(i++).attr("scope", "row"));
+          tr.append($('<td/>').html(key));
+          tr.append($('<td/>').html(data[key]));
           tbody.append(tr);
         }
       }
@@ -82,6 +81,8 @@
             fillTable("#tbody-status", info["Status"], false);
             fillTable("#tbody-inputs", info["Inputs"]);
             fillTable("#tbody-outputs", info["Outputs"]);
+            $("#input-watering").prop("checked", (info["Outputs"]["Watering"] == 1) ? true : false);
+            $("#input-thingspeak").prop("checked", (info["Status"]["ThingSpeak"] == "enabled") ? true : false);
           }
         });
       }
@@ -90,9 +91,19 @@
         refresh();
       });
 
-      $("#button-watering").click(function (event) {
-        event.preventDefault();
-        $.post("/control", { "watering": "enable" });
+      $("#input-watering").click(function () {
+        if (this.checked) {
+          $.post("/control", { "watering": "enable" });
+        }
+      });
+
+      $("#input-thingspeak").click(function () {
+        if (this.checked) {
+          console.log("checked");
+          $.post("/control", { "thingSpeak": "enable" });
+        } else {
+          $.post("/control", { "thingSpeak": "disable" });
+        }
       });
     </script>
 </body>
