@@ -107,7 +107,6 @@ ioTaskHandler()
     g_luminosity.add(ADC_TO_PERCENT(analogRead(A3)));
 
     g_buttonState = (digitalRead(g_buttonPin) > 0) ? (false) : (true);
-    g_wateringState = (digitalRead(g_wateringPin) > 0) ? (true) : (false);
 }
 
 static void
@@ -185,11 +184,13 @@ wateringTaskHandler()
         ThingSpeak.setField(g_wateringField, static_cast<int>(g_wateringTime));
         // digitalWrite(g_wateringPin, 1);
         ledcWrite(g_wateringPWMChannel, 0);
+        g_wateringState = true;
     } else if (elapsedTime > g_wateringTime) {
         // digitalWrite(g_wateringPin, 0);
         ledcWrite(g_wateringPWMChannel, 0);
         g_wateringTime = g_wateringDefaultTime;
         g_wateringTask.disable();
+        g_wateringState = false;
     } else {
         // start the pump gently
         if (elapsedTime <= g_wateringPWMTime) {
@@ -272,8 +273,8 @@ startWatering(unsigned int wateringTime)
         return;
     }
 
-    g_wateringTime = wateringTime;
     if (g_wateringTask.isEnabled() == false) {
+        g_wateringTime = wateringTime;
         ++g_wateringCycles;
         g_lastWateringCycle = time(NULL);
         g_wateringTask.enable();

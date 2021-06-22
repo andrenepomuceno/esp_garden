@@ -91,18 +91,26 @@
         refresh();
       });
 
-      $("#input-watering").click(function () {
+      $("#input-watering").click(function (event) {
+        event.preventDefault();
         if (this.checked) {
           $.post("/control", { "watering": "enable" });
         }
       });
 
-      $("#input-thingspeak").click(function () {
+      $("#input-thingspeak").click(function (event) {
+        event.preventDefault();
         if (this.checked) {
-          console.log("checked");
           $.post("/control", { "thingSpeak": "enable" });
         } else {
           $.post("/control", { "thingSpeak": "disable" });
+        }
+      });
+
+      $("#button-reset").click(function (event) {
+        event.preventDefault();
+        if (confirm("Reset now?")) {
+          $.post("/control", { "reset": "1" });
         }
       });
     </script>
