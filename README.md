@@ -24,13 +24,13 @@ Automatic garden irrigation and monitoring system.
 
 ## Photos
 
-### Second Prototype
+### Third Generation Prototype
 
-![Second Protype](docs/prototype1.jpg)
+![Third Generation Protype](docs/prototype3.jpeg)
 
 ### Local Webserver Interface
 
-![Local Server](docs/local_server.png)
+![UI - Local Server](docs/ui.png)
 
 ## Useful Links
 
