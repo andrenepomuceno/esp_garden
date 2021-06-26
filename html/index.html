@@ -52,14 +52,14 @@
       <div class="row">
         <div class="col">
           <div class="form-check form-switch">
-            <input id="input-thingspeak" class="form-check-input" type="checkbox" id="flexSwitchCheckDefault">
-            <label class="form-check-label" for="flexSwitchCheckDefault">ThingSpeak</label>
+            <input id="input-thingspeak" class="form-check-input" type="checkbox">
+            <label class="form-check-label" for="input-thingspeak">ThingSpeak</label>
           </div>
         </div>
         <div class="col">
           <div class="form-check form-switch">
-            <input id="input-watering" class="form-check-input" type="checkbox" id="flexSwitchCheckDefault">
-            <label class="form-check-label" for="flexSwitchCheckDefault">Watering</label>
+            <input id="input-watering" class="form-check-input" type="checkbox">
+            <label class="form-check-label" for="input-watering">Watering</label>
           </div>
         </div>
         <div class="col">
@@ -69,6 +69,10 @@
     </div>
     <h2>Logs</h2>
     <textarea class="form-control" id="textarea-logs" rows="8" readonly></textarea>
+    <div class="form-check form-switch">
+      <input id="input-scroll" class="form-check-input checked" type="checkbox" checked>
+      <label class="form-check-label" for="input-scroll">Automatic scroll</label>
+    </div>
 
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"
       integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
@@ -110,6 +114,9 @@
           timeout: 500,
           success: function (log) {
             $("#textarea-logs").text(log);
+            if ($("#input-scroll").prop("checked") == true) {
+              $("#textarea-logs").scrollTop($("#textarea-logs")[0].scrollHeight);
+            }
           }
         });
       }
@@ -120,7 +127,7 @@
 
       $("#input-watering").click(function (event) {
         event.preventDefault();
-        if (this.checked) {
+        if (this.checked && confirm("Start watering?")) {
           $.post("/control", { "watering": "enable" });
         }
       });
