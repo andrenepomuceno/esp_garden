@@ -1,3 +1,4 @@
+#include "logger.h"
 #include "tasks.h"
 #include "web.h"
 #include <Arduino.h>
@@ -5,8 +6,7 @@
 void
 setup(void)
 {
-    Serial.begin(115200);
-    Serial.println("");
+    logger.println("");
 
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, 0);
@@ -14,7 +14,7 @@ setup(void)
     webSetup();
     tasksSetup();
 
-    Serial.println("Setup done!");
+    logger.println("Setup done!");
 }
 
 void

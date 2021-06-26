@@ -1,4 +1,5 @@
 #include "tasks.h"
+#include "logger.h"
 #include "secret.h"
 #include "talkback.h"
 #include <Adafruit_Sensor.h>
@@ -155,6 +156,8 @@ thingSpeakTaskHandler()
         ++g_tsErrors;
         g_tsLastError = time(NULL);
         g_tsLastCode = status;
+
+        logger.println("ThingSpeak.writeFields failed with error " + String(status));
     }
 
     g_soilMoisture.resetAverage();
@@ -166,6 +169,8 @@ thingSpeakTaskHandler()
 void
 clockUpdateTaskHandler()
 {
+    logger.println("Starting clock update...");
+
     const int tzOffset = -3 * 60 * 60;
     configTime(0,
                tzOffset,
@@ -211,6 +216,7 @@ talkBackTaskHandler()
 
     digitalWrite(LED_BUILTIN, 1);
     if (talkBack.execute(response) == false) {
+        logger.println("TalkBack failure.");
         return;
     }
     digitalWrite(LED_BUILTIN, 0);
@@ -236,14 +242,11 @@ tasksSetup()
     g_dht.begin();
 
     digitalWrite(LED_BUILTIN, 1);
-    Serial.print("Updating clock...");
     do {
         clockUpdateTaskHandler();
         delay(2000);
         g_bootTime = time(NULL);
-        Serial.print(".");
     } while (g_bootTime < g_safeTimestamp);
-    Serial.println("");
     digitalWrite(LED_BUILTIN, 0);
 
     ThingSpeak.begin(g_wifiClient);
@@ -269,6 +272,8 @@ tasksLoop()
 void
 startWatering(unsigned int wateringTime)
 {
+    logger.println("Starting watering for " + String(wateringTime) + " ms");
+
     if ((wateringTime == 0) || (wateringTime > g_wateringMaxTime)) {
         return;
     }
@@ -284,5 +289,11 @@ startWatering(unsigned int wateringTime)
 void
 thingSpeakEnable(bool enable)
 {
+    if (enable == true) {
+        logger.println("ThinkSpeak enabled.");
+    } else {
+        logger.println("ThinkSpeak disabled.");
+    }
+    
     g_thingSpeakEnable = enable;
 }
