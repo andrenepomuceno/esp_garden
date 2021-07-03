@@ -2,9 +2,11 @@
 #include "logger.h"
 #include "secret.h"
 #include "talkback.h"
+#include "web.h"
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
+#include <ESP32Ping.h>
 #include <TaskScheduler.h>
 #include <ThingSpeak.h>
 #include <WiFi.h>
@@ -24,6 +26,8 @@ static void
 wateringTaskHandler();
 static void
 talkBackTaskHandler();
+static void
+checkInternetTaskHandler();
 
 static const unsigned g_buttonPin = 0;
 static const unsigned g_wateringPin = 15;
@@ -35,6 +39,7 @@ static const unsigned g_dhtTaskPeriod = 10 * 1000;
 static const unsigned g_ioTaskPeriod = 1000;
 static const unsigned g_wateringTaskPeriod = 100;
 static const unsigned g_talkBackTaskPeriod = 5 * 60 * 1000;
+static const unsigned g_checkInternetTaskPeriod = 60 * 1000;
 
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
@@ -63,9 +68,10 @@ Accumulator g_airHumidity;
 bool g_buttonState = false;
 bool g_wateringState = false;
 
+bool g_hasInternet = false;
 time_t g_bootTime = 0;
 
-bool g_thingSpeakEnable = true;
+bool g_thingSpeakEnabled = true;
 unsigned g_packagesSent = 0;
 unsigned g_tsErrors = 0;
 time_t g_tsLastError = 0;
@@ -100,6 +106,10 @@ static Task g_talkBackTask(g_talkBackTaskPeriod,
                            TASK_FOREVER,
                            &talkBackTaskHandler,
                            &g_taskScheduler);
+static Task g_checkInternetTask(g_checkInternetTaskPeriod,
+                                TASK_FOREVER,
+                                &checkInternetTaskHandler,
+                                &g_taskScheduler);
 
 static void
 ioTaskHandler()
@@ -131,7 +141,7 @@ dhtTaskHandler()
 static void
 thingSpeakTaskHandler()
 {
-    if (g_thingSpeakEnable == false) {
+    if (!g_thingSpeakEnabled || !g_hasInternet) {
         return;
     }
 
@@ -157,7 +167,8 @@ thingSpeakTaskHandler()
         g_tsLastError = time(NULL);
         g_tsLastCode = status;
 
-        logger.println("ThingSpeak.writeFields failed with error " + String(status));
+        logger.println("ThingSpeak.writeFields failed with error " +
+                       String(status));
     }
 
     g_soilMoisture.resetAverage();
@@ -169,7 +180,12 @@ thingSpeakTaskHandler()
 void
 clockUpdateTaskHandler()
 {
-    logger.println("Starting clock update...");
+    logger.println("Syncing clock...");
+
+    if (!g_hasInternet) {
+        logger.println("Syncing skipped, no internet connection.");
+        return;
+    }
 
     const int tzOffset = -3 * 60 * 60;
     configTime(0,
@@ -208,7 +224,7 @@ wateringTaskHandler()
 static void
 talkBackTaskHandler()
 {
-    if (g_thingSpeakEnable == false) {
+    if (!g_thingSpeakEnabled || !g_hasInternet) {
         return;
     }
 
@@ -228,6 +244,32 @@ talkBackTaskHandler()
     }
 }
 
+static void
+checkInternetTaskHandler()
+{
+    if (!g_wifiConnected || !g_hasNetwork) {
+        g_hasInternet = false;
+        return;
+    }
+
+    static const size_t addresListLen = 3;
+    static const IPAddress addressList[addresListLen] = {
+        IPAddress(8, 8, 8, 8), IPAddress(8, 8, 4, 4), IPAddress(1, 1, 1, 1)
+    };
+
+    for (int i = 0; i < addresListLen; ++i) {
+        if (Ping.ping(addressList[i], 1) == true) {
+            if (!g_hasInternet) {
+                logger.println("Internet connection detected!");
+            }
+            g_hasInternet = true;
+            return;
+        }
+    }
+
+    g_hasInternet = false;
+}
+
 void
 tasksSetup()
 {
@@ -241,26 +283,34 @@ tasksSetup()
 
     g_dht.begin();
 
-    digitalWrite(LED_BUILTIN, 1);
-    do {
-        clockUpdateTaskHandler();
-        delay(2000);
-        g_bootTime = time(NULL);
-    } while (g_bootTime < g_safeTimestamp);
-    digitalWrite(LED_BUILTIN, 0);
-
     ThingSpeak.begin(g_wifiClient);
-    ThingSpeak.setField(g_bootTimeField, g_bootTime);
 
     talkBack.setTalkBackID(g_talkBackID);
     talkBack.setAPIKey(g_talkBackAPIKey);
     talkBack.begin(g_wifiClient);
 
-    g_ioTask.enableDelayed(1000);
-    g_dhtTask.enableDelayed(1000);
-    g_thingSpeakTask.enableDelayed(g_thingSpeakTaskPeriod);
+    logger.println("Checking internet connection...");
+    digitalWrite(LED_BUILTIN, 1);
+    while (!g_hasInternet) {
+        checkInternetTaskHandler();
+        delay(1000);
+    }
+    while (g_bootTime < g_safeTimestamp) {
+        clockUpdateTaskHandler();
+        delay(2000);
+        g_bootTime = time(NULL);
+    }
+    digitalWrite(LED_BUILTIN, 0);
+    ThingSpeak.setField(g_bootTimeField, g_bootTime);
+
+    g_ioTask.enableDelayed(g_ioTaskPeriod);
+    g_dhtTask.enableDelayed(g_dhtTaskPeriod);
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
+    g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
+    g_thingSpeakTask.enableDelayed(g_thingSpeakTaskPeriod);
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
+
+    logger.println("Tasks setup done!");
 }
 
 void
@@ -294,6 +344,6 @@ thingSpeakEnable(bool enable)
     } else {
         logger.println("ThinkSpeak disabled.");
     }
-    
-    g_thingSpeakEnable = enable;
+
+    g_thingSpeakEnabled = enable;
 }

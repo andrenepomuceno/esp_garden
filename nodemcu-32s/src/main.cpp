@@ -7,14 +7,13 @@ void
 setup(void)
 {
     logger.println("");
+    logger.println("Initializing...");
 
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, 0);
 
     webSetup();
     tasksSetup();
-
-    logger.println("Setup done!");
 }
 
 void
