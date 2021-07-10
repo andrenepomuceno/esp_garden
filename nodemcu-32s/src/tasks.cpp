@@ -54,8 +54,6 @@ static const unsigned g_wateringPWMChannel = 0;
 static const unsigned g_wateringPWMTime = 2 * 1000;
 static unsigned g_wateringTime = g_wateringDefaultTime;
 
-static const time_t g_safeTimestamp = 1609459200; // 01/01/2021
-
 static WiFiClient g_wifiClient;
 static TalkBack talkBack;
 static DHT_Unified g_dht(g_dhtPin, DHT11);
@@ -267,7 +265,10 @@ checkInternetTaskHandler()
         }
     }
 
-    g_hasInternet = false;
+    if (g_hasInternet) {
+        logger.println("Internet connection lost.");
+        g_hasInternet = false;
+    }
 }
 
 void

@@ -44,19 +44,20 @@ handleDataJson(AsyncWebServerRequest* request)
     json += "\"Status\":{";
     strftime(buffer, sizeof(buffer), "%F %T", &timeinfo);
     json += "\"Date/Time\":\"" + String(buffer) + "\",";
-    snprintf(buffer,
-             sizeof(buffer),
-             "%dd %dh %dm %ds",
-             days,
-             hours % 24,
-             minutes % 60,
-             uptime % 60);
-    json += "\"Uptime\":\"" + String(buffer) + "\",";
+    if (g_bootTime > g_safeTimestamp) {
+        snprintf(buffer,
+                 sizeof(buffer),
+                 "%dd %dh %dm %ds",
+                 days,
+                 hours % 24,
+                 minutes % 60,
+                 uptime % 60);
+        json += "\"Uptime\":\"" + String(buffer) + "\",";
+    }
     json += "\"Internet\":\"" + String((g_hasInternet) ? "online" : "offline") +
             "\",";
     json += "\"ThingSpeak\":\"" +
-            String((g_thingSpeakEnabled) ? "enabled" : "disabled") +
-            "\",";
+            String((g_thingSpeakEnabled) ? "enabled" : "disabled") + "\",";
     json += "\"Packages Sent\":\"" + String(g_packagesSent) + "\",";
     json += "\"Watering Cycles\":\"" + String(g_wateringCycles) + "\",";
     if (g_wateringCycles > 0) {

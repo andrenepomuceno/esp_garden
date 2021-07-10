@@ -3,6 +3,8 @@
 #include "accumulator.h"
 #include <time.h>
 
+const time_t g_safeTimestamp = 1609459200; // 01/01/2021
+
 extern Accumulator g_soilMoisture;
 extern Accumulator g_luminosity;
 extern Accumulator g_temperature;
