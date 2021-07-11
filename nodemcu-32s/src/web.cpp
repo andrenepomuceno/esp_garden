@@ -1,7 +1,7 @@
 #include "accumulator.h"
+#include "config.h"
 #include "html.h"
 #include "logger.h"
-#include "secret.h"
 #include "tasks.h"
 #include <AsyncElegantOTA.h>
 #include <AsyncTCP.h>
@@ -42,8 +42,9 @@ handleDataJson(AsyncWebServerRequest* request)
     String json = "{";
 
     json += "\"Status\":{";
+    json += "\"Hostname\":\"" + String(g_hostname) + "\"";
     strftime(buffer, sizeof(buffer), "%F %T", &timeinfo);
-    json += "\"Date/Time\":\"" + String(buffer) + "\",";
+    json += ",\"Date/Time\":\"" + String(buffer) + "\"";
     if (g_bootTime > g_safeTimestamp) {
         snprintf(buffer,
                  sizeof(buffer),
@@ -52,36 +53,42 @@ handleDataJson(AsyncWebServerRequest* request)
                  hours % 24,
                  minutes % 60,
                  uptime % 60);
-        json += "\"Uptime\":\"" + String(buffer) + "\",";
+        json += ",\"Uptime\":\"" + String(buffer) + "\"";
     }
-    json += "\"Internet\":\"" + String((g_hasInternet) ? "online" : "offline") +
-            "\",";
-    json += "\"ThingSpeak\":\"" +
-            String((g_thingSpeakEnabled) ? "enabled" : "disabled") + "\",";
-    json += "\"Packages Sent\":\"" + String(g_packagesSent) + "\",";
-    json += "\"Watering Cycles\":\"" + String(g_wateringCycles) + "\",";
+    json += ",\"Internet\":\"" + String((g_hasInternet) ? "online" : "offline") +
+            "\"";
+    json += ",\"ThingSpeak\":\"" +
+            String((g_thingSpeakEnabled) ? "enabled" : "disabled") + "\"";
+    json += ",\"Packages Sent\":\"" + String(g_packagesSent) + "\"";
+    json += ",\"Watering Cycles\":\"" + String(g_wateringCycles) + "\"";
     if (g_wateringCycles > 0) {
         strftime(
           buffer, sizeof(buffer), "%F %T", localtime(&g_lastWateringCycle));
-        json += "\"Last Watering Cycle\":\"" + String(buffer) + "\",";
+        json += ",\"Last Watering Cycle\":\"" + String(buffer) + "\"";
     }
-    json += "\"DHT Read Errors\":\"" + String(g_dhtReadErrors) + "\"";
+#ifdef HAS_DHT_SENSOR
+    json += ",\"DHT Read Errors\":\"" + String(g_dhtReadErrors) + "\"";
     if (g_tsErrors > 0) {
         json += ",\"Errors\":\"" + String(g_tsErrors) + "\"";
         strftime(buffer, sizeof(buffer), "%F %T", localtime(&g_tsLastError));
         json += ",\"Last Error\":\"" + String(buffer) + "\"";
         json += ",\"Last Code\":\"" + String(g_tsLastCode) + "\"";
     }
+#endif
     json += "},";
 
     json += "\"Inputs\":{";
     json += "\"Soil Moisture\":\"" + String(g_soilMoisture.getLast()) + "/" +
-            String(g_soilMoisture.getAverage()) + "\",";
-    json += "\"Luminosity\":\"" + String(g_luminosity.getLast()) + "/" +
-            String(g_luminosity.getAverage()) + "\",";
-    json += "\"Temperature\":\"" + String(g_temperature.getLast()) + "\",";
-    json += "\"Air Humidity\":\"" + String(g_airHumidity.getLast()) + "\",";
-    json += "\"Button State\":\"" + String(g_buttonState) + "\"";
+            String(g_soilMoisture.getAverage()) + "\"";
+#ifdef HAS_LUMINOSITY_SENSOR
+    json += ",\"Luminosity\":\"" + String(g_luminosity.getLast()) + "/" +
+            String(g_luminosity.getAverage()) + "\"";
+#endif
+#ifdef HAS_DHT_SENSOR
+    json += ",\"Temperature\":\"" + String(g_temperature.getLast()) + "\"";
+    json += ",\"Air Humidity\":\"" + String(g_airHumidity.getLast()) + "\"";
+#endif
+    json += ",\"Button State\":\"" + String(g_buttonState) + "\"";
     json += "},";
 
     json += "\"Outputs\":{";
@@ -154,7 +161,7 @@ wifiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
     g_wifiConnected = false;
     g_hasNetwork = false;
 
-    WiFi.begin(g_ssid, g_password);
+    WiFi.begin(g_ssid, g_wifiPassword);
 }
 
 void
@@ -166,9 +173,9 @@ webSetup()
     WiFi.onEvent(wifiConnected, SYSTEM_EVENT_STA_CONNECTED);
     WiFi.onEvent(wifiGotIP, SYSTEM_EVENT_STA_GOT_IP);
     WiFi.onEvent(wifiDisconnected, SYSTEM_EVENT_STA_DISCONNECTED);
-    WiFi.begin(g_ssid, g_password);
+    WiFi.begin(g_ssid, g_wifiPassword);
 
-    if (MDNS.begin("esp32") == false) {
+    if (MDNS.begin(g_hostname) == false) {
         logger.println("Error starting mDNS!");
     }
 
@@ -189,5 +196,5 @@ webSetup()
 void
 webLoop()
 {
-    AsyncElegantOTA.loop();
+    // AsyncElegantOTA.loop();
 }

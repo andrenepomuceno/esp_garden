@@ -1,6 +1,6 @@
 #include "tasks.h"
+#include "config.h"
 #include "logger.h"
-#include "secret.h"
 #include "talkback.h"
 #include "web.h"
 #include <Adafruit_Sensor.h>
@@ -113,7 +113,9 @@ static void
 ioTaskHandler()
 {
     g_soilMoisture.add(100.0 - ADC_TO_PERCENT(analogRead(A0)));
+#ifdef HAS_LUMINOSITY_SENSOR
     g_luminosity.add(ADC_TO_PERCENT(analogRead(A3)));
+#endif
 
     g_buttonState = (digitalRead(g_buttonPin) > 0) ? (false) : (true);
 }
@@ -145,13 +147,16 @@ thingSpeakTaskHandler()
 
     ThingSpeak.setField(g_soilMoistureField,
                         FLOAT_TO_STRING(g_soilMoisture.getAverage()));
+#ifdef HAS_LUMINOSITY_SENSOR
     ThingSpeak.setField(g_luminosityField,
                         FLOAT_TO_STRING(g_luminosity.getAverage()));
-
+#endif
+#ifdef HAS_DHT_SENSOR
     ThingSpeak.setField(g_temperatureField,
                         FLOAT_TO_STRING(g_temperature.getAverage()));
     ThingSpeak.setField(g_airHumidityField,
                         FLOAT_TO_STRING(g_airHumidity.getAverage()));
+#endif
 
     digitalWrite(LED_BUILTIN, 1);
     int status =
@@ -170,9 +175,13 @@ thingSpeakTaskHandler()
     }
 
     g_soilMoisture.resetAverage();
+#ifdef HAS_LUMINOSITY_SENSOR
     g_luminosity.resetAverage();
+#endif
+#ifdef HAS_DHT_SENSOR
     g_temperature.resetAverage();
     g_airHumidity.resetAverage();
+#endif
 }
 
 void
@@ -282,7 +291,9 @@ tasksSetup()
     ledcSetup(g_wateringPWMChannel, 10e3, 10);
     ledcWrite(g_wateringPWMChannel, 0);
 
+#ifdef HAS_DHT_SENSOR
     g_dht.begin();
+#endif
 
     ThingSpeak.begin(g_wifiClient);
 
@@ -305,7 +316,9 @@ tasksSetup()
     ThingSpeak.setField(g_bootTimeField, g_bootTime);
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
+#ifdef HAS_DHT_SENSOR
     g_dhtTask.enableDelayed(g_dhtTaskPeriod);
+#endif
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
     g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
     g_thingSpeakTask.enableDelayed(g_thingSpeakTaskPeriod);

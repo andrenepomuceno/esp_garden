@@ -31,4 +31,4 @@
 *.out
 *.app
 
-secret.h
+config.h
