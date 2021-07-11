@@ -17,6 +17,19 @@ static AsyncWebServer g_webServer(80);
 bool g_wifiConnected = false;
 bool g_hasNetwork = false;
 
+unsigned
+getSignalStrength()
+{
+    auto rssi = WiFi.RSSI();
+    if (rssi <= -100) {
+        return 0;
+    } else if (rssi >= -50) {
+        return 100;
+    } else {
+        return 2 * (rssi + 100);
+    }
+}
+
 void
 handleRoot(AsyncWebServerRequest* request)
 {
@@ -55,25 +68,15 @@ handleDataJson(AsyncWebServerRequest* request)
                  uptime % 60);
         json += ",\"Uptime\":\"" + String(buffer) + "\"";
     }
-    json += ",\"Internet\":\"" + String((g_hasInternet) ? "online" : "offline") +
-            "\"";
+    json += ",\"Internet\":\"" +
+            String((g_hasInternet) ? "online" : "offline") + "\"";
+    json += ",\"Signal Strength\":\"" + String(getSignalStrength()) + "%\"";
     json += ",\"ThingSpeak\":\"" +
             String((g_thingSpeakEnabled) ? "enabled" : "disabled") + "\"";
     json += ",\"Packages Sent\":\"" + String(g_packagesSent) + "\"";
     json += ",\"Watering Cycles\":\"" + String(g_wateringCycles) + "\"";
-    if (g_wateringCycles > 0) {
-        strftime(
-          buffer, sizeof(buffer), "%F %T", localtime(&g_lastWateringCycle));
-        json += ",\"Last Watering Cycle\":\"" + String(buffer) + "\"";
-    }
 #ifdef HAS_DHT_SENSOR
     json += ",\"DHT Read Errors\":\"" + String(g_dhtReadErrors) + "\"";
-    if (g_tsErrors > 0) {
-        json += ",\"Errors\":\"" + String(g_tsErrors) + "\"";
-        strftime(buffer, sizeof(buffer), "%F %T", localtime(&g_tsLastError));
-        json += ",\"Last Error\":\"" + String(buffer) + "\"";
-        json += ",\"Last Code\":\"" + String(g_tsLastCode) + "\"";
-    }
 #endif
     json += "},";
 
@@ -88,7 +91,6 @@ handleDataJson(AsyncWebServerRequest* request)
     json += ",\"Temperature\":\"" + String(g_temperature.getLast()) + "\"";
     json += ",\"Air Humidity\":\"" + String(g_airHumidity.getLast()) + "\"";
 #endif
-    json += ",\"Button State\":\"" + String(g_buttonState) + "\"";
     json += "},";
 
     json += "\"Outputs\":{";

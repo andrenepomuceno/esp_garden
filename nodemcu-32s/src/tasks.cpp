@@ -63,7 +63,6 @@ Accumulator g_luminosity;
 Accumulator g_temperature;
 Accumulator g_airHumidity;
 
-bool g_buttonState = false;
 bool g_wateringState = false;
 
 bool g_hasInternet = false;
@@ -71,13 +70,10 @@ time_t g_bootTime = 0;
 
 bool g_thingSpeakEnabled = true;
 unsigned g_packagesSent = 0;
-unsigned g_tsErrors = 0;
-time_t g_tsLastError = 0;
-int g_tsLastCode = 200;
+
 unsigned g_dhtReadErrors = 0;
 
 unsigned g_wateringCycles = 0;
-time_t g_lastWateringCycle = 0;
 
 static Scheduler g_taskScheduler;
 static Task g_ioTask(g_ioTaskPeriod,
@@ -116,8 +112,6 @@ ioTaskHandler()
 #ifdef HAS_LUMINOSITY_SENSOR
     g_luminosity.add(ADC_TO_PERCENT(analogRead(A3)));
 #endif
-
-    g_buttonState = (digitalRead(g_buttonPin) > 0) ? (false) : (true);
 }
 
 static void
@@ -166,10 +160,6 @@ thingSpeakTaskHandler()
     if (status == 200) {
         ++g_packagesSent;
     } else {
-        ++g_tsErrors;
-        g_tsLastError = time(NULL);
-        g_tsLastCode = status;
-
         logger.println("ThingSpeak.writeFields failed with error " +
                        String(status));
     }
@@ -345,7 +335,6 @@ startWatering(unsigned int wateringTime)
     if (g_wateringTask.isEnabled() == false) {
         g_wateringTime = wateringTime;
         ++g_wateringCycles;
-        g_lastWateringCycle = time(NULL);
         g_wateringTask.enable();
     }
 }
