@@ -326,16 +326,19 @@ tasksLoop()
 void
 startWatering(unsigned int wateringTime)
 {
-    logger.println("Starting watering for " + String(wateringTime) + " ms");
-
     if ((wateringTime == 0) || (wateringTime > g_wateringMaxTime)) {
+        logger.println("Invalid watering time: " + String(wateringTime));
         return;
     }
 
     if (g_wateringTask.isEnabled() == false) {
+        logger.println("Starting watering for " + String(wateringTime) + " ms");
+
         g_wateringTime = wateringTime;
         ++g_wateringCycles;
         g_wateringTask.enable();
+    } else {
+        logger.println("Watering already enabled.");
     }
 }
 
