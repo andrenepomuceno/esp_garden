@@ -1,7 +1,7 @@
 # ESP Garden
 
 Automatic garden irrigation and monitoring system.
-- Based on NodeMCU ESP32S
+- Based on ESP32S
 - Using PlatformIO/vscode IDE.
 - Using [ThingSpeak](https://thingspeak.com) IoT platform.
 
