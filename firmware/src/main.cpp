@@ -10,10 +10,11 @@ setup(void)
     logger.println("Initializing...");
 
     pinMode(LED_BUILTIN, OUTPUT);
-    digitalWrite(LED_BUILTIN, 0);
 
+    digitalWrite(LED_BUILTIN, 1);
     webSetup();
     tasksSetup();
+    digitalWrite(LED_BUILTIN, 0);
 }
 
 void

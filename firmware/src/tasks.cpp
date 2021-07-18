@@ -292,7 +292,6 @@ tasksSetup()
     talkBack.begin(g_wifiClient);
 
     logger.println("Checking internet connection...");
-    digitalWrite(LED_BUILTIN, 1);
     while (!g_hasInternet) {
         checkInternetTaskHandler();
         delay(1000);
@@ -302,7 +301,7 @@ tasksSetup()
         delay(2000);
         g_bootTime = time(NULL);
     }
-    digitalWrite(LED_BUILTIN, 0);
+
     ThingSpeak.setField(g_bootTimeField, g_bootTime);
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);

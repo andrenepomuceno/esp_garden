@@ -17,7 +17,7 @@ static AsyncWebServer g_webServer(80);
 bool g_wifiConnected = false;
 bool g_hasNetwork = false;
 
-unsigned
+static unsigned
 getSignalStrength()
 {
     auto rssi = WiFi.RSSI();
@@ -172,8 +172,6 @@ wifiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
 void
 webSetup()
 {
-    digitalWrite(LED_BUILTIN, 1);
-
     WiFi.mode(WIFI_STA);
     WiFi.onEvent(wifiConnected, SYSTEM_EVENT_STA_CONNECTED);
     WiFi.onEvent(wifiGotIP, SYSTEM_EVENT_STA_GOT_IP);
@@ -192,8 +190,6 @@ webSetup()
     AsyncElegantOTA.begin(&g_webServer, g_otaUser, g_otaPassword);
 
     g_webServer.begin();
-
-    digitalWrite(LED_BUILTIN, 0);
 
     logger.println("Web setup done!");
 }
