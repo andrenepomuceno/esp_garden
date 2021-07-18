@@ -101,6 +101,7 @@
           url: "/data.json",
           timeout: 500,
           success: function (info) {
+            document.title = info["Status"]["Hostname"];
             fillTable("#tbody-status", info["Status"], false);
             fillTable("#tbody-inputs", info["Inputs"]);
             fillTable("#tbody-outputs", info["Outputs"]);

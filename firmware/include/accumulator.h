@@ -9,6 +9,7 @@ class Accumulator
     float getLast() const;
     float getAverage() const;
     void resetAverage();
+    unsigned getSamples();
 
   private:
     float last;

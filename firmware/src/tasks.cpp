@@ -39,7 +39,7 @@ static const unsigned g_dhtTaskPeriod = 10 * 1000;
 static const unsigned g_ioTaskPeriod = 1000;
 static const unsigned g_wateringTaskPeriod = 100;
 static const unsigned g_talkBackTaskPeriod = 5 * 60 * 1000;
-static const unsigned g_checkInternetTaskPeriod = 60 * 1000;
+static const unsigned g_checkInternetTaskPeriod = 30 * 1000;
 
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;

@@ -35,3 +35,9 @@ Accumulator::resetAverage()
     sum = 0.0;
     samples = 0;
 }
+
+unsigned
+Accumulator::getSamples()
+{
+    return samples;
+}
