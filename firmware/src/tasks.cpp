@@ -236,8 +236,12 @@ talkBackTaskHandler()
 
     if (response.indexOf("watering:") != -1) {
         int index = response.indexOf(":");
-        int wateringTime = response.substring(index + 1).toInt();
-        startWatering(wateringTime);
+        String timeStr = response.substring(index + 1);
+        if (timeStr.length() > 0) {
+            logger.println("Executing TalkBack watering task.");
+            int wateringTime = timeStr.toInt();
+            startWatering(wateringTime);
+        }
     }
 }
 

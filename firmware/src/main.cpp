@@ -1,3 +1,4 @@
+#include "SPIFFS.h"
 #include "logger.h"
 #include "tasks.h"
 #include "web.h"
@@ -12,6 +13,10 @@ setup(void)
     pinMode(LED_BUILTIN, OUTPUT);
 
     digitalWrite(LED_BUILTIN, 1);
+    if (!SPIFFS.begin(true)) {
+        logger.println("Failed to initialize FS");
+        return;
+    }
     webSetup();
     tasksSetup();
     digitalWrite(LED_BUILTIN, 0);
