@@ -81,11 +81,13 @@ handleDataJson(AsyncWebServerRequest* request)
     json += ",\"Temperature\":\"" + String(g_temperature.getLast()) + "\"";
     json += ",\"Air Humidity\":\"" + String(g_airHumidity.getLast()) + "\"";
 #endif
-    json += "},";
+    json += "}";
 
-    json += "\"Outputs\":{";
+    json += ",\"Outputs\":{";
     json += "\"Watering\":\"" + String(g_wateringState) + "\"";
     json += "}";
+
+    json += ",\"Channel\":\"" + String(g_thingSpeakChannelNumber) + "\"";
 
     json += "}";
 

@@ -21,6 +21,7 @@
 <body>
   <div class="container">
     <h1>&#x1F331; ESP Garden</h1>
+    <a id="a-thingspeak-link" href="#" class="link-primary">Open ThingSpeak</a>
     <h2>Status</h2>
     <table class="table table-striped">
       <tbody id="tbody-status"></tbody>
@@ -73,82 +74,84 @@
       <input id="input-scroll" class="form-check-input checked" type="checkbox" checked>
       <label class="form-check-label" for="input-scroll">Automatic scroll</label>
     </div>
+  </div>
 
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"
-      integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js"
-      integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
-      crossorigin="anonymous"></script>
-    <script>
-      function fillTable(id, data, indexCol = true) {
-        var i = 0;
-        var tbody = $(id);
-        tbody.empty();
-        for (var key in data) {
-          var tr = $('<tr/>');
-          if (indexCol == true) tr.append($('<th/>').html(i++).attr("scope", "row"));
-          tr.append($('<td/>').html(key));
-          tr.append($('<td/>').html(data[key]));
-          tbody.append(tr);
-        }
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"
+    integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js"
+    integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
+    crossorigin="anonymous"></script>
+  <script>
+    function fillTable(id, data, indexCol = true) {
+      var i = 0;
+      var tbody = $(id);
+      tbody.empty();
+      for (var key in data) {
+        var tr = $('<tr/>');
+        if (indexCol == true) tr.append($('<th/>').html(i++).attr("scope", "row"));
+        tr.append($('<td/>').html(key));
+        tr.append($('<td/>').html(data[key]));
+        tbody.append(tr);
       }
+    }
 
-      function refresh() {
-        setTimeout(refresh, 1 * 1000);
+    function refresh() {
+      setTimeout(refresh, 1 * 1000);
 
-        $.ajax({
-          dataType: "json",
-          url: "/data.json",
-          timeout: 500,
-          success: function (info) {
-            document.title = info["Status"]["Hostname"];
-            fillTable("#tbody-status", info["Status"], false);
-            fillTable("#tbody-inputs", info["Inputs"]);
-            fillTable("#tbody-outputs", info["Outputs"]);
-            $("#input-watering").prop("checked", (info["Outputs"]["Watering"] == 1) ? true : false);
-            $("#input-thingspeak").prop("checked", (info["Status"]["ThingSpeak"] == "enabled") ? true : false);
+      $.ajax({
+        dataType: "json",
+        url: "/data.json",
+        timeout: 500,
+        success: function (info) {
+          document.title = info["Status"]["Hostname"];
+          fillTable("#tbody-status", info["Status"], false);
+          fillTable("#tbody-inputs", info["Inputs"]);
+          fillTable("#tbody-outputs", info["Outputs"]);
+          $("#input-watering").prop("checked", (info["Outputs"]["Watering"] == 1) ? true : false);
+          $("#input-thingspeak").prop("checked", (info["Status"]["ThingSpeak"] == "enabled") ? true : false);
+          $("#a-thingspeak-link").attr("href", "https://thingspeak.com/channels/" + info["Channel"]);
+        }
+      });
+
+      $.ajax({
+        url: "/logs",
+        timeout: 500,
+        success: function (log) {
+          $("#textarea-logs").text(log);
+          if ($("#input-scroll").prop("checked") == true) {
+            $("#textarea-logs").scrollTop($("#textarea-logs")[0].scrollHeight);
           }
-        });
+        }
+      });
+    }
 
-        $.ajax({
-          url: "/logs",
-          timeout: 500,
-          success: function (log) {
-            $("#textarea-logs").text(log);
-            if ($("#input-scroll").prop("checked") == true) {
-              $("#textarea-logs").scrollTop($("#textarea-logs")[0].scrollHeight);
-            }
-          }
-        });
+    $(function onReady() {
+      refresh();
+    });
+
+    $("#input-watering").click(function (event) {
+      event.preventDefault();
+      if (this.checked && confirm("Start watering?")) {
+        $.post("/control", { "watering": "enable" });
       }
+    });
 
-      $(function onReady() {
-        refresh();
-      });
+    $("#input-thingspeak").click(function (event) {
+      event.preventDefault();
+      if (this.checked) {
+        $.post("/control", { "thingSpeak": "enable" });
+      } else {
+        $.post("/control", { "thingSpeak": "disable" });
+      }
+    });
 
-      $("#input-watering").click(function (event) {
-        event.preventDefault();
-        if (this.checked && confirm("Start watering?")) {
-          $.post("/control", { "watering": "enable" });
-        }
-      });
-
-      $("#input-thingspeak").click(function (event) {
-        event.preventDefault();
-        if (this.checked) {
-          $.post("/control", { "thingSpeak": "enable" });
-        } else {
-          $.post("/control", { "thingSpeak": "disable" });
-        }
-      });
-
-      $("#button-reset").click(function (event) {
-        event.preventDefault();
-        if (confirm("Reset now?")) {
-          $.post("/control", { "reset": "1" });
-        }
-      });
-    </script>
+    $("#button-reset").click(function (event) {
+      event.preventDefault();
+      if (confirm("Reset now?")) {
+        $.post("/control", { "reset": "1" });
+      }
+    });
+  </script>
 </body>
 <footer></footer>
 
