@@ -126,7 +126,7 @@ handleLogs(AsyncWebServerRequest* request)
     digitalWrite(LED_BUILTIN, 1);
 
     String output = logger.read();
-    request->send(200, "text/html", output);
+    request->send(200, "text/plain", output);
 
     digitalWrite(LED_BUILTIN, 0);
 }
