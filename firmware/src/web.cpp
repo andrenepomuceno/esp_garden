@@ -4,6 +4,7 @@
 #include "html.h"
 #include "logger.h"
 #include "tasks.h"
+#include <Arduino_JSON.h>
 #include <AsyncElegantOTA.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
@@ -42,12 +43,10 @@ handleDataJson(AsyncWebServerRequest* request)
     int days = hours / 24;
     char buffer[32];
 
-    String json = "{";
-
-    json += "\"Status\":{";
-    json += "\"Hostname\":\"" + String(g_hostname) + "\"";
+    JSONVar statusJson;
+    statusJson["Hostname"] = String(g_hostname);
     strftime(buffer, sizeof(buffer), "%F %T", &timeinfo);
-    json += ",\"Date/Time\":\"" + String(buffer) + "\"";
+    statusJson["Date/Time"] = String(buffer);
     if (g_bootTime > g_safeTimestamp) {
         snprintf(buffer,
                  sizeof(buffer),
@@ -56,42 +55,40 @@ handleDataJson(AsyncWebServerRequest* request)
                  hours % 24,
                  minutes % 60,
                  uptime % 60);
-        json += ",\"Uptime\":\"" + String(buffer) + "\"";
+        statusJson["Uptime"] = String(buffer);
     }
-    json += ",\"Internet\":\"" +
-            String((g_hasInternet) ? "online" : "offline") + "\"";
-    json += ",\"Signal Strength\":\"" + String(getSignalStrength()) + "%\"";
-    json += ",\"ThingSpeak\":\"" +
-            String((g_thingSpeakEnabled) ? "enabled" : "disabled") + "\"";
-    json += ",\"Packages Sent\":\"" + String(g_packagesSent) + "\"";
-    json += ",\"Watering Cycles\":\"" + String(g_wateringCycles) + "\"";
+    statusJson["Internet"] = String((g_hasInternet) ? "online" : "offline");
+    statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
+    statusJson["ThingSpeak"] =
+      String((g_thingSpeakEnabled) ? "enabled" : "disabled");
+    statusJson["Packages Sent"] = String(g_packagesSent);
+    statusJson["Watering Cycles"] = String(g_wateringCycles);
 #ifdef HAS_DHT_SENSOR
-    json += ",\"DHT Read Errors\":\"" + String(g_dhtReadErrors) + "\"";
+    statusJson["DHT Read Errors"] = String(g_dhtReadErrors);
 #endif
-    json += "},";
 
-    json += "\"Inputs\":{";
-    json += "\"Soil Moisture\":\"" + String(g_soilMoisture.getLast()) + "/" +
-            String(g_soilMoisture.getAverage()) + "\"";
+    JSONVar inputsJson;
+    inputsJson["Soil Moisture"] = String(g_soilMoisture.getLast()) + "/" +
+                                  String(g_soilMoisture.getAverage());
 #ifdef HAS_LUMINOSITY_SENSOR
-    json += ",\"Luminosity\":\"" + String(g_luminosity.getLast()) + "/" +
-            String(g_luminosity.getAverage()) + "\"";
+    inputsJson["Luminosity"] =
+      String(g_luminosity.getLast()) + "/" + String(g_luminosity.getAverage());
 #endif
 #ifdef HAS_DHT_SENSOR
-    json += ",\"Temperature\":\"" + String(g_temperature.getLast()) + "\"";
-    json += ",\"Air Humidity\":\"" + String(g_airHumidity.getLast()) + "\"";
+    inputsJson["Temperature"] = String(g_temperature.getLast());
+    inputsJson["Air Humidity"] = String(g_airHumidity.getLast());
 #endif
-    json += "}";
 
-    json += ",\"Outputs\":{";
-    json += "\"Watering\":\"" + String(g_wateringState) + "\"";
-    json += "}";
+    JSONVar outputsJson;
+    outputsJson["Watering"] = String(g_wateringState);
 
-    json += ",\"Channel\":\"" + String(g_thingSpeakChannelNumber) + "\"";
+    JSONVar responseJson;
+    responseJson["Status"] = statusJson;
+    responseJson["Inputs"] = inputsJson;
+    responseJson["Outputs"] = outputsJson;
+    responseJson["Channel"] = String(g_thingSpeakChannelNumber);
 
-    json += "}";
-
-    request->send(200, "text/json", json);
+    request->send(200, "application/json", JSON.stringify(responseJson));
 
     digitalWrite(LED_BUILTIN, 0);
 }
@@ -187,7 +184,7 @@ webSetup()
       [](AsyncWebServerRequest* request) { request->send(404); });
 
     AsyncElegantOTA.begin(&g_webServer, g_otaUser, g_otaPassword);
-    
+
     g_webServer.begin();
 
     logger.println("Web setup done!");
