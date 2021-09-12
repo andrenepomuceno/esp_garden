@@ -68,8 +68,10 @@ handleDataJson(AsyncWebServerRequest* request)
 #endif
 
     JSONVar inputsJson;
+#ifdef HAS_MOISTURE_SENSOR
     inputsJson["Soil Moisture"] = String(g_soilMoisture.getLast()) + "/" +
                                   String(g_soilMoisture.getAverage());
+#endif
 #ifdef HAS_LUMINOSITY_SENSOR
     inputsJson["Luminosity"] =
       String(g_luminosity.getLast()) + "/" + String(g_luminosity.getAverage());

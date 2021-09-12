@@ -1,11 +1,12 @@
 #include "tasks.h"
-#include "config.h"
 #include "logger.h"
 #include "talkback.h"
 #include "web.h"
+#ifdef HAS_DHT_SENSOR
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
+#endif
 #include <ESP32Ping.h>
 #include <TaskScheduler.h>
 #include <ThingSpeak.h>
@@ -16,8 +17,10 @@
 
 static void
 ioTaskHandler();
+#ifdef HAS_DHT_SENSOR
 static void
 dhtTaskHandler();
+#endif
 static void
 thingSpeakTaskHandler();
 static void
@@ -56,23 +59,25 @@ static unsigned g_wateringTime = g_wateringDefaultTime;
 
 static WiFiClient g_wifiClient;
 static TalkBack talkBack;
-static DHT_Unified g_dht(g_dhtPin, DHT11);
 
-Accumulator g_soilMoisture;
-Accumulator g_luminosity;
+#ifdef HAS_DHT_SENSOR
+static DHT_Unified g_dht(g_dhtPin, DHT11);
 Accumulator g_temperature;
 Accumulator g_airHumidity;
+unsigned g_dhtReadErrors = 0;
+#endif
+#ifdef HAS_MOISTURE_SENSOR
+Accumulator g_soilMoisture;
+#endif
+#ifdef HAS_LUMINOSITY_SENSOR
+Accumulator g_luminosity;
+#endif
 
 bool g_wateringState = false;
-
 bool g_hasInternet = false;
 time_t g_bootTime = 0;
-
 bool g_thingSpeakEnabled = true;
 unsigned g_packagesSent = 0;
-
-unsigned g_dhtReadErrors = 0;
-
 unsigned g_wateringCycles = 0;
 
 static Scheduler g_taskScheduler;
@@ -80,10 +85,12 @@ static Task g_ioTask(g_ioTaskPeriod,
                      TASK_FOREVER,
                      &ioTaskHandler,
                      &g_taskScheduler);
+#ifdef HAS_DHT_SENSOR
 static Task g_dhtTask(g_dhtTaskPeriod,
                       TASK_FOREVER,
                       &dhtTaskHandler,
                       &g_taskScheduler);
+#endif
 static Task g_thingSpeakTask(g_thingSpeakTaskPeriod,
                              TASK_FOREVER,
                              &thingSpeakTaskHandler,
@@ -108,12 +115,15 @@ static Task g_checkInternetTask(g_checkInternetTaskPeriod,
 static void
 ioTaskHandler()
 {
+#ifdef HAS_MOISTURE_SENSOR
     g_soilMoisture.add(100.0 - ADC_TO_PERCENT(analogRead(A0)));
+#endif
 #ifdef HAS_LUMINOSITY_SENSOR
     g_luminosity.add(ADC_TO_PERCENT(analogRead(A3)));
 #endif
 }
 
+#ifdef HAS_DHT_SENSOR
 static void
 dhtTaskHandler()
 {
@@ -131,6 +141,7 @@ dhtTaskHandler()
         ++g_dhtReadErrors;
     }
 }
+#endif
 
 static void
 thingSpeakTaskHandler()
@@ -139,8 +150,10 @@ thingSpeakTaskHandler()
         return;
     }
 
+#ifdef HAS_MOISTURE_SENSOR
     ThingSpeak.setField(g_soilMoistureField,
                         FLOAT_TO_STRING(g_soilMoisture.getAverage()));
+#endif
 #ifdef HAS_LUMINOSITY_SENSOR
     ThingSpeak.setField(g_luminosityField,
                         FLOAT_TO_STRING(g_luminosity.getAverage()));
@@ -164,7 +177,9 @@ thingSpeakTaskHandler()
                        String(status));
     }
 
+#ifdef HAS_MOISTURE_SENSOR
     g_soilMoisture.resetAverage();
+#endif
 #ifdef HAS_LUMINOSITY_SENSOR
     g_luminosity.resetAverage();
 #endif
@@ -285,10 +300,6 @@ tasksSetup()
     ledcSetup(g_wateringPWMChannel, 10e3, 10);
     ledcWrite(g_wateringPWMChannel, 0);
 
-#ifdef HAS_DHT_SENSOR
-    g_dht.begin();
-#endif
-
     ThingSpeak.begin(g_wifiClient);
 
     talkBack.setTalkBackID(g_talkBackID);
@@ -310,6 +321,7 @@ tasksSetup()
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
 #ifdef HAS_DHT_SENSOR
+    g_dht.begin();
     g_dhtTask.enableDelayed(g_dhtTaskPeriod);
 #endif
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
