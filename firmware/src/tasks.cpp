@@ -32,10 +32,6 @@ talkBackTaskHandler();
 static void
 checkInternetTaskHandler();
 
-static const unsigned g_buttonPin = 0;
-static const unsigned g_wateringPin = 15;
-static const unsigned g_dhtPin = 23;
-
 static const unsigned g_thingSpeakTaskPeriod = 2 * 60 * 1000;
 static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
 static const unsigned g_dhtTaskPeriod = 10 * 1000;
@@ -116,10 +112,10 @@ static void
 ioTaskHandler()
 {
 #ifdef HAS_MOISTURE_SENSOR
-    g_soilMoisture.add(100.0 - ADC_TO_PERCENT(analogRead(A0)));
+    g_soilMoisture.add(100.0 - ADC_TO_PERCENT(analogRead(g_soilMoisturePin)));
 #endif
 #ifdef HAS_LUMINOSITY_SENSOR
-    g_luminosity.add(ADC_TO_PERCENT(analogRead(A3)));
+    g_luminosity.add(ADC_TO_PERCENT(analogRead(g_luminosityPin)));
 #endif
 }
 
@@ -153,16 +149,20 @@ thingSpeakTaskHandler()
 #ifdef HAS_MOISTURE_SENSOR
     ThingSpeak.setField(g_soilMoistureField,
                         FLOAT_TO_STRING(g_soilMoisture.getAverage()));
+    g_soilMoisture.resetAverage();
 #endif
 #ifdef HAS_LUMINOSITY_SENSOR
     ThingSpeak.setField(g_luminosityField,
                         FLOAT_TO_STRING(g_luminosity.getAverage()));
+    g_luminosity.resetAverage();
 #endif
 #ifdef HAS_DHT_SENSOR
     ThingSpeak.setField(g_temperatureField,
                         FLOAT_TO_STRING(g_temperature.getAverage()));
     ThingSpeak.setField(g_airHumidityField,
                         FLOAT_TO_STRING(g_airHumidity.getAverage()));
+    g_temperature.resetAverage();
+    g_airHumidity.resetAverage();
 #endif
 
     digitalWrite(LED_BUILTIN, 1);
@@ -176,17 +176,6 @@ thingSpeakTaskHandler()
         logger.println("ThingSpeak.writeFields failed with error " +
                        String(status));
     }
-
-#ifdef HAS_MOISTURE_SENSOR
-    g_soilMoisture.resetAverage();
-#endif
-#ifdef HAS_LUMINOSITY_SENSOR
-    g_luminosity.resetAverage();
-#endif
-#ifdef HAS_DHT_SENSOR
-    g_temperature.resetAverage();
-    g_airHumidity.resetAverage();
-#endif
 }
 
 void

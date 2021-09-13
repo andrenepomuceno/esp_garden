@@ -1,9 +1,16 @@
 #pragma once
 
 #include <pgmspace.h>
+#include <pins_arduino.h>
 
 #define HAS_LUMINOSITY_SENSOR
 #define HAS_DHT_SENSOR
+
+const uint8_t g_buttonPin = 0;
+const uint8_t g_wateringPin = 15;
+const uint8_t g_dhtPin = 23;
+const uint8_t g_soilMoisturePin = A0;
+const uint8_t g_luminosityPin = A3;
 
 const char g_hostname[] PROGMEM = "espgarden";
 
