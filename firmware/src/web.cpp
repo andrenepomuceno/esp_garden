@@ -164,6 +164,7 @@ void
 webSetup()
 {
     WiFi.mode(WIFI_STA);
+    WiFi.setHostname(g_hostname);
     WiFi.onEvent(wifiConnected, SYSTEM_EVENT_STA_CONNECTED);
     WiFi.onEvent(wifiGotIP, SYSTEM_EVENT_STA_GOT_IP);
     WiFi.onEvent(wifiDisconnected, SYSTEM_EVENT_STA_DISCONNECTED);
