@@ -11,7 +11,7 @@ setup(void)
     logger.println("Initializing...");
 
     unsigned id = ESP.getEfuseMac() % 0x10000;
-    logger.println("ID: %d" + String(id, 16));
+    logger.println("ID: " + String(id, 16));
 
     pinMode(LED_BUILTIN, OUTPUT);
 
