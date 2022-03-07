@@ -261,12 +261,20 @@ checkInternetTaskHandler()
     static const IPAddress addressList[addresListLen] = {
         IPAddress(8, 8, 8, 8), IPAddress(8, 8, 4, 4), IPAddress(1, 1, 1, 1)
     };
+    static time_t connectionLostTime = 0;
 
     for (int i = 0; i < addresListLen; ++i) {
-        if (Ping.ping(addressList[i], 1) == true) {
+        bool success = Ping.ping(addressList[i], 2); // retry at least one time
+        if (success) {
             if (!g_hasInternet) {
                 logger.println("Internet connection detected!");
+
+                if (connectionLostTime != 0) {
+                    time_t downTime = time(NULL) - connectionLostTime;
+                    logger.println("Down time: " + String(downTime) + " s");
+                }
             }
+
             g_hasInternet = true;
             return;
         }
@@ -275,6 +283,7 @@ checkInternetTaskHandler()
     if (g_hasInternet) {
         logger.println("Internet connection lost.");
         g_hasInternet = false;
+        connectionLostTime = time(NULL);
     }
 }
 
