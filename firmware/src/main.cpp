@@ -4,16 +4,22 @@
 #include "web.h"
 #include <Arduino.h>
 
+static bool initialized = false;
+
 void
 setup(void)
 {
+    pinMode(LED_BUILTIN, OUTPUT);
+    digitalWrite(LED_BUILTIN, 0);
+
     logger.println("");
     logger.println("Initializing...");
 
     unsigned id = ESP.getEfuseMac() % 0x10000;
     logger.println("ID: " + String(id, 16));
-
-    pinMode(LED_BUILTIN, OUTPUT);
+    if (id != g_deviceID) {
+        logger.println("Device ID not recognized!");
+    }
 
     digitalWrite(LED_BUILTIN, 1);
     if (!SPIFFS.begin(true)) {
@@ -22,11 +28,17 @@ setup(void)
     webSetup();
     tasksSetup();
     digitalWrite(LED_BUILTIN, 0);
+
+    initialized = true;
 }
 
 void
 loop(void)
 {
-    webLoop();
-    tasksLoop();
+    if (initialized) {
+        webLoop();
+        tasksLoop();
+    } else {
+        sleep(1);
+    }
 }

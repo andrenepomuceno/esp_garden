@@ -54,9 +54,12 @@ static const unsigned g_bootTimeField = 8;
 
 const unsigned int g_wateringDefaultTime = 5 * 1000;
 static const unsigned g_wateringMaxTime = 20 * 1000;
+static unsigned g_wateringTime = g_wateringDefaultTime;
+
+#if USE_WATERING_PWM
 static const unsigned g_wateringPWMChannel = 0;
 static const unsigned g_wateringPWMTime = 2 * 1000;
-static unsigned g_wateringTime = g_wateringDefaultTime;
+#endif
 
 static WiFiClient g_wifiClient;
 static TalkBack talkBack;
@@ -67,10 +70,12 @@ Accumulator g_temperature;
 Accumulator g_airHumidity;
 unsigned g_dhtReadErrors = 0;
 #endif
+
 #ifdef HAS_MOISTURE_SENSOR
 Accumulator g_soilMoisture;
 static float g_moistureBeforeWatering = 0.0;
 #endif
+
 #ifdef HAS_LUMINOSITY_SENSOR
 Accumulator g_luminosity;
 #endif
@@ -87,32 +92,39 @@ static Task g_ioTask(g_ioTaskPeriod,
                      TASK_FOREVER,
                      &ioTaskHandler,
                      &g_taskScheduler);
+
 #ifdef HAS_DHT_SENSOR
 static Task g_dhtTask(g_dhtTaskPeriod,
                       TASK_FOREVER,
                       &dhtTaskHandler,
                       &g_taskScheduler);
 #endif
+
 static Task g_thingSpeakTask(g_thingSpeakTaskPeriod,
                              TASK_FOREVER,
                              &thingSpeakTaskHandler,
                              &g_taskScheduler);
+
 static Task g_clockUpdateTask(g_clockUpdateTaskPeriod,
                               TASK_FOREVER,
                               &clockUpdateTaskHandler,
                               &g_taskScheduler);
+
 static Task g_wateringTask(g_wateringTaskPeriod,
                            TASK_FOREVER,
                            &wateringTaskHandler,
                            &g_taskScheduler);
+
 static Task g_talkBackTask(g_talkBackTaskPeriod,
                            TASK_FOREVER,
                            &talkBackTaskHandler,
                            &g_taskScheduler);
+
 static Task g_checkInternetTask(g_checkInternetTaskPeriod,
                                 TASK_FOREVER,
                                 &checkInternetTaskHandler,
                                 &g_taskScheduler);
+
 #ifdef HAS_MOISTURE_SENSOR
 static Task g_checkMoistureTask(g_checkMoistureTaskPeriod,
                                 TASK_FOREVER,
@@ -126,6 +138,7 @@ ioTaskHandler()
 #ifdef HAS_MOISTURE_SENSOR
     g_soilMoisture.add(100.0 - ADC_TO_PERCENT(analogRead(g_soilMoisturePin)));
 #endif
+
 #ifdef HAS_LUMINOSITY_SENSOR
     g_luminosity.add(ADC_TO_PERCENT(analogRead(g_luminosityPin)));
 #endif
@@ -136,16 +149,20 @@ static void
 dhtTaskHandler()
 {
     sensors_event_t event;
+
     g_dht.temperature().getEvent(&event);
     if (isnan(event.temperature) == false) {
         g_temperature.add(event.temperature);
     } else {
+        logger.println("DHT read error.");
         ++g_dhtReadErrors;
     }
+
     g_dht.humidity().getEvent(&event);
     if (isnan(event.relative_humidity) == false) {
         g_airHumidity.add(event.relative_humidity);
     } else {
+        logger.println("DHT read error.");
         ++g_dhtReadErrors;
     }
 }
@@ -155,6 +172,9 @@ static void
 thingSpeakTaskHandler()
 {
     if (!g_thingSpeakEnabled || !g_hasInternet) {
+        logger.println("thingSpeakTaskHandler skipped.");
+        logger.println("g_thingSpeakEnabled = " + String(g_thingSpeakEnabled) +
+                       " g_hasInternet = " + String(g_hasInternet));
         return;
     }
 
@@ -163,11 +183,13 @@ thingSpeakTaskHandler()
                         FLOAT_TO_STRING(g_soilMoisture.getAverage()));
     g_soilMoisture.resetAverage();
 #endif
+
 #ifdef HAS_LUMINOSITY_SENSOR
     ThingSpeak.setField(g_luminosityField,
                         FLOAT_TO_STRING(g_luminosity.getAverage()));
     g_luminosity.resetAverage();
 #endif
+
 #ifdef HAS_DHT_SENSOR
     ThingSpeak.setField(g_temperatureField,
                         FLOAT_TO_STRING(g_temperature.getAverage()));
@@ -216,23 +238,23 @@ wateringTaskHandler()
 
     if (runs == 1) {
         ThingSpeak.setField(g_wateringField, static_cast<int>(g_wateringTime));
-        #if !USE_WATERING_PWM
-            digitalWrite(g_wateringPin, g_wateringPinOn);
-        #else
-            ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
-        #endif
+#if !USE_WATERING_PWM
+        digitalWrite(g_wateringPin, g_wateringPinOn);
+#else
+        ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
+#endif
         g_wateringState = true;
 
 #ifdef HAS_MOISTURE_SENSOR
         g_moistureBeforeWatering = g_soilMoisture.getLastAvg();
 #endif
     } else if (elapsedTime > g_wateringTime) {
-        #if !USE_WATERING_PWM
-            digitalWrite(g_wateringPin, !g_wateringPinOn);
-        #else
-            ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
-        #endif
-        
+#if !USE_WATERING_PWM
+        digitalWrite(g_wateringPin, !g_wateringPinOn);
+#else
+        ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
+#endif
+
         g_wateringTime = g_wateringDefaultTime;
         g_wateringTask.disable();
         g_wateringState = false;
@@ -241,13 +263,13 @@ wateringTaskHandler()
         g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
 #endif
     } else {
-        #if USE_WATERING_PWM
-            // start the pump gently
-            if (elapsedTime <= g_wateringPWMTime) {
-                ledcWrite(g_wateringPWMChannel,
-                        (elapsedTime * 1023) / g_wateringPWMTime);
-            }
-        #endif
+#if USE_WATERING_PWM
+        // start the pump gently
+        if (elapsedTime <= g_wateringPWMTime) {
+            ledcWrite(g_wateringPWMChannel,
+                      (elapsedTime * 1023) / g_wateringPWMTime);
+        }
+#endif
     }
 }
 
@@ -339,11 +361,12 @@ tasksSetup()
 
     pinMode(g_wateringPin, OUTPUT);
     digitalWrite(g_wateringPin, !g_wateringPinOn);
-    #if USE_WATERING_PWM
-        ledcAttachPin(g_wateringPin, 0);
-        ledcSetup(g_wateringPWMChannel, 10e3, 10);
-        ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
-    #endif
+    
+#if USE_WATERING_PWM
+    ledcAttachPin(g_wateringPin, 0);
+    ledcSetup(g_wateringPWMChannel, 10e3, 10);
+    ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
+#endif
 
     ThingSpeak.begin(g_wifiClient);
 
