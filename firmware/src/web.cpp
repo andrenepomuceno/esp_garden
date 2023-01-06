@@ -1,5 +1,4 @@
 #include "SPIFFS.h"
-#include "accumulator.h"
 #include "config.h"
 #include "html.h"
 #include "logger.h"

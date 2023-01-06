@@ -231,12 +231,15 @@ clockUpdateTaskHandler()
         return;
     }
 
-    const int tzOffset = -3 * 60 * 60;
+    const int tzOffset = 0;//-3 * 60 * 60;
     configTime(0,
                tzOffset,
                "0.br.pool.ntp.org",
                "1.br.pool.ntp.org",
                "2.br.pool.ntp.org");
+
+    setenv("TZ","<-03>3", 1); // America/Sao Paulo
+    tzset();
 }
 
 static void
