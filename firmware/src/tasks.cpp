@@ -100,12 +100,13 @@ static void
 dhtTaskHandler()
 {
     sensors_event_t event;
+    bool error = false;
 
     g_dht.temperature().getEvent(&event);
     if (isnan(event.temperature) == false) {
         g_temperature.add(event.temperature);
     } else {
-        logger.println("DHT read error.");
+        error = true;
         ++g_dhtReadErrors;
     }
 
@@ -113,8 +114,12 @@ dhtTaskHandler()
     if (isnan(event.relative_humidity) == false) {
         g_airHumidity.add(event.relative_humidity);
     } else {
-        logger.println("DHT read error.");
+        error = true;
         ++g_dhtReadErrors;
+    }
+
+    if (error) {
+        logger.println("DHT read error.");
     }
 }
 #endif
