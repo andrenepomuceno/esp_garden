@@ -2,15 +2,15 @@
 #include "logger.h"
 #include "talkback.h"
 #include "web.h"
+#include <ESP32Ping.h>
+#include <TaskScheduler.h>
+#include <ThingSpeak.h>
+#include <WiFi.h>
 #ifdef HAS_DHT_SENSOR
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
 #endif
-#include <ESP32Ping.h>
-#include <TaskScheduler.h>
-#include <ThingSpeak.h>
-#include <WiFi.h>
 
 #define FLOAT_TO_STRING(x) (String(x, 2))
 #define ADC_TO_PERCENT(x) ((x * 100.0) / 4095.0)
@@ -69,18 +69,18 @@ static TalkBack talkBack;
 
 #ifdef HAS_DHT_SENSOR
 static DHT_Unified g_dht(g_dhtPin, DHT11);
-Accumulator g_temperature;
-Accumulator g_airHumidity;
+AccumulatorV2 g_temperature(g_thingSpeakTaskPeriod / g_dhtTaskPeriod);
+AccumulatorV2 g_airHumidity(g_thingSpeakTaskPeriod / g_dhtTaskPeriod);
 unsigned g_dhtReadErrors = 0;
 #endif
 
 #ifdef HAS_MOISTURE_SENSOR
-Accumulator g_soilMoisture;
+AccumulatorV2 g_soilMoisture(g_thingSpeakTaskPeriod / g_ioTaskPeriod);
 static float g_moistureBeforeWatering = 0.0;
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
-Accumulator g_luminosity;
+AccumulatorV2 g_luminosity(g_thingSpeakTaskPeriod / g_ioTaskPeriod);
 #endif
 
 bool g_wateringState = false;

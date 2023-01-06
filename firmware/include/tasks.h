@@ -1,20 +1,20 @@
 #pragma once
 
-#include "accumulator.h"
+#include "accumulator_v2.h"
 #include "config.h"
 #include <time.h>
 
 const time_t g_safeTimestamp = 1609459200; // 01/01/2021
 
 #ifdef HAS_MOISTURE_SENSOR
-extern Accumulator g_soilMoisture;
+extern AccumulatorV2 g_soilMoisture;
 #endif
 #ifdef HAS_LUMINOSITY_SENSOR
-extern Accumulator g_luminosity;
+extern AccumulatorV2 g_luminosity;
 #endif
 #ifdef HAS_DHT_SENSOR
-extern Accumulator g_temperature;
-extern Accumulator g_airHumidity;
+extern AccumulatorV2 g_temperature;
+extern AccumulatorV2 g_airHumidity;
 extern unsigned g_dhtReadErrors;
 #endif
 
