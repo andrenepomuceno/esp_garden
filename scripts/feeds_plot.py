@@ -10,7 +10,7 @@ def plot_function(data, name):
 
 df = pd.read_csv('feeds.csv', parse_dates=['created_at'], index_col=['created_at'])
 
-sample_rate = '30T'
+sample_rate = '1h'
 moisture = df['field1'].resample(sample_rate).mean()
 plot_function(moisture, 'moisture.svg')
 

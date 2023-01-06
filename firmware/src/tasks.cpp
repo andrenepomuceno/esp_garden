@@ -31,6 +31,10 @@ static void
 talkBackTaskHandler();
 static void
 checkInternetTaskHandler();
+#ifdef HAS_MOISTURE_SENSOR
+static void
+checkMoistureTaskHandler();
+#endif
 
 static const unsigned g_thingSpeakTaskPeriod = 2 * 60 * 1000;
 static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
@@ -39,6 +43,7 @@ static const unsigned g_ioTaskPeriod = 1000;
 static const unsigned g_wateringTaskPeriod = 100;
 static const unsigned g_talkBackTaskPeriod = 5 * 60 * 1000;
 static const unsigned g_checkInternetTaskPeriod = 30 * 1000;
+static const unsigned g_checkMoistureTaskPeriod = 30 * 60 * 1000;
 
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
@@ -64,6 +69,7 @@ unsigned g_dhtReadErrors = 0;
 #endif
 #ifdef HAS_MOISTURE_SENSOR
 Accumulator g_soilMoisture;
+static float g_moistureBeforeWatering = 0.0;
 #endif
 #ifdef HAS_LUMINOSITY_SENSOR
 Accumulator g_luminosity;
@@ -107,6 +113,12 @@ static Task g_checkInternetTask(g_checkInternetTaskPeriod,
                                 TASK_FOREVER,
                                 &checkInternetTaskHandler,
                                 &g_taskScheduler);
+#ifdef HAS_MOISTURE_SENSOR
+static Task g_checkMoistureTask(g_checkMoistureTaskPeriod,
+                                TASK_FOREVER,
+                                &checkMoistureTaskHandler,
+                                &g_taskScheduler);
+#endif
 
 static void
 ioTaskHandler()
@@ -207,12 +219,20 @@ wateringTaskHandler()
         // digitalWrite(g_wateringPin, 1);
         ledcWrite(g_wateringPWMChannel, 0);
         g_wateringState = true;
+
+#ifdef HAS_MOISTURE_SENSOR
+        g_moistureBeforeWatering = g_soilMoisture.getLastAvg();
+#endif
     } else if (elapsedTime > g_wateringTime) {
         // digitalWrite(g_wateringPin, 0);
         ledcWrite(g_wateringPWMChannel, 0);
         g_wateringTime = g_wateringDefaultTime;
         g_wateringTask.disable();
         g_wateringState = false;
+
+#ifdef HAS_MOISTURE_SENSOR
+        g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
+#endif
     } else {
         // start the pump gently
         if (elapsedTime <= g_wateringPWMTime) {
@@ -286,6 +306,22 @@ checkInternetTaskHandler()
         connectionLostTime = time(NULL);
     }
 }
+
+#ifdef HAS_MOISTURE_SENSOR
+static void
+checkMoistureTaskHandler()
+{
+    float moistureDelta =
+      g_soilMoisture.getLastAvg() - g_moistureBeforeWatering;
+
+    if (moistureDelta < 5.0) {
+        logger.println("Maybe we are out of water...");
+        logger.println("Delta: " + FLOAT_TO_STRING(moistureDelta));
+    }
+
+    g_checkMoistureTask.disable();
+}
+#endif
 
 void
 tasksSetup()

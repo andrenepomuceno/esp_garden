@@ -4,6 +4,7 @@ Accumulator::Accumulator()
   : last(0.0)
   , sum(0.0)
   , samples(0)
+  , lastAvg(0.0)
 {}
 
 void
@@ -32,6 +33,7 @@ Accumulator::getAverage() const
 void
 Accumulator::resetAverage()
 {
+    lastAvg = sum/samples;
     sum = 0.0;
     samples = 0;
 }
@@ -40,4 +42,10 @@ unsigned
 Accumulator::getSamples()
 {
     return samples;
+}
+
+float
+Accumulator::getLastAvg() const
+{
+    return lastAvg;
 }
