@@ -9,6 +9,8 @@ class Logger
     int println(const String& str);
     String& read();
 
+    void dumpToFS();
+
   private:
     Logger();
 

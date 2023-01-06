@@ -1,4 +1,5 @@
 #include "logger.h"
+#include "SPIFFS.h"
 
 Logger::Logger()
   : buffer("")
@@ -53,4 +54,11 @@ String&
 Logger::read()
 {
     return buffer;
+}
+
+void Logger::dumpToFS() {
+    auto file = SPIFFS.open("log.txt", "w", true);
+    file.write((uint8_t*)buffer.c_str(), buffer.length());
+    file.flush();
+    file.close();
 }
