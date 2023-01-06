@@ -165,9 +165,9 @@ webSetup()
 {
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(g_hostname);
-    WiFi.onEvent(wifiConnected, SYSTEM_EVENT_STA_CONNECTED);
-    WiFi.onEvent(wifiGotIP, SYSTEM_EVENT_STA_GOT_IP);
-    WiFi.onEvent(wifiDisconnected, SYSTEM_EVENT_STA_DISCONNECTED);
+    WiFi.onEvent(wifiConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
+    WiFi.onEvent(wifiGotIP, ARDUINO_EVENT_WIFI_STA_GOT_IP);
+    WiFi.onEvent(wifiDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     WiFi.begin(g_ssid, g_wifiPassword);
 
     if (MDNS.begin(g_hostname) == false) {

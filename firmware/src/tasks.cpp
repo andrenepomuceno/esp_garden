@@ -216,16 +216,23 @@ wateringTaskHandler()
 
     if (runs == 1) {
         ThingSpeak.setField(g_wateringField, static_cast<int>(g_wateringTime));
-        // digitalWrite(g_wateringPin, 1);
-        ledcWrite(g_wateringPWMChannel, 0);
+        #if !USE_WATERING_PWM
+            digitalWrite(g_wateringPin, g_wateringPinOn);
+        #else
+            ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
+        #endif
         g_wateringState = true;
 
 #ifdef HAS_MOISTURE_SENSOR
         g_moistureBeforeWatering = g_soilMoisture.getLastAvg();
 #endif
     } else if (elapsedTime > g_wateringTime) {
-        // digitalWrite(g_wateringPin, 0);
-        ledcWrite(g_wateringPWMChannel, 0);
+        #if !USE_WATERING_PWM
+            digitalWrite(g_wateringPin, !g_wateringPinOn);
+        #else
+            ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
+        #endif
+        
         g_wateringTime = g_wateringDefaultTime;
         g_wateringTask.disable();
         g_wateringState = false;
@@ -234,11 +241,13 @@ wateringTaskHandler()
         g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
 #endif
     } else {
-        // start the pump gently
-        if (elapsedTime <= g_wateringPWMTime) {
-            ledcWrite(g_wateringPWMChannel,
-                      (elapsedTime * 1023) / g_wateringPWMTime);
-        }
+        #if USE_WATERING_PWM
+            // start the pump gently
+            if (elapsedTime <= g_wateringPWMTime) {
+                ledcWrite(g_wateringPWMChannel,
+                        (elapsedTime * 1023) / g_wateringPWMTime);
+            }
+        #endif
     }
 }
 
@@ -329,10 +338,12 @@ tasksSetup()
     pinMode(g_buttonPin, INPUT);
 
     pinMode(g_wateringPin, OUTPUT);
-    digitalWrite(g_wateringPin, 0);
-    ledcAttachPin(g_wateringPin, 0);
-    ledcSetup(g_wateringPWMChannel, 10e3, 10);
-    ledcWrite(g_wateringPWMChannel, 0);
+    digitalWrite(g_wateringPin, !g_wateringPinOn);
+    #if USE_WATERING_PWM
+        ledcAttachPin(g_wateringPin, 0);
+        ledcSetup(g_wateringPWMChannel, 10e3, 10);
+        ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
+    #endif
 
     ThingSpeak.begin(g_wifiClient);
 
