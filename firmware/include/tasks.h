@@ -29,6 +29,8 @@ extern bool g_thingSpeakEnabled;
 extern const unsigned int g_wateringDefaultTime;
 extern unsigned g_wateringCycles;
 
+extern bool g_ledBlinkEnabled;
+
 void
 tasksSetup();
 

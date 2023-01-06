@@ -35,6 +35,8 @@ checkInternetTaskHandler();
 static void
 checkMoistureTaskHandler();
 #endif
+static void
+ledBlinkTaskHandler();
 
 static const unsigned g_thingSpeakTaskPeriod = 2 * 60 * 1000;
 static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
@@ -44,6 +46,7 @@ static const unsigned g_wateringTaskPeriod = 100;
 static const unsigned g_talkBackTaskPeriod = 5 * 60 * 1000;
 static const unsigned g_checkInternetTaskPeriod = 30 * 1000;
 static const unsigned g_checkMoistureTaskPeriod = 30 * 60 * 1000;
+static const unsigned g_ledBlinkTaskPeriod = 1 * 1000;
 
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
@@ -86,6 +89,7 @@ time_t g_bootTime = 0;
 bool g_thingSpeakEnabled = true;
 unsigned g_packagesSent = 0;
 unsigned g_wateringCycles = 0;
+bool g_ledBlinkEnabled = false;
 
 static Scheduler g_taskScheduler;
 static Task g_ioTask(g_ioTaskPeriod,
@@ -131,6 +135,11 @@ static Task g_checkMoistureTask(g_checkMoistureTaskPeriod,
                                 &checkMoistureTaskHandler,
                                 &g_taskScheduler);
 #endif
+
+static Task g_ledBlinkTask(g_ledBlinkTaskPeriod,
+                           TASK_FOREVER,
+                           &ledBlinkTaskHandler,
+                           &g_taskScheduler);
 
 static void
 ioTaskHandler()
@@ -354,6 +363,18 @@ checkMoistureTaskHandler()
 }
 #endif
 
+static void
+ledBlinkTaskHandler()
+{
+    static bool on = false;
+    if (g_ledBlinkEnabled) {
+        on = !on;
+        digitalWrite(BUILTIN_LED, on);
+    } else {
+        digitalWrite(BUILTIN_LED, 0);
+    }
+}
+
 void
 tasksSetup()
 {
@@ -361,7 +382,7 @@ tasksSetup()
 
     pinMode(g_wateringPin, OUTPUT);
     digitalWrite(g_wateringPin, !g_wateringPinOn);
-    
+
 #if USE_WATERING_PWM
     ledcAttachPin(g_wateringPin, 0);
     ledcSetup(g_wateringPWMChannel, 10e3, 10);
@@ -396,6 +417,7 @@ tasksSetup()
     g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
     g_thingSpeakTask.enableDelayed(g_thingSpeakTaskPeriod);
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
+    g_ledBlinkTask.enableDelayed(g_ledBlinkTaskPeriod);
 
     logger.println("Tasks setup done!");
 }

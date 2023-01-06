@@ -4,41 +4,43 @@
 #include "web.h"
 #include <Arduino.h>
 
-static bool initialized = false;
-
 void
 setup(void)
 {
+    bool error = false;
+
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, 0);
 
     logger.println("");
     logger.println("Initializing...");
 
+    digitalWrite(LED_BUILTIN, 1);
+
     unsigned id = ESP.getEfuseMac() % 0x10000;
     logger.println("ID: " + String(id, 16));
     if (id != g_deviceID) {
         logger.println("Device ID not recognized!");
+        error = true;
     }
 
-    digitalWrite(LED_BUILTIN, 1);
     if (!SPIFFS.begin(true)) {
         logger.println("Failed to initialize SPIFFS.");
+        error = true;
     }
     webSetup();
     tasksSetup();
+
     digitalWrite(LED_BUILTIN, 0);
 
-    initialized = true;
+    if (error) {
+        g_ledBlinkEnabled = true;
+    }
 }
 
 void
 loop(void)
 {
-    if (initialized) {
-        webLoop();
-        tasksLoop();
-    } else {
-        sleep(1);
-    }
+    webLoop();
+    tasksLoop();
 }
