@@ -15,38 +15,30 @@
 #define FLOAT_TO_STRING(x) (String(x, 2))
 #define ADC_TO_PERCENT(x) ((x * 100.0) / 4095.0)
 
-static void
-ioTaskHandler();
-#ifdef HAS_DHT_SENSOR
-static void
-dhtTaskHandler();
-#endif
-static void
-thingSpeakTaskHandler();
-static void
-clockUpdateTaskHandler();
-static void
-wateringTaskHandler();
-static void
-talkBackTaskHandler();
-static void
-checkInternetTaskHandler();
-#ifdef HAS_MOISTURE_SENSOR
-static void
-checkMoistureTaskHandler();
-#endif
-static void
-ledBlinkTaskHandler();
+#define DEFINE_TASK(name, period)                           \
+static void name ## TaskHandler();                          \
+static const unsigned g_ ## name ## TaskPeriod = period;    \
+static Task g_ ## name ## Task(g_ ## name ## TaskPeriod,    \
+                               TASK_FOREVER,                \
+                               & name ## TaskHandler,       \
+                               &g_taskScheduler)
 
-static const unsigned g_thingSpeakTaskPeriod = 2 * 60 * 1000;
-static const unsigned g_clockUpdateTaskPeriod = 24 * 60 * 60 * 1000;
-static const unsigned g_dhtTaskPeriod = 10 * 1000;
-static const unsigned g_ioTaskPeriod = 1000;
-static const unsigned g_wateringTaskPeriod = 100;
-static const unsigned g_talkBackTaskPeriod = 5 * 60 * 1000;
-static const unsigned g_checkInternetTaskPeriod = 30 * 1000;
-static const unsigned g_checkMoistureTaskPeriod = 30 * 60 * 1000;
-static const unsigned g_ledBlinkTaskPeriod = 1 * 1000;
+static Scheduler g_taskScheduler;
+
+DEFINE_TASK(io, 1000);
+#ifdef HAS_DHT_SENSOR
+DEFINE_TASK(dht, 10 * 1000);
+#endif
+DEFINE_TASK(thingSpeak, 2 * 60 * 1000);
+DEFINE_TASK(clockUpdate, 24 * 60 * 60 * 1000);
+DEFINE_TASK(watering, 100);
+DEFINE_TASK(talkBack, 5 * 60 * 1000);
+DEFINE_TASK(checkInternet, 30 * 1000);
+#ifdef HAS_MOISTURE_SENSOR
+DEFINE_TASK(checkMoisture, 30 * 60 * 1000);
+#endif
+DEFINE_TASK(ledBlink, 1000);
+DEFINE_TASK(logBackup, 12 * 60 * 60 * 1000);
 
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
@@ -64,9 +56,6 @@ static const unsigned g_wateringPWMChannel = 0;
 static const unsigned g_wateringPWMTime = 2 * 1000;
 #endif
 
-static WiFiClient g_wifiClient;
-static TalkBack talkBack;
-
 #ifdef HAS_DHT_SENSOR
 static DHT_Unified g_dht(g_dhtPin, DHT11);
 AccumulatorV2 g_temperature(g_thingSpeakTaskPeriod / g_dhtTaskPeriod);
@@ -83,6 +72,9 @@ static float g_moistureBeforeWatering = 0.0;
 AccumulatorV2 g_luminosity(g_thingSpeakTaskPeriod / g_ioTaskPeriod);
 #endif
 
+static WiFiClient g_wifiClient;
+static TalkBack talkBack;
+
 bool g_wateringState = false;
 bool g_hasInternet = false;
 time_t g_bootTime = 0;
@@ -90,56 +82,6 @@ bool g_thingSpeakEnabled = true;
 unsigned g_packagesSent = 0;
 unsigned g_wateringCycles = 0;
 bool g_ledBlinkEnabled = false;
-
-static Scheduler g_taskScheduler;
-static Task g_ioTask(g_ioTaskPeriod,
-                     TASK_FOREVER,
-                     &ioTaskHandler,
-                     &g_taskScheduler);
-
-#ifdef HAS_DHT_SENSOR
-static Task g_dhtTask(g_dhtTaskPeriod,
-                      TASK_FOREVER,
-                      &dhtTaskHandler,
-                      &g_taskScheduler);
-#endif
-
-static Task g_thingSpeakTask(g_thingSpeakTaskPeriod,
-                             TASK_FOREVER,
-                             &thingSpeakTaskHandler,
-                             &g_taskScheduler);
-
-static Task g_clockUpdateTask(g_clockUpdateTaskPeriod,
-                              TASK_FOREVER,
-                              &clockUpdateTaskHandler,
-                              &g_taskScheduler);
-
-static Task g_wateringTask(g_wateringTaskPeriod,
-                           TASK_FOREVER,
-                           &wateringTaskHandler,
-                           &g_taskScheduler);
-
-static Task g_talkBackTask(g_talkBackTaskPeriod,
-                           TASK_FOREVER,
-                           &talkBackTaskHandler,
-                           &g_taskScheduler);
-
-static Task g_checkInternetTask(g_checkInternetTaskPeriod,
-                                TASK_FOREVER,
-                                &checkInternetTaskHandler,
-                                &g_taskScheduler);
-
-#ifdef HAS_MOISTURE_SENSOR
-static Task g_checkMoistureTask(g_checkMoistureTaskPeriod,
-                                TASK_FOREVER,
-                                &checkMoistureTaskHandler,
-                                &g_taskScheduler);
-#endif
-
-static Task g_ledBlinkTask(g_ledBlinkTaskPeriod,
-                           TASK_FOREVER,
-                           &ledBlinkTaskHandler,
-                           &g_taskScheduler);
 
 static void
 ioTaskHandler()
@@ -231,14 +173,14 @@ clockUpdateTaskHandler()
         return;
     }
 
-    const int tzOffset = 0;//-3 * 60 * 60;
+    const int tzOffset = 0; //-3 * 60 * 60;
     configTime(0,
                tzOffset,
                "0.br.pool.ntp.org",
                "1.br.pool.ntp.org",
                "2.br.pool.ntp.org");
 
-    setenv("TZ","<-03>3", 1); // America/Sao Paulo
+    setenv("TZ", "<-03>3", 1); // America/Sao Paulo
     tzset();
 }
 
@@ -378,6 +320,12 @@ ledBlinkTaskHandler()
     }
 }
 
+static void
+logBackupTaskHandler()
+{
+    logger.dumpToFS();
+}
+
 void
 tasksSetup()
 {
@@ -421,6 +369,7 @@ tasksSetup()
     g_thingSpeakTask.enableDelayed(g_thingSpeakTaskPeriod);
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
     g_ledBlinkTask.enableDelayed(g_ledBlinkTaskPeriod);
+    g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
 
     logger.println("Tasks setup done!");
 }

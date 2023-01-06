@@ -1,5 +1,6 @@
 {
     "files.associations": {
+        "*.glsl.js": "glsl",
         "array": "cpp",
         "deque": "cpp",
         "string": "cpp",
@@ -8,6 +9,7 @@
         "vector": "cpp",
         "initializer_list": "cpp",
         "string_view": "cpp",
-        "*.tcc": "cpp"
+        "*.tcc": "cpp",
+        "typeinfo": "cpp"
     }
 }
