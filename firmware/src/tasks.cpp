@@ -15,24 +15,24 @@
 #define FLOAT_TO_STRING(x) (String(x, 2))
 #define ADC_TO_PERCENT(x) ((x * 100.0) / 4095.0)
 
-#define DECLARE_TASK(name, period)                          \
-static void name ## TaskHandler();                          \
-static const unsigned g_ ## name ## TaskPeriod = period;    \
-static Task g_ ## name ## Task(g_ ## name ## TaskPeriod,    \
-                               TASK_FOREVER,                \
-                               & name ## TaskHandler,       \
+#define DECLARE_TASK(name, period)                                             \
+    static void name##TaskHandler();                                           \
+    static const unsigned g_##name##TaskPeriod = period;                       \
+    static Task g_##name##Task(g_##name##TaskPeriod,                           \
+                               TASK_FOREVER,                                   \
+                               &name##TaskHandler,                             \
                                &g_taskScheduler)
 
 static Scheduler g_taskScheduler;
 
-DECLARE_TASK(io, 1000); // 1 s
-DECLARE_TASK(watering, 100); // 100 ms
-DECLARE_TASK(ledBlink, 1000); // 1 s
+DECLARE_TASK(io, 1000);                         // 1 s
+DECLARE_TASK(watering, 100);                    // 100 ms
+DECLARE_TASK(ledBlink, 1000);                   // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
-DECLARE_TASK(checkInternet, 30 * 1000); // 30 s
-DECLARE_TASK(logBackup, 60 * 60 * 1000); // 1 h
-DECLARE_TASK(thingSpeak, 2 * 60 * 1000); // 2 min
-DECLARE_TASK(talkBack, 5 * 60 * 1000); // 5 min
+DECLARE_TASK(checkInternet, 30 * 1000);         // 30 s
+DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
+DECLARE_TASK(thingSpeak, 2 * 60 * 1000);        // 2 min
+DECLARE_TASK(talkBack, 5 * 60 * 1000);          // 5 min
 #ifdef HAS_MOISTURE_SENSOR
 DECLARE_TASK(checkMoisture, 30 * 60 * 1000); // 30 min
 #endif
@@ -178,12 +178,8 @@ clockUpdateTaskHandler()
         return;
     }
 
-    const int tzOffset = 0; //-3 * 60 * 60;
-    configTime(0,
-               tzOffset,
-               "0.br.pool.ntp.org",
-               "1.br.pool.ntp.org",
-               "2.br.pool.ntp.org");
+    configTime(
+      0, 0, "0.br.pool.ntp.org", "1.br.pool.ntp.org", "2.br.pool.ntp.org");
 
     setenv("TZ", "<-03>3", 1); // America/Sao Paulo
     tzset();
@@ -328,14 +324,14 @@ ledBlinkTaskHandler()
 static void
 logBackupTaskHandler()
 {
-    logger.println("Starting log backup...");
     logger.dumpToFS();
-    logger.println("Log backup done.");
 }
 
 void
 tasksSetup()
 {
+    logger.println("Tasks setup...");
+
     pinMode(g_buttonPin, INPUT);
 
     pinMode(g_wateringPin, OUTPUT);

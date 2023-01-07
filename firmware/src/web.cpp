@@ -162,6 +162,8 @@ wifiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
 void
 webSetup()
 {
+    logger.println("Web setup...");
+
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(g_hostname);
     WiFi.onEvent(wifiConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);

@@ -28,9 +28,13 @@ setup(void)
         logger.println("Failed to initialize SPIFFS.");
         error = true;
     }
-    logger.dumpToFSSetup();
+
+    setenv("TZ", "<-03>3", 1); // America/Sao Paulo
+    tzset();
+
     webSetup();
     tasksSetup();
+    logger.dumpToFSSetup();
 
     digitalWrite(LED_BUILTIN, 0);
 

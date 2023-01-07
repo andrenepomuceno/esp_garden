@@ -61,6 +61,8 @@ Logger::read()
 void
 Logger::dumpToFSSetup()
 {
+    logger.println("Log setup...");
+
     const String currentFilename("/current.txt");
     currentLog = -1;
     File currentFile;
@@ -75,27 +77,30 @@ Logger::dumpToFSSetup()
             return;
         }
 
-        currentFile.print('1');
+        currentFile.print('0');
         currentFile.close();
 
         currentLog = 0;
     } else {
         currentFile = SPIFFS.open(currentFilename, FILE_READ);
-        currentLog = (currentFile.readString().toInt()) % MAX_LOG_FILES;
-        logger.println("currentLog = " + String(currentLog));
+        currentLog = (currentFile.readString().toInt() + 1) % MAX_LOG_FILES;
         currentFile.close();
 
         logger.println("Updating " + String(currentFilename));
         currentFile = SPIFFS.open(currentFilename, FILE_WRITE);
-        int nextLog = (currentLog + 1) % MAX_LOG_FILES;
-        currentFile.print(String(nextLog));
+        currentFile.print(String(currentLog));
         currentFile.close();
     }
+
+    logger.println("Current log: log" + String(currentLog) + ".txt");
+    logger.println("Log setup done!");
 }
 
 void
 Logger::dumpToFS()
 {
+    println("Starting log backup...");
+
     String logFilename = "/log" + String(currentLog) + ".txt";
     auto logFile = SPIFFS.open(logFilename, FILE_WRITE, true);
     if (!logFile) {
@@ -104,4 +109,6 @@ Logger::dumpToFS()
     }
     logFile.print(buffer);
     logFile.close();
+
+    println("Log backup done!");
 }
