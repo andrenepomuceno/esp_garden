@@ -23,7 +23,9 @@ AccumulatorV2::getLast() const
 
 float
 AccumulatorV2::getAverage() const
-{
+{   
+    if (sampleList.size() == 0) return 0;
+
     float sum = 0;
     for (auto v : sampleList) {
         sum += v;
@@ -31,20 +33,8 @@ AccumulatorV2::getAverage() const
     return sum / sampleList.size();
 }
 
-void
-AccumulatorV2::resetAverage()
-{
-    lastAvg = getAverage();
-}
-
 unsigned
 AccumulatorV2::getSamples()
 {
     return sampleList.size();
-}
-
-float
-AccumulatorV2::getLastAvg() const
-{
-    return lastAvg;
 }

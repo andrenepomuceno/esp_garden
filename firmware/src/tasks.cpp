@@ -137,13 +137,11 @@ thingSpeakTaskHandler()
 #ifdef HAS_MOISTURE_SENSOR
     ThingSpeak.setField(g_soilMoistureField,
                         FLOAT_TO_STRING(g_soilMoisture.getAverage()));
-    g_soilMoisture.resetAverage();
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
     ThingSpeak.setField(g_luminosityField,
                         FLOAT_TO_STRING(g_luminosity.getAverage()));
-    g_luminosity.resetAverage();
 #endif
 
 #ifdef HAS_DHT_SENSOR
@@ -151,8 +149,6 @@ thingSpeakTaskHandler()
                         FLOAT_TO_STRING(g_temperature.getAverage()));
     ThingSpeak.setField(g_airHumidityField,
                         FLOAT_TO_STRING(g_airHumidity.getAverage()));
-    g_temperature.resetAverage();
-    g_airHumidity.resetAverage();
 #endif
 
     digitalWrite(LED_BUILTIN, 1);
@@ -201,7 +197,7 @@ wateringTaskHandler()
         g_wateringState = true;
 
 #ifdef HAS_MOISTURE_SENSOR
-        g_moistureBeforeWatering = g_soilMoisture.getLastAvg();
+        g_moistureBeforeWatering = g_soilMoisture.getAverage();
 #endif
     } else if (elapsedTime > g_wateringTime) {
 #if !USE_WATERING_PWM
@@ -298,9 +294,9 @@ static void
 checkMoistureTaskHandler()
 {
     float moistureDelta =
-      g_soilMoisture.getLastAvg() - g_moistureBeforeWatering;
+      g_soilMoisture.getAverage() - g_moistureBeforeWatering;
 
-    if (moistureDelta < 5.0) {
+    if (moistureDelta < 1.0) {
         logger.println("Maybe we are out of water...");
         logger.println("Delta: " + FLOAT_TO_STRING(moistureDelta));
     }

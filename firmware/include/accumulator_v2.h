@@ -9,8 +9,6 @@ class AccumulatorV2
     void add(const float value);
     float getLast() const;
     float getAverage() const;
-    float getLastAvg() const;
-    void resetAverage();
     unsigned getSamples();
 
   private:
