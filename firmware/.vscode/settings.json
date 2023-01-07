@@ -1,5 +1,6 @@
 {
     "files.associations": {
+        "*.glsl.js": "glsl",
         "array": "cpp",
         "deque": "cpp",
         "string": "cpp",
@@ -9,6 +10,12 @@
         "initializer_list": "cpp",
         "string_view": "cpp",
         "*.tcc": "cpp",
-        "typeinfo": "cpp"
+        "typeinfo": "cpp",
+        "memory": "cpp",
+        "fstream": "cpp",
+        "istream": "cpp",
+        "ostream": "cpp",
+        "sstream": "cpp",
+        "streambuf": "cpp"
     }
 }

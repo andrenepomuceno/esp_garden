@@ -15,7 +15,7 @@
 #define FLOAT_TO_STRING(x) (String(x, 2))
 #define ADC_TO_PERCENT(x) ((x * 100.0) / 4095.0)
 
-#define DEFINE_TASK(name, period)                           \
+#define DECLARE_TASK(name, period)                          \
 static void name ## TaskHandler();                          \
 static const unsigned g_ ## name ## TaskPeriod = period;    \
 static Task g_ ## name ## Task(g_ ## name ## TaskPeriod,    \
@@ -25,20 +25,20 @@ static Task g_ ## name ## Task(g_ ## name ## TaskPeriod,    \
 
 static Scheduler g_taskScheduler;
 
-DEFINE_TASK(io, 1000);
-#ifdef HAS_DHT_SENSOR
-DEFINE_TASK(dht, 10 * 1000);
-#endif
-DEFINE_TASK(thingSpeak, 2 * 60 * 1000);
-DEFINE_TASK(clockUpdate, 24 * 60 * 60 * 1000);
-DEFINE_TASK(watering, 100);
-DEFINE_TASK(talkBack, 5 * 60 * 1000);
-DEFINE_TASK(checkInternet, 30 * 1000);
+DECLARE_TASK(io, 1000); // 1 s
+DECLARE_TASK(watering, 100); // 100 ms
+DECLARE_TASK(ledBlink, 1000); // 1 s
+DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
+DECLARE_TASK(checkInternet, 30 * 1000); // 30 s
+DECLARE_TASK(logBackup, 60 * 60 * 1000); // 1 h
+DECLARE_TASK(thingSpeak, 2 * 60 * 1000); // 2 min
+DECLARE_TASK(talkBack, 5 * 60 * 1000); // 5 min
 #ifdef HAS_MOISTURE_SENSOR
-DEFINE_TASK(checkMoisture, 30 * 60 * 1000);
+DECLARE_TASK(checkMoisture, 30 * 60 * 1000); // 30 min
 #endif
-DEFINE_TASK(ledBlink, 1000);
-DEFINE_TASK(logBackup, 12 * 60 * 60 * 1000);
+#ifdef HAS_DHT_SENSOR
+DECLARE_TASK(dht, 10 * 1000); // 10 s
+#endif
 
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
@@ -328,7 +328,9 @@ ledBlinkTaskHandler()
 static void
 logBackupTaskHandler()
 {
+    logger.println("Starting log backup...");
     logger.dumpToFS();
+    logger.println("Log backup done.");
 }
 
 void

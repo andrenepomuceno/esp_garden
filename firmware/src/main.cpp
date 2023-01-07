@@ -28,6 +28,7 @@ setup(void)
         logger.println("Failed to initialize SPIFFS.");
         error = true;
     }
+    logger.dumpToFSSetup();
     webSetup();
     tasksSetup();
 

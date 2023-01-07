@@ -9,6 +9,7 @@ class Logger
     int println(const String& str);
     String& read();
 
+    void dumpToFSSetup();
     void dumpToFS();
 
   private:
@@ -20,6 +21,7 @@ class Logger
     static const unsigned BUFFER_SIZE = 4096;
     String buffer;
     bool writing = false;
+    int currentLog;
 };
 
 #define logger Logger::instance()

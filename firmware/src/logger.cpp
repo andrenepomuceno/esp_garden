@@ -1,6 +1,8 @@
 #include "logger.h"
 #include "SPIFFS.h"
 
+#define MAX_LOG_FILES 4
+
 Logger::Logger()
   : buffer("")
 {
@@ -56,9 +58,50 @@ Logger::read()
     return buffer;
 }
 
-void Logger::dumpToFS() {
-    auto file = SPIFFS.open("log.txt", "w", true);
-    file.write((uint8_t*)buffer.c_str(), buffer.length());
-    file.flush();
-    file.close();
+void
+Logger::dumpToFSSetup()
+{
+    const String currentFilename("/current.txt");
+    currentLog = -1;
+    File currentFile;
+
+    if (!SPIFFS.exists(currentFilename)) {
+        logger.println(String(currentFilename) +
+                       " do not exists. Creating one...");
+
+        currentFile = SPIFFS.open(currentFilename, FILE_WRITE, true);
+        if (!currentFile) {
+            logger.println("Failed to create " + String(currentFilename));
+            return;
+        }
+
+        currentFile.print('1');
+        currentFile.close();
+
+        currentLog = 0;
+    } else {
+        currentFile = SPIFFS.open(currentFilename, FILE_READ);
+        currentLog = (currentFile.readString().toInt()) % MAX_LOG_FILES;
+        logger.println("currentLog = " + String(currentLog));
+        currentFile.close();
+
+        logger.println("Updating " + String(currentFilename));
+        currentFile = SPIFFS.open(currentFilename, FILE_WRITE);
+        int nextLog = (currentLog + 1) % MAX_LOG_FILES;
+        currentFile.print(String(nextLog));
+        currentFile.close();
+    }
+}
+
+void
+Logger::dumpToFS()
+{
+    String logFilename = "/log" + String(currentLog) + ".txt";
+    auto logFile = SPIFFS.open(logFilename, FILE_WRITE, true);
+    if (!logFile) {
+        logger.println("failed to open " + String(logFilename));
+        return;
+    }
+    logFile.print(buffer);
+    logFile.close();
 }
