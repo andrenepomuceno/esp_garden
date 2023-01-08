@@ -65,7 +65,7 @@ Logger::read()
 }
 
 void
-Logger::dumpToFSSetup()
+Logger::backupSetup()
 {
     logger.println("Log setup...");
 
@@ -102,7 +102,7 @@ Logger::dumpToFSSetup()
 }
 
 void
-Logger::dumpToFS()
+Logger::backup()
 {
     println("Starting log backup...");
 

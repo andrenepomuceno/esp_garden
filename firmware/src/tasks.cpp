@@ -177,7 +177,7 @@ clockUpdateTaskHandler()
     configTime(
       0, 0, "0.br.pool.ntp.org", "1.br.pool.ntp.org", "2.br.pool.ntp.org");
 
-    setenv("TZ", g_timezone, 1); // America/Sao Paulo
+    setenv("TZ", g_timezone.c_str(), 1); // America/Sao Paulo
     tzset();
 }
 
@@ -320,7 +320,7 @@ ledBlinkTaskHandler()
 static void
 logBackupTaskHandler()
 {
-    logger.dumpToFS();
+    logger.backup();
 }
 
 void

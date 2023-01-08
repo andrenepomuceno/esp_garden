@@ -58,11 +58,27 @@ loadConfigFile(unsigned deviceID)
     g_talkBackAPIKey = talkBack["apiKey"];
     g_talkBackID = talkBack["channel"];
 
+    JSONVar io = configJson["io"];
+    g_buttonPin = (int)io["button"];
+    g_wateringPin = (int)io["watering"];
+    g_wateringPinOn = (int)io["wateringOn"];
+    
+#if defined(HAS_DHT_SENSOR)
+    g_dhtPin = (int)io["dht"];
+#endif
+#if defined(HAS_MOISTURE_SENSOR)
+    g_soilMoisturePin = (int)io["soilMoisture"];
+#endif
+#if defined(HAS_LUMINOSITY_SENSOR)
+    g_luminosityPin = (int)io["luminosity"];
+#endif
+
     if ((g_hostname.length() < 4) || (g_ssid.length() < 4) ||
         (g_wifiPassword.length() < 4) || (g_otaUser.length() < 4) ||
         (g_otaPassword.length() < 4) || (g_thingSpeakAPIKey.length() < 4) ||
         (g_talkBackAPIKey.length() < 4)) {
-        logger.println("Invalid config file. Strings fields must have at least 4 characters.");
+        logger.println("Invalid config file. Strings fields must have at least "
+                       "4 characters.");
         return false;
     }
 
@@ -95,12 +111,12 @@ setup(void)
     if (!loadConfigFile(id))
         error = true;
 
-    setenv("TZ", g_timezone, 1);
+    setenv("TZ", g_timezone.c_str(), 1);
     tzset();
 
+    logger.backupSetup();
     webSetup();
     tasksSetup();
-    logger.dumpToFSSetup();
 
     digitalWrite(LED_BUILTIN, 0);
 
