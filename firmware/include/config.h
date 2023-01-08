@@ -5,6 +5,7 @@
 #include <pins_arduino.h>
 
 extern String g_hostname;
+extern String g_timezone;
 
 extern String g_ssid;
 extern String g_wifiPassword;

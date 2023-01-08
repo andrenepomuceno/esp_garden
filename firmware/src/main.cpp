@@ -26,16 +26,21 @@ loadConfigFile(unsigned deviceID)
     config.close();
 
     JSONVar configJson = JSON.parse(jsonData);
+    if (JSON.typeof(configJson) == "undefined") {
+        logger.println("Failed to parse " + filename);
+        return false;
+    }
 
     String id = (const char*)configJson["id"];
     char* endPtr;
-    long _id = strtol(id.c_str(), &endPtr, 16);
-    if (_id != deviceID) {
-        logger.println("Device ID does not match for config file.");
+    long configID = strtol(id.c_str(), &endPtr, 16);
+    if (configID != deviceID) {
+        logger.println("Device ID does not match config file ID.");
         return false;
     }
 
     g_hostname = configJson["hostname"];
+    g_timezone = configJson["timezone"];
 
     JSONVar wifi = configJson["wifi"];
     g_ssid = wifi["ssid"];
@@ -52,6 +57,14 @@ loadConfigFile(unsigned deviceID)
     JSONVar talkBack = configJson["talkBack"];
     g_talkBackAPIKey = talkBack["apiKey"];
     g_talkBackID = talkBack["channel"];
+
+    if ((g_hostname.length() < 4) || (g_ssid.length() < 4) ||
+        (g_wifiPassword.length() < 4) || (g_otaUser.length() < 4) ||
+        (g_otaPassword.length() < 4) || (g_thingSpeakAPIKey.length() < 4) ||
+        (g_talkBackAPIKey.length() < 4)) {
+        logger.println("Invalid config file. Strings fields must have at least 4 characters.");
+        return false;
+    }
 
     logger.println("Loading done.");
 
@@ -79,12 +92,12 @@ setup(void)
         error = true;
     }
 
-    setenv("TZ", "<-03>3", 1); // America/Sao Paulo
-    tzset();
-
     if (!loadConfigFile(id))
         error = true;
-        
+
+    setenv("TZ", g_timezone, 1);
+    tzset();
+
     webSetup();
     tasksSetup();
     logger.dumpToFSSetup();
