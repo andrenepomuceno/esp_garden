@@ -47,6 +47,7 @@
           <th scope="col">#</th>
           <th scope="col">Name</th>
           <th scope="col">Value</th>
+          <th scope="col">Control</th>
         </tr>
       </thead>
       <tbody id="tbody-outputs"></tbody>
@@ -61,11 +62,8 @@
           </div>
         </div>
         <div class="col">
-          <div class="form-check form-switch">
-            <input id="input-watering" class="form-check-input" type="checkbox">
-            <label class="form-check-label" for="input-watering">Watering</label>
-          </div>
           <input type="number" class="form-control" id="input-watering-time" placeholder="5" min="1" max="20" value="5">
+          <label for="input-watering-time">Watering Time</label>
         </div>
         <div class="col">
           <button id="button-reset" type="button" class="btn btn-primary">Reset</button>
@@ -86,23 +84,42 @@
     integrity="sha384-w76AqPfDkMBDXo30jS1Sgez6pr3x5MlQ1ZAGC+nuZB+EYdgRZgiwxhTBTkF7CXvN"
     crossorigin="anonymous"></script>
   <script>
-    function fillTable(id, data, indexCol = true) {
+    function fillTable(id, data, mode) {
       var i = 0;
       var tbody = $(id);
       tbody.empty();
       for (var key in data) {
         var tr = $('<tr/>');
-        if (indexCol == true) tr.append($('<th/>').html(i++).attr("scope", "row"));
+        if (mode != 'status') tr.append($('<th/>').html(i++).attr("scope", "row"));
         tr.append($('<td/>').html(key));
-        if (data[key].val == undefined) {
-          tr.append($('<td/>').html(data[key]));
-        } else {
+        if (mode == 'inputs') {
           tr.append($('<td/>').html(data[key].val));
           tr.append($('<td/>').html(data[key].avg));
           tr.append($('<td/>').html(data[key].var));
+        } else if (mode == 'outputs') {
+          tr.append($('<td/>').html(data[key]));
+          let id = 'input-' + key.toLowerCase();
+          tr.append($('<td/>').html(
+            '<div class="form-check form-switch">\
+              <input id="' + id + '" class="form-check-input" type="checkbox">\
+              <label class="form-check-label" for="' + id + '">Enable</label>\
+            </div>'
+          ));
+        } else {
+          tr.append($('<td/>').html(data[key]));
         }
         tbody.append(tr);
       }
+    }
+
+    function updateUI(info) {
+      document.title = info["Status"]["Hostname"];
+      fillTable("#tbody-status", info["Status"], 'status');
+      fillTable("#tbody-inputs", info["Inputs"], 'inputs');
+      fillTable("#tbody-outputs", info["Outputs"], 'outputs');
+      $("#input-watering").prop("checked", (info["Outputs"]["Watering"] == 1) ? true : false);
+      $("#input-thingspeak").prop("checked", (info["Status"]["ThingSpeak"] == "enabled") ? true : false);
+      $("#a-thingspeak-link").attr("href", "https://thingspeak.com/channels/" + info["Channel"]);
     }
 
     function refresh() {
@@ -112,16 +129,11 @@
         dataType: "json",
         url: "/data.json",
         timeout: 500,
-        success: function (info) {
-          document.title = info["Status"]["Hostname"];
-          fillTable("#tbody-status", info["Status"], false);
-          fillTable("#tbody-inputs", info["Inputs"]);
-          fillTable("#tbody-outputs", info["Outputs"]);
-          $("#input-watering").prop("checked", (info["Outputs"]["Watering"] == 1) ? true : false);
-          $("#input-thingspeak").prop("checked", (info["Status"]["ThingSpeak"] == "enabled") ? true : false);
-          $("#a-thingspeak-link").attr("href", "https://thingspeak.com/channels/" + info["Channel"]);
-        }
+        success: updateUI
       });
+
+      /*let info = {"Status":{"Hostname":"espgarden1","Date/Time":"2023-01-08 16:11:59","Uptime":"0d 0h 5m 19s","Internet":"online","Signal Strength":"100%","ThingSpeak":"enabled","Packages Sent":"2","Watering Cycles":"0","DHT Read Errors":"3"},"Inputs":{"Soil Moisture":{"val":"41.27","avg":"41.70","var":"0.03"},"Luminosity":{"val":"53.09","avg":"52.65","var":"0.02"},"Temperature":{"val":"26.70","avg":"26.63","var":"0.01"},"Air Humidity":{"val":"82.00","avg":"82.33","var":"0.14"}},"Outputs":{"Watering":"0"},"Channel":"1348790"};
+      updateUI(info);*/
 
       $.ajax({
         url: "/logs",

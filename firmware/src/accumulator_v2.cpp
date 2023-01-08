@@ -1,5 +1,4 @@
 #include "accumulator_v2.h"
-#include <math.h>
 
 AccumulatorV2::AccumulatorV2(unsigned maxLen)
   : lastAvg(0.0)
@@ -41,7 +40,7 @@ AccumulatorV2::getAverage()
         var *= var;
         sum += var;
     }
-    variance = sqrt(sum) / sampleList.size();
+    variance = sum / sampleList.size();
 
     return avg;
 }
