@@ -7,6 +7,10 @@ Logger::Logger()
   : buffer("")
 {
     Serial.begin(115200);
+
+    currentLog = -1;
+    bufferOffset = 0;
+    logOffset = 0;
 }
 
 Logger&
@@ -32,6 +36,8 @@ Logger::print(const String& str)
     while (buffer.length() > BUFFER_SIZE) {
         auto endlineIdx = buffer.indexOf('\n');
         buffer.remove(0, endlineIdx + 1);
+
+        bufferOffset -= (endlineIdx + 1);
     }
 
     return buffer.length();
@@ -63,8 +69,7 @@ Logger::dumpToFSSetup()
 {
     logger.println("Log setup...");
 
-    const String currentFilename("/current.txt");
-    currentLog = -1;
+    const String currentFilename("/current.txt");    
     File currentFile;
 
     if (!SPIFFS.exists(currentFilename)) {
@@ -102,13 +107,33 @@ Logger::dumpToFS()
     println("Starting log backup...");
 
     String logFilename = "/log" + String(currentLog) + ".txt";
-    auto logFile = SPIFFS.open(logFilename, FILE_WRITE, true);
-    if (!logFile) {
-        logger.println("failed to open " + String(logFilename));
-        return;
+    if (logOffset == 0) {
+        auto logFile = SPIFFS.open(logFilename, FILE_WRITE, true);
+        if (!logFile) {
+            logger.println("Failed to open " + String(logFilename));
+            return;
+        }
+
+        logFile.print(buffer);
+        logFile.close();
+
+        logOffset = buffer.length();
+        bufferOffset = logOffset;
+    } else {
+        auto logFile = SPIFFS.open(logFilename, FILE_APPEND);
+        if (!logFile) {
+            logger.println("failed to open " + String(logFilename));
+            return;
+        }
+
+        const uint8_t* pos = (const uint8_t*)buffer.c_str() + bufferOffset;
+        size_t len = buffer.length() - bufferOffset;
+        logFile.write(pos, len);
+        logFile.close();
+
+        logOffset += len;
+        bufferOffset += len;
     }
-    logFile.print(buffer);
-    logFile.close();
 
     println("Log backup done!");
 }

@@ -22,6 +22,8 @@ class Logger
     String buffer;
     bool writing = false;
     int currentLog;
+    unsigned logOffset;
+    unsigned bufferOffset;
 };
 
 #define logger Logger::instance()
