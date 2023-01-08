@@ -43,7 +43,7 @@ handleDataJson(AsyncWebServerRequest* request)
     char buffer[32];
 
     JSONVar statusJson;
-    statusJson["Hostname"] = String(g_hostname);
+    statusJson["Hostname"] = g_hostname;
     strftime(buffer, sizeof(buffer), "%F %T", &timeinfo);
     statusJson["Date/Time"] = String(buffer);
     if (g_bootTime > g_safeTimestamp) {
@@ -156,7 +156,7 @@ wifiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
     g_wifiConnected = false;
     g_hasNetwork = false;
 
-    WiFi.begin(g_ssid, g_wifiPassword);
+    WiFi.begin(g_ssid.c_str(), g_wifiPassword.c_str());
 }
 
 void
@@ -165,13 +165,13 @@ webSetup()
     logger.println("Web setup...");
 
     WiFi.mode(WIFI_STA);
-    WiFi.setHostname(g_hostname);
+    WiFi.setHostname(g_hostname.c_str());
     WiFi.onEvent(wifiConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
     WiFi.onEvent(wifiGotIP, ARDUINO_EVENT_WIFI_STA_GOT_IP);
     WiFi.onEvent(wifiDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-    WiFi.begin(g_ssid, g_wifiPassword);
+    WiFi.begin(g_ssid.c_str(), g_wifiPassword.c_str());
 
-    if (MDNS.begin(g_hostname) == false) {
+    if (MDNS.begin(g_hostname.c_str()) == false) {
         logger.println("Error starting mDNS!");
     }
 
@@ -187,7 +187,7 @@ webSetup()
     g_webServer.onNotFound(
       [](AsyncWebServerRequest* request) { request->send(404); });
 
-    AsyncElegantOTA.begin(&g_webServer, g_otaUser, g_otaPassword);
+    AsyncElegantOTA.begin(&g_webServer, g_otaUser.c_str(), g_otaPassword.c_str());
 
     g_webServer.begin();
 

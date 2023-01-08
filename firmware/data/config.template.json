@@ -1,0 +1,21 @@
+{
+    "version": 1,
+    "id": "1a2b",
+    "hostname": "device hostname",
+    "wifi": {
+        "ssid": "wifi name",
+        "password": "wifi password",
+    },
+    "ota": {
+        "username": "ota update username",
+        "password": "ota update password",
+    },
+    "thingSpeak": {
+        "apiKey": "0000",
+        "channel": 123456,
+    },
+    "talkBack": {
+        "apiKey": "0000",
+        "channel": 123456,
+    },
+}

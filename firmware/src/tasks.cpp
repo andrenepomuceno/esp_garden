@@ -153,7 +153,7 @@ thingSpeakTaskHandler()
 
     digitalWrite(LED_BUILTIN, 1);
     int status =
-      ThingSpeak.writeFields(g_thingSpeakChannelNumber, g_thingSpeakAPIKey);
+      ThingSpeak.writeFields(g_thingSpeakChannelNumber, g_thingSpeakAPIKey.c_str());
     digitalWrite(LED_BUILTIN, 0);
 
     if (status == 200) {

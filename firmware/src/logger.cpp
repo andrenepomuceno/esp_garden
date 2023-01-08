@@ -77,7 +77,7 @@ Logger::dumpToFSSetup()
                        " do not exists. Creating one...");
 
         currentFile = SPIFFS.open(currentFilename, FILE_WRITE, true);
-        if (!currentFile) {
+        if (currentFile == false) {
             logger.println("Failed to create " + String(currentFilename));
             return;
         }
@@ -109,7 +109,7 @@ Logger::dumpToFS()
     String logFilename = "/log" + String(currentLog) + ".txt";
     if (logOffset == 0) {
         auto logFile = SPIFFS.open(logFilename, FILE_WRITE, true);
-        if (!logFile) {
+        if (logFile == false) {
             logger.println("Failed to open " + String(logFilename));
             return;
         }
@@ -121,7 +121,7 @@ Logger::dumpToFS()
         bufferOffset = logOffset;
     } else {
         auto logFile = SPIFFS.open(logFilename, FILE_APPEND);
-        if (!logFile) {
+        if (logFile == false) {
             logger.println("failed to open " + String(logFilename));
             return;
         }
