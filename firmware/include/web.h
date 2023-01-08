@@ -5,6 +5,3 @@ extern bool g_hasNetwork;
 
 void
 webSetup();
-
-void
-webLoop();

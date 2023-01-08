@@ -128,6 +128,5 @@ setup(void)
 void
 loop(void)
 {
-    webLoop();
     tasksLoop();
 }

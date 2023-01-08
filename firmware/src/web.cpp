@@ -180,22 +180,25 @@ webSetup()
         request->send(SPIFFS, "/index.html", "text/html");
         digitalWrite(LED_BUILTIN, 0);
     });
+    g_webServer.on(
+      "/favicon.ico", HTTP_GET, [](AsyncWebServerRequest* request) {
+          digitalWrite(LED_BUILTIN, 1);
+          request->send(SPIFFS, "/favicon.ico", "image/x-icon");
+          digitalWrite(LED_BUILTIN, 0);
+      });
+
     g_webServer.on("/data.json", HTTP_GET, handleDataJson);
     g_webServer.on("/control", HTTP_POST, handleControl);
     g_webServer.on("/logs", HTTP_GET, handleLogs);
-    g_webServer.serveStatic("/", SPIFFS, "/");
+    g_webServer.serveStatic("/", SPIFFS, "/")
+      .setAuthentication(g_otaUser.c_str(), g_otaPassword.c_str());
     g_webServer.onNotFound(
       [](AsyncWebServerRequest* request) { request->send(404); });
 
-    AsyncElegantOTA.begin(&g_webServer, g_otaUser.c_str(), g_otaPassword.c_str());
+    AsyncElegantOTA.begin(
+      &g_webServer, g_otaUser.c_str(), g_otaPassword.c_str());
 
     g_webServer.begin();
 
     logger.println("Web setup done!");
-}
-
-void
-webLoop()
-{
-    // AsyncElegantOTA.loop();
 }
