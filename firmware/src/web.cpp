@@ -68,16 +68,31 @@ handleDataJson(AsyncWebServerRequest* request)
 
     JSONVar inputsJson;
 #ifdef HAS_MOISTURE_SENSOR
-    inputsJson["Soil Moisture"] = String(g_soilMoisture.getLast()) + "/" +
-                                  String(g_soilMoisture.getAverage());
+    JSONVar soilMoisture;
+    soilMoisture["val"] = String(g_soilMoisture.getLast());
+    soilMoisture["avg"] = String(g_soilMoisture.getAverage());
+    soilMoisture["var"] = String(g_soilMoisture.variance);
+    inputsJson["Soil Moisture"] = soilMoisture;
 #endif
 #ifdef HAS_LUMINOSITY_SENSOR
-    inputsJson["Luminosity"] =
-      String(g_luminosity.getLast()) + "/" + String(g_luminosity.getAverage());
+    JSONVar luminosity;
+    luminosity["val"] = String(g_luminosity.getLast());
+    luminosity["avg"] = String(g_luminosity.getAverage());
+    luminosity["var"] = String(g_luminosity.variance);
+    inputsJson["Luminosity"] = luminosity;
 #endif
 #ifdef HAS_DHT_SENSOR
-    inputsJson["Temperature"] = String(g_temperature.getLast());
-    inputsJson["Air Humidity"] = String(g_airHumidity.getLast());
+    JSONVar temperature;
+    temperature["val"] = String(g_temperature.getLast());
+    temperature["avg"] = String(g_temperature.getAverage());
+    temperature["var"] = String(g_temperature.variance);
+    inputsJson["Temperature"] = temperature;
+
+    JSONVar airHumidity;
+    airHumidity["val"] = String(g_airHumidity.getLast());
+    airHumidity["avg"] = String(g_airHumidity.getAverage());
+    airHumidity["var"] = String(g_airHumidity.variance);
+    inputsJson["Air Humidity"] = airHumidity;
 #endif
 
     JSONVar outputsJson;

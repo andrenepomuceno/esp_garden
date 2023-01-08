@@ -107,7 +107,6 @@ dhtTaskHandler()
         g_temperature.add(event.temperature);
     } else {
         error = true;
-        ++g_dhtReadErrors;
     }
 
     g_dht.humidity().getEvent(&event);
@@ -115,10 +114,10 @@ dhtTaskHandler()
         g_airHumidity.add(event.relative_humidity);
     } else {
         error = true;
-        ++g_dhtReadErrors;
     }
 
     if (error) {
+        ++g_dhtReadErrors;
         logger.println("DHT read error.");
     }
 }

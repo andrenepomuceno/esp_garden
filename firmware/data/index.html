@@ -34,6 +34,8 @@
           <th scope="col">#</th>
           <th scope="col">Name</th>
           <th scope="col">Value</th>
+          <th scope="col">Average</th>
+          <th scope="col">Variance</th>
         </tr>
       </thead>
       <tbody id="tbody-inputs"></tbody>
@@ -92,7 +94,13 @@
         var tr = $('<tr/>');
         if (indexCol == true) tr.append($('<th/>').html(i++).attr("scope", "row"));
         tr.append($('<td/>').html(key));
-        tr.append($('<td/>').html(data[key]));
+        if (data[key].val == undefined) {
+          tr.append($('<td/>').html(data[key]));
+        } else {
+          tr.append($('<td/>').html(data[key].val));
+          tr.append($('<td/>').html(data[key].avg));
+          tr.append($('<td/>').html(data[key].var));
+        }
         tbody.append(tr);
       }
     }

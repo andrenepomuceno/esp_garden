@@ -8,8 +8,10 @@ class AccumulatorV2
 
     void add(const float value);
     float getLast() const;
-    float getAverage() const;
+    float getAverage();
     unsigned getSamples();
+
+    float variance;
 
   private:
     std::list<float> sampleList;

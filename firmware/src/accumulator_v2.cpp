@@ -1,8 +1,10 @@
 #include "accumulator_v2.h"
+#include <math.h>
 
 AccumulatorV2::AccumulatorV2(unsigned maxLen)
   : lastAvg(0.0)
   , maxLen(maxLen)
+  , variance(0.0)
 {
 }
 
@@ -22,15 +24,26 @@ AccumulatorV2::getLast() const
 }
 
 float
-AccumulatorV2::getAverage() const
-{   
-    if (sampleList.size() == 0) return 0;
+AccumulatorV2::getAverage()
+{
+    if (sampleList.size() == 0)
+        return 0;
 
     float sum = 0;
     for (auto v : sampleList) {
         sum += v;
     }
-    return sum / sampleList.size();
+    float avg = sum / sampleList.size();
+
+    sum = 0;
+    for (auto v : sampleList) {
+        float var = (v - avg);
+        var *= var;
+        sum += var;
+    }
+    variance = sqrt(sum) / sampleList.size();
+
+    return avg;
 }
 
 unsigned
