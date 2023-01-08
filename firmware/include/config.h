@@ -26,12 +26,5 @@ extern uint8_t g_dhtPin;
 extern uint8_t g_soilMoisturePin;
 extern uint8_t g_luminosityPin;
 
-#if defined(ESPGARDEN1)
-
-#define HAS_MOISTURE_SENSOR
-#define HAS_LUMINOSITY_SENSOR
-#define HAS_DHT_SENSOR
-
-#else
-#warning "Board not defined!"
-#endif
+bool
+loadConfigFile(unsigned deviceID);
