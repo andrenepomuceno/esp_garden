@@ -1,4 +1,5 @@
 #include "SPIFFS.h"
+#include "accumulator_v2.h"
 #include "config.h"
 #include "html.h"
 #include "logger.h"
@@ -18,14 +19,20 @@ bool g_hasNetwork = false;
 static unsigned
 getSignalStrength()
 {
+    static AccumulatorV2 rssiAcc(60);
+
     auto rssi = WiFi.RSSI();
+    unsigned val = 0;
     if (rssi <= -100) {
-        return 0;
+        val = 0;
     } else if (rssi >= -50) {
-        return 100;
+        val = 100;
     } else {
-        return 2 * (rssi + 100);
+        val = 2 * (rssi + 100);
     }
+    rssiAcc.add(val);
+
+    return rssiAcc.getAverage();
 }
 
 void
@@ -58,8 +65,7 @@ handleDataJson(AsyncWebServerRequest* request)
     }
     statusJson["Internet"] = String((g_hasInternet) ? "online" : "offline");
     statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
-    statusJson["MQTT"] =
-      String((g_mqttEnabled) ? "enabled" : "disabled");
+    statusJson["MQTT"] = String((g_mqttEnabled) ? "enabled" : "disabled");
     statusJson["Packages Sent"] = String(g_packagesSent);
     statusJson["Watering Cycles"] = String(g_wateringCycles);
 #ifdef HAS_DHT_SENSOR

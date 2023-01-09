@@ -157,7 +157,7 @@ mqttTaskHandler()
     strftime(timestamp, sizeof timestamp, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
     g_mqttMessage += "created_at='" + String(timestamp) + "'";
 
-    logger.println(g_mqttMessage);
+    logger.println("Publish: " + g_mqttMessage);
 
     digitalWrite(LED_BUILTIN, 1);
     bool success = mqttPublish(g_thingSpeakChannelNumber, g_mqttMessage);
@@ -413,9 +413,9 @@ void
 mqttEnable(bool enable)
 {
     if (enable == true) {
-        logger.println("ThinkSpeak enabled.");
+        logger.println("MQTT enabled.");
     } else {
-        logger.println("ThinkSpeak disabled.");
+        logger.println("MQTT disabled.");
     }
 
     g_mqttEnabled = enable;
