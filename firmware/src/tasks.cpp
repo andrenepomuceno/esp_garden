@@ -316,6 +316,8 @@ checkInternetTaskHandler()
         logger.println("Internet connection lost.");
         g_hasInternet = false;
         connectionLostTime = time(NULL);
+
+        g_mqttMessage += "status='Internet connection lost.'&";
         ++g_connectionLossCount;
     }
 }
