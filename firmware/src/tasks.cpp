@@ -135,6 +135,12 @@ mqttAddField(int field, String val)
 }
 
 void
+mqttAddStatus(String status)
+{
+    g_mqttMessage += "status='" + status + "'&";
+}
+
+void
 mqttTaskHandler()
 {
     static std::list<String> msgQueue;
@@ -304,6 +310,8 @@ checkInternetTaskHandler()
                 if (connectionLostTime != 0) {
                     time_t downTime = time(NULL) - connectionLostTime;
                     logger.println("Down time: " + String(downTime) + " s");
+                    
+                    mqttAddStatus("Im back online! Downtime: " + String(downTime));
                 }
             }
             g_pingTime.add(Ping.averageTime());
@@ -316,9 +324,9 @@ checkInternetTaskHandler()
         logger.println("Internet connection lost.");
         g_hasInternet = false;
         connectionLostTime = time(NULL);
-
-        g_mqttMessage += "status='Internet connection lost.'&";
         ++g_connectionLossCount;
+
+        mqttAddStatus("Internet connection lost.");
     }
 }
 

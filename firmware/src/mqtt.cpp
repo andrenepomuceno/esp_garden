@@ -8,11 +8,6 @@
 WiFiClientSecure client;
 PubSubClient mqttClient(client);
 
-int status = WL_IDLE_STATUS;
-long lastPublishMillis = 0;
-int connectionDelay = 1;
-int updateInterval = 15;
-
 void
 mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length)
 {

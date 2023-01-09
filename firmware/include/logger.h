@@ -18,7 +18,7 @@ class Logger
     int print(const String& str);
     int print(int i);
 
-    static const unsigned BUFFER_SIZE = 4096;
+    static const unsigned BUFFER_SIZE = 8 * 1024;
     String buffer;
     bool writing = false;
     int currentLog;
