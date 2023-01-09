@@ -5,7 +5,6 @@
 #include "web.h"
 #include <ESP32Ping.h>
 #include <TaskScheduler.h>
-#include <ThingSpeak.h>
 #include <WiFi.h>
 #ifdef HAS_DHT_SENSOR
 #include <Adafruit_Sensor.h>
@@ -32,7 +31,7 @@ DECLARE_TASK(ledBlink, 1000);                   // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
 DECLARE_TASK(checkInternet, 30 * 1000);         // 30 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
-DECLARE_TASK(thingSpeak, 2 * 60 * 1000);        // 2 min
+DECLARE_TASK(mqtt, 1 * 60 * 1000);              // 1 min
 DECLARE_TASK(talkBack, 5 * 60 * 1000);          // 5 min
 #ifdef HAS_MOISTURE_SENSOR
 DECLARE_TASK(checkMoisture, 30 * 60 * 1000); // 30 min
@@ -59,18 +58,18 @@ static const unsigned g_wateringPWMTime = 2 * 1000;
 
 #ifdef HAS_DHT_SENSOR
 static DHT_Unified g_dht(g_dhtPin, DHT11);
-AccumulatorV2 g_temperature(g_thingSpeakTaskPeriod / g_dhtTaskPeriod);
-AccumulatorV2 g_airHumidity(g_thingSpeakTaskPeriod / g_dhtTaskPeriod);
+AccumulatorV2 g_temperature(g_mqttTaskPeriod / g_dhtTaskPeriod);
+AccumulatorV2 g_airHumidity(g_mqttTaskPeriod / g_dhtTaskPeriod);
 unsigned g_dhtReadErrors = 0;
 #endif
 
 #ifdef HAS_MOISTURE_SENSOR
-AccumulatorV2 g_soilMoisture(g_thingSpeakTaskPeriod / g_ioTaskPeriod);
+AccumulatorV2 g_soilMoisture(g_mqttTaskPeriod / g_ioTaskPeriod);
 static float g_moistureBeforeWatering = 0.0;
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
-AccumulatorV2 g_luminosity(g_thingSpeakTaskPeriod / g_ioTaskPeriod);
+AccumulatorV2 g_luminosity(g_mqttTaskPeriod / g_ioTaskPeriod);
 #endif
 
 static WiFiClient g_wifiClient;
@@ -79,7 +78,7 @@ static TalkBack talkBack;
 bool g_wateringState = false;
 bool g_hasInternet = false;
 time_t g_bootTime = 0;
-bool g_thingSpeakEnabled = true;
+bool g_mqttEnabled = true;
 unsigned g_packagesSent = 0;
 unsigned g_wateringCycles = 0;
 bool g_ledBlinkEnabled = false;
@@ -124,44 +123,53 @@ dhtTaskHandler()
 }
 #endif
 
-static void
-thingSpeakTaskHandler()
+static String g_mqttMessage = "";
+
+void
+mqttTaskHandler()
 {
-    if (!g_thingSpeakEnabled || !g_hasInternet) {
-        logger.println("thingSpeakTaskHandler skipped.");
-        logger.println("g_thingSpeakEnabled = " + String(g_thingSpeakEnabled) +
+    if (!g_mqttEnabled || !g_hasInternet) {
+        logger.println("MQTT skipped.");
+        logger.println("g_mqttEnabled = " + String(g_mqttEnabled) +
                        " g_hasInternet = " + String(g_hasInternet));
         return;
     }
 
 #ifdef HAS_MOISTURE_SENSOR
-    ThingSpeak.setField(g_soilMoistureField,
-                        FLOAT_TO_STRING(g_soilMoisture.getAverage()));
+    g_mqttMessage += "field" + String(g_soilMoistureField) + "=" +
+           FLOAT_TO_STRING(g_soilMoisture.getAverage()) + "&";
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
-    ThingSpeak.setField(g_luminosityField,
-                        FLOAT_TO_STRING(g_luminosity.getAverage()));
+    g_mqttMessage += "field" + String(g_luminosityField) + "=" +
+           FLOAT_TO_STRING(g_luminosity.getAverage()) + "&";
 #endif
 
 #ifdef HAS_DHT_SENSOR
-    ThingSpeak.setField(g_temperatureField,
-                        FLOAT_TO_STRING(g_temperature.getAverage()));
-    ThingSpeak.setField(g_airHumidityField,
-                        FLOAT_TO_STRING(g_airHumidity.getAverage()));
+    g_mqttMessage += "field" + String(g_temperatureField) + "=" +
+           FLOAT_TO_STRING(g_temperature.getAverage()) + "&";
+    g_mqttMessage += "field" + String(g_airHumidityField) + "=" +
+           FLOAT_TO_STRING(g_airHumidity.getAverage()) + "&";
 #endif
 
+    char timestamp[64];
+    time_t now = time(nullptr);
+    strftime(timestamp, sizeof timestamp, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+    g_mqttMessage += "created_at='" + String(timestamp) + "'";
+
+    logger.println(g_mqttMessage);
+
     digitalWrite(LED_BUILTIN, 1);
-    int status = ThingSpeak.writeFields(g_thingSpeakChannelNumber,
-                                        g_thingSpeakAPIKey.c_str());
+    bool success = mqttPublish(g_thingSpeakChannelNumber, g_mqttMessage);
     digitalWrite(LED_BUILTIN, 0);
 
-    if (status == 200) {
+    if (success) {
         ++g_packagesSent;
     } else {
-        logger.println("ThingSpeak.writeFields failed with error " +
-                       String(status));
+        logger.println("mqttPublish failed");
     }
+
+    g_mqttMessage = "";
 }
 
 void
@@ -188,7 +196,8 @@ wateringTaskHandler()
     unsigned elapsedTime = (runs - 1) * g_wateringTaskPeriod;
 
     if (runs == 1) {
-        ThingSpeak.setField(g_wateringField, static_cast<int>(g_wateringTime));
+        g_mqttMessage +=
+          "field" + String(g_wateringField) + "=" + String(g_wateringTime) + "&";
 #if !USE_WATERING_PWM
         digitalWrite(g_wateringPin, g_wateringPinOn);
 #else
@@ -227,7 +236,7 @@ wateringTaskHandler()
 static void
 talkBackTaskHandler()
 {
-    if (!g_thingSpeakEnabled || !g_hasInternet) {
+    if (!g_mqttEnabled || !g_hasInternet) {
         return;
     }
 
@@ -339,7 +348,7 @@ tasksSetup()
     ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
 #endif
 
-    ThingSpeak.begin(g_wifiClient);
+    mqttSetup();
 
     talkBack.setTalkBackID(g_talkBackID);
     talkBack.setAPIKey(g_talkBackAPIKey);
@@ -356,7 +365,8 @@ tasksSetup()
         g_bootTime = time(NULL);
     }
 
-    ThingSpeak.setField(g_bootTimeField, g_bootTime);
+    g_mqttMessage +=
+          "field" + String(g_bootTimeField) + "=" + String(g_bootTime) + "&";
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
 #ifdef HAS_DHT_SENSOR
@@ -365,7 +375,7 @@ tasksSetup()
 #endif
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
     g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
-    g_thingSpeakTask.enableDelayed(g_thingSpeakTaskPeriod);
+    g_mqttTask.enableDelayed(g_mqttTaskPeriod);
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
     g_ledBlinkTask.enableDelayed(g_ledBlinkTaskPeriod);
     g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
@@ -377,6 +387,7 @@ void
 tasksLoop()
 {
     g_taskScheduler.execute();
+    mqttLoop();
 }
 
 void
@@ -399,7 +410,7 @@ startWatering(unsigned int wateringTime)
 }
 
 void
-thingSpeakEnable(bool enable)
+mqttEnable(bool enable)
 {
     if (enable == true) {
         logger.println("ThinkSpeak enabled.");
@@ -407,5 +418,5 @@ thingSpeakEnable(bool enable)
         logger.println("ThinkSpeak disabled.");
     }
 
-    g_thingSpeakEnabled = enable;
+    g_mqttEnabled = enable;
 }

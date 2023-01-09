@@ -1,7 +1,11 @@
 #pragma once
+#include <Arduino.h>
 
-void
+bool
 mqttSetup();
 
 void
 mqttLoop();
+
+bool
+mqttPublish(long pubChannelID, String message);

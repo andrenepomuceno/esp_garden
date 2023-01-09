@@ -3,7 +3,6 @@
 #include "tasks.h"
 #include "web.h"
 #include <Arduino.h>
-#include "mqtt.h"
 
 void
 setup(void)
@@ -33,7 +32,6 @@ setup(void)
     logger.backupSetup();
     webSetup();
     tasksSetup();
-    mqttSetup();
 
     digitalWrite(LED_BUILTIN, 0);
 
@@ -46,5 +44,4 @@ void
 loop(void)
 {
     tasksLoop();
-    mqttLoop();
 }

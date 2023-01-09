@@ -25,7 +25,7 @@ function updateUI(info) {
   fillTable("#tbody-inputs", info["Inputs"], 'inputs');
   fillTable("#tbody-outputs", info["Outputs"], 'outputs');
   $("#input-watering").prop("checked", (info["Outputs"]["Watering"] == 1) ? true : false);
-  $("#input-thingspeak").prop("checked", (info["Status"]["ThingSpeak"] == "enabled") ? true : false);
+  $("#input-mqtt").prop("checked", (info["Status"]["MQTT"] == "enabled") ? true : false);
   $("#a-thingspeak-link").attr("href", "https://thingspeak.com/channels/" + info["Channel"]);
 }
 
@@ -66,12 +66,12 @@ $("#input-watering").click(function (event) {
   }
 });
 
-$("#input-thingspeak").click(function (event) {
+$("#input-mqtt").click(function (event) {
   event.preventDefault();
   if (this.checked) {
-    $.post("/control", { "thingSpeak": "enable" });
+    $.post("/control", { "mqtt": "enable" });
   } else {
-    $.post("/control", { "thingSpeak": "disable" });
+    $.post("/control", { "mqtt": "disable" });
   }
 });
 

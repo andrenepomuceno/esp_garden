@@ -24,7 +24,7 @@ extern time_t g_bootTime;
 extern bool g_hasInternet;
 extern unsigned g_packagesSent;
 
-extern bool g_thingSpeakEnabled;
+extern bool g_mqttEnabled;
 
 extern const unsigned int g_wateringDefaultTime;
 extern unsigned g_wateringCycles;
@@ -41,4 +41,4 @@ void
 startWatering(unsigned int wateringTime = g_wateringDefaultTime);
 
 void
-thingSpeakEnable(bool enable);
+mqttEnable(bool enable);

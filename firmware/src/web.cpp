@@ -58,8 +58,8 @@ handleDataJson(AsyncWebServerRequest* request)
     }
     statusJson["Internet"] = String((g_hasInternet) ? "online" : "offline");
     statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
-    statusJson["ThingSpeak"] =
-      String((g_thingSpeakEnabled) ? "enabled" : "disabled");
+    statusJson["MQTT"] =
+      String((g_mqttEnabled) ? "enabled" : "disabled");
     statusJson["Packages Sent"] = String(g_packagesSent);
     statusJson["Watering Cycles"] = String(g_wateringCycles);
 #ifdef HAS_DHT_SENSOR
@@ -120,11 +120,11 @@ handleControl(AsyncWebServerRequest* request)
             startWatering();
         } else if (param->name() == "wateringTime") {
             startWatering(param->value().toInt());
-        } else if (param->name() == "thingSpeak") {
+        } else if (param->name() == "mqtt") {
             if (param->value() == "enable") {
-                thingSpeakEnable(true);
+                mqttEnable(true);
             } else if (param->value() == "disable") {
-                thingSpeakEnable(false);
+                mqttEnable(false);
             }
         } else if ((param->name() == "reset") && (param->value() == "1")) {
             ESP.restart();
