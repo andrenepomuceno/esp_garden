@@ -47,7 +47,6 @@
           <th scope="col">#</th>
           <th scope="col">Name</th>
           <th scope="col">Value</th>
-          <th scope="col">Control</th>
         </tr>
       </thead>
       <tbody id="tbody-outputs"></tbody>
@@ -64,6 +63,12 @@
         <div class="col">
           <input type="number" class="form-control" id="input-watering-time" placeholder="5" min="1" max="20" value="5">
           <label for="input-watering-time">Watering Time</label>
+        </div>
+        <div class="col">
+          <div class="form-check form-switch">
+            <input id="input-watering" class="form-check-input" type="checkbox">
+            <label class="form-check-label" for="input-watering">Start</label>
+          </div>
         </div>
         <div class="col">
           <button id="button-reset" type="button" class="btn btn-primary">Reset</button>

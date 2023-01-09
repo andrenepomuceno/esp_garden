@@ -1,8 +1,6 @@
 #pragma once
 
 #include <Arduino.h>
-#include <pgmspace.h>
-#include <pins_arduino.h>
 
 extern String g_hostname;
 extern String g_timezone;
