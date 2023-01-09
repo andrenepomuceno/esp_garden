@@ -126,9 +126,10 @@ Logger::backup()
             return;
         }
 
-        const uint8_t* pos = (const uint8_t*)buffer.c_str() + bufferOffset;
-        size_t len = buffer.length() - bufferOffset;
-        logFile.write(pos, len);
+        String data = buffer.substring(bufferOffset);
+        //const uint8_t* pos = (const uint8_t*)buffer.c_str() + bufferOffset;
+        size_t len = data.length();
+        logFile.print(data);
         logFile.close();
 
         logOffset += len;
