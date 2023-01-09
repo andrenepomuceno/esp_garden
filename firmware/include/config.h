@@ -17,6 +17,10 @@ extern long g_thingSpeakChannelNumber;
 extern String g_talkBackAPIKey;
 extern long g_talkBackID;
 
+extern String g_mqttUser;
+extern String g_mqttPassword;
+extern String g_mqttClientID;
+
 extern uint8_t g_buttonPin;
 extern uint8_t g_wateringPin;
 extern uint8_t g_wateringPinOn;

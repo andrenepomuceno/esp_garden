@@ -22,6 +22,11 @@ long g_thingSpeakChannelNumber = 0;
 String g_talkBackAPIKey = "undefined";
 long g_talkBackID = 0;
 
+// mqtt
+String g_mqttUser = "";
+String g_mqttPassword = "";
+String g_mqttClientID = "";
+
 // pins
 uint8_t g_buttonPin = 0;
 uint8_t g_wateringPin = 15;

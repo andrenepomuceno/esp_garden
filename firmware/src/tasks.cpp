@@ -1,5 +1,6 @@
 #include "tasks.h"
 #include "logger.h"
+#include "mqtt.h"
 #include "talkback.h"
 #include "web.h"
 #include <ESP32Ping.h>
@@ -151,8 +152,8 @@ thingSpeakTaskHandler()
 #endif
 
     digitalWrite(LED_BUILTIN, 1);
-    int status =
-      ThingSpeak.writeFields(g_thingSpeakChannelNumber, g_thingSpeakAPIKey.c_str());
+    int status = ThingSpeak.writeFields(g_thingSpeakChannelNumber,
+                                        g_thingSpeakAPIKey.c_str());
     digitalWrite(LED_BUILTIN, 0);
 
     if (status == 200) {
