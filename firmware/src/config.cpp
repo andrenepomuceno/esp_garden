@@ -26,6 +26,9 @@ long g_talkBackID = 0;
 String g_mqttUser = "";
 String g_mqttPassword = "";
 String g_mqttClientID = "";
+String g_mqttServer = "mqtt3.thingspeak.com";
+int g_mqttPort = 8883;
+String g_mqttCACert = "/thingspeak.pem";
 
 // pins
 uint8_t g_buttonPin = 0;
@@ -91,6 +94,14 @@ loadConfigFile(unsigned deviceID)
     JSONVar talkBack = configJson["talkBack"];
     g_talkBackAPIKey = talkBack["apiKey"];
     g_talkBackID = talkBack["channel"];
+
+    JSONVar mqtt = configJson["mqtt"];
+    g_mqttClientID = mqtt["clientID"];
+    g_mqttUser = mqtt["username"];
+    g_mqttPassword = mqtt["password"];
+    g_mqttServer = mqtt["server"];
+    g_mqttPort = mqtt["port"];
+    g_mqttCACert = mqtt["cacert"];
 
     JSONVar io = configJson["io"];
     g_buttonPin = (int)io["button"];

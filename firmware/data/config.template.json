@@ -18,5 +18,21 @@
     "talkBack": {
         "apiKey": "0000",
         "channel": 123456
+    },
+    "mqtt": {
+        "clientID": "",
+        "username": "",
+        "password": "",
+        "server": "mqtt3.thingspeak.com",
+        "port": 8883,
+        "cacert": "/thingspeak.pem"
+    },
+    "io": {
+        "button": 0,
+        "watering": 15,
+        "wateringOn": 0,
+        "dht": 23,
+        "soilMoisture": 36,
+        "luminosity": 39
     }
 }

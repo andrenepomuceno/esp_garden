@@ -1,9 +1,7 @@
 #pragma once
 
-class MQTT
-{
-  public:
-    MQTT();
+void
+mqttSetup();
 
-  private:
-};
+void
+mqttLoop();

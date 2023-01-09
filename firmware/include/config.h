@@ -20,6 +20,9 @@ extern long g_talkBackID;
 extern String g_mqttUser;
 extern String g_mqttPassword;
 extern String g_mqttClientID;
+extern String g_mqttServer;
+extern int g_mqttPort;
+extern String g_mqttCACert;
 
 extern uint8_t g_buttonPin;
 extern uint8_t g_wateringPin;
