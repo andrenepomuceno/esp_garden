@@ -6,6 +6,7 @@
 #include <ESP32Ping.h>
 #include <TaskScheduler.h>
 #include <WiFi.h>
+#include <list>
 #ifdef HAS_DHT_SENSOR
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
@@ -31,7 +32,7 @@ DECLARE_TASK(ledBlink, 1000);                   // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
 DECLARE_TASK(checkInternet, 30 * 1000);         // 30 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
-DECLARE_TASK(mqtt, 1 * 60 * 1000);              // 1 min
+DECLARE_TASK(mqtt, 2 * 60 * 1000);              // 2 min
 DECLARE_TASK(talkBack, 5 * 60 * 1000);          // 5 min
 #ifdef HAS_MOISTURE_SENSOR
 DECLARE_TASK(checkMoisture, 30 * 60 * 1000); // 30 min
@@ -50,6 +51,8 @@ static const unsigned g_bootTimeField = 8;
 const unsigned int g_wateringDefaultTime = 5 * 1000;
 static const unsigned g_wateringMaxTime = 20 * 1000;
 static unsigned g_wateringTime = g_wateringDefaultTime;
+AccumulatorV2 g_pingTime(g_mqttTaskPeriod / g_checkInternetTaskPeriod);
+static String g_mqttMessage = "";
 
 #if USE_WATERING_PWM
 static const unsigned g_wateringPWMChannel = 0;
@@ -123,11 +126,17 @@ dhtTaskHandler()
 }
 #endif
 
-static String g_mqttMessage = "";
+void
+mqttAddField(int field, String val)
+{
+    g_mqttMessage += "field" + String(field) + "=" + val + "&";
+}
 
 void
 mqttTaskHandler()
 {
+    static std::list<String> msgQueue;
+
     if (!g_mqttEnabled || !g_hasInternet) {
         logger.println("MQTT skipped.");
         logger.println("g_mqttEnabled = " + String(g_mqttEnabled) +
@@ -136,20 +145,19 @@ mqttTaskHandler()
     }
 
 #ifdef HAS_MOISTURE_SENSOR
-    g_mqttMessage += "field" + String(g_soilMoistureField) + "=" +
-           FLOAT_TO_STRING(g_soilMoisture.getAverage()) + "&";
+    mqttAddField(g_soilMoistureField,
+                 FLOAT_TO_STRING(g_soilMoisture.getAverage()));
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
-    g_mqttMessage += "field" + String(g_luminosityField) + "=" +
-           FLOAT_TO_STRING(g_luminosity.getAverage()) + "&";
+    mqttAddField(g_luminosityField, FLOAT_TO_STRING(g_luminosity.getAverage()));
 #endif
 
 #ifdef HAS_DHT_SENSOR
-    g_mqttMessage += "field" + String(g_temperatureField) + "=" +
-           FLOAT_TO_STRING(g_temperature.getAverage()) + "&";
-    g_mqttMessage += "field" + String(g_airHumidityField) + "=" +
-           FLOAT_TO_STRING(g_airHumidity.getAverage()) + "&";
+    mqttAddField(g_temperatureField,
+                 FLOAT_TO_STRING(g_temperature.getAverage()));
+    mqttAddField(g_airHumidityField,
+                 FLOAT_TO_STRING(g_airHumidity.getAverage()));
 #endif
 
     char timestamp[64];
@@ -157,19 +165,29 @@ mqttTaskHandler()
     strftime(timestamp, sizeof timestamp, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
     g_mqttMessage += "created_at='" + String(timestamp) + "'";
 
-    logger.println("Publish: " + g_mqttMessage);
+    msgQueue.push_back(g_mqttMessage);
+    g_mqttMessage = "";
 
     digitalWrite(LED_BUILTIN, 1);
-    bool success = mqttPublish(g_thingSpeakChannelNumber, g_mqttMessage);
-    digitalWrite(LED_BUILTIN, 0);
+    int errors = 0;
+    while (msgQueue.size() > 0) {
+        logger.println("Publish [" + String(msgQueue.size()) + "]: " + msgQueue.front());
+        bool success = mqttPublish(g_thingSpeakChannelNumber, msgQueue.front());
 
-    if (success) {
-        ++g_packagesSent;
-    } else {
-        logger.println("mqttPublish failed");
+        if (success) {
+            ++g_packagesSent;
+            msgQueue.pop_front();
+            errors = 0;
+        } else {
+            logger.println("mqttPublish failed");
+            ++errors;
+            if (errors > 3) {
+                logger.println("Giving up...");
+                break;
+            }
+        }
     }
-
-    g_mqttMessage = "";
+    digitalWrite(LED_BUILTIN, 0);
 }
 
 void
@@ -196,8 +214,7 @@ wateringTaskHandler()
     unsigned elapsedTime = (runs - 1) * g_wateringTaskPeriod;
 
     if (runs == 1) {
-        g_mqttMessage +=
-          "field" + String(g_wateringField) + "=" + String(g_wateringTime) + "&";
+        mqttAddField(g_wateringField, String(g_wateringTime));
 #if !USE_WATERING_PWM
         digitalWrite(g_wateringPin, g_wateringPinOn);
 #else
@@ -285,7 +302,7 @@ checkInternetTaskHandler()
                     logger.println("Down time: " + String(downTime) + " s");
                 }
             }
-
+            g_pingTime.add(Ping.averageTime());
             g_hasInternet = true;
             return;
         }
@@ -348,13 +365,11 @@ tasksSetup()
     ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
 #endif
 
-    mqttSetup();
-
     talkBack.setTalkBackID(g_talkBackID);
     talkBack.setAPIKey(g_talkBackAPIKey);
     talkBack.begin(g_wifiClient);
 
-    logger.println("Checking internet connection...");
+    logger.println("Waiting for internet connection...");
     while (!g_hasInternet) {
         checkInternetTaskHandler();
         delay(1000);
@@ -365,8 +380,8 @@ tasksSetup()
         g_bootTime = time(NULL);
     }
 
-    g_mqttMessage +=
-          "field" + String(g_bootTimeField) + "=" + String(g_bootTime) + "&";
+    mqttSetup();
+    mqttAddField(g_bootTimeField, String(g_bootTime));
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
 #ifdef HAS_DHT_SENSOR
@@ -381,6 +396,7 @@ tasksSetup()
     g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
 
     logger.println("Tasks setup done!");
+    logger.backup();
 }
 
 void

@@ -65,6 +65,7 @@ handleDataJson(AsyncWebServerRequest* request)
     }
     statusJson["Internet"] = String((g_hasInternet) ? "online" : "offline");
     statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
+    statusJson["Ping"] = String(g_pingTime.getAverage()) + "ms";
     statusJson["MQTT"] = String((g_mqttEnabled) ? "enabled" : "disabled");
     statusJson["Packages Sent"] = String(g_packagesSent);
     statusJson["Watering Cycles"] = String(g_wateringCycles);

@@ -67,8 +67,6 @@ mqttSetup()
     cacert.close();
     client.setCACert(data.c_str());
 
-    mqttLoop();
-
     return true;
 }
 
