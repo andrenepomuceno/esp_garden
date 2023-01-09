@@ -32,6 +32,7 @@ extern unsigned g_wateringCycles;
 extern bool g_ledBlinkEnabled;
 
 extern AccumulatorV2 g_pingTime;
+extern unsigned g_connectionLossCount;
 
 void
 tasksSetup();

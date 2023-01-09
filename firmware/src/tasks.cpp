@@ -30,7 +30,7 @@ DECLARE_TASK(io, 1000);                         // 1 s
 DECLARE_TASK(watering, 100);                    // 100 ms
 DECLARE_TASK(ledBlink, 1000);                   // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
-DECLARE_TASK(checkInternet, 30 * 1000);         // 30 s
+DECLARE_TASK(checkInternet, 15 * 1000);         // 30 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
 DECLARE_TASK(mqtt, 2 * 60 * 1000);              // 2 min
 DECLARE_TASK(talkBack, 5 * 60 * 1000);          // 5 min
@@ -43,6 +43,7 @@ DECLARE_TASK(dht, 10 * 1000); // 10 s
 
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
+static const unsigned g_pingField = 3;
 static const unsigned g_luminosityField = 5;
 static const unsigned g_temperatureField = 6;
 static const unsigned g_airHumidityField = 7;
@@ -85,6 +86,7 @@ bool g_mqttEnabled = true;
 unsigned g_packagesSent = 0;
 unsigned g_wateringCycles = 0;
 bool g_ledBlinkEnabled = false;
+unsigned g_connectionLossCount = 0;
 
 static void
 ioTaskHandler()
@@ -159,6 +161,8 @@ mqttTaskHandler()
     mqttAddField(g_airHumidityField,
                  FLOAT_TO_STRING(g_airHumidity.getAverage()));
 #endif
+
+    mqttAddField(g_pingField, String(g_pingTime.getAverage()));
 
     char timestamp[64];
     time_t now = time(nullptr);
@@ -312,6 +316,7 @@ checkInternetTaskHandler()
         logger.println("Internet connection lost.");
         g_hasInternet = false;
         connectionLostTime = time(NULL);
+        ++g_connectionLossCount;
     }
 }
 
