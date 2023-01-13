@@ -35,7 +35,7 @@ DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
 DECLARE_TASK(mqtt, 2 * 60 * 1000);              // 2 min
 DECLARE_TASK(talkBack, 5 * 60 * 1000);          // 5 min
 #ifdef HAS_MOISTURE_SENSOR
-DECLARE_TASK(checkMoisture, 30 * 60 * 1000); // 30 min
+DECLARE_TASK(checkMoisture, 4 * 60 * 60 * 1000); // 4 h
 #endif
 #ifdef HAS_DHT_SENSOR
 DECLARE_TASK(dht, 10 * 1000); // 10 s
@@ -123,7 +123,7 @@ dhtTaskHandler()
 
     if (error) {
         ++g_dhtReadErrors;
-        logger.println("DHT read error.");
+        //logger.println("DHT read error.");
     }
 }
 #endif
@@ -180,8 +180,14 @@ mqttTaskHandler()
 
     digitalWrite(LED_BUILTIN, 1);
     int errors = 0;
+    const unsigned maxMsgQueueSize = 60 * 60 * 1000 / g_mqttTaskPeriod;
+    while (msgQueue.size() > maxMsgQueueSize) {
+        logger.println("msgQueue is full, discarding messages..");
+        msgQueue.pop_front();
+    }
     while (msgQueue.size() > 0) {
-        logger.println("Publish [" + String(msgQueue.size()) + "]: " + msgQueue.front());
+        // logger.println("Publish [" + String(msgQueue.size()) + "]: " +
+        // msgQueue.front());
         bool success = mqttPublish(g_thingSpeakChannelNumber, msgQueue.front());
 
         if (success) {
@@ -189,10 +195,10 @@ mqttTaskHandler()
             msgQueue.pop_front();
             errors = 0;
         } else {
-            logger.println("mqttPublish failed");
+            logger.println("mqttPublish failed.");
             ++errors;
             if (errors > 3) {
-                logger.println("Giving up...");
+                logger.println("Giving up for now...");
                 break;
             }
         }
@@ -310,8 +316,9 @@ checkInternetTaskHandler()
                 if (connectionLostTime != 0) {
                     time_t downTime = time(NULL) - connectionLostTime;
                     logger.println("Down time: " + String(downTime) + " s");
-                    
-                    mqttAddStatus("Im back online! Downtime: " + String(downTime));
+
+                    mqttAddStatus("Im back online! Downtime: " +
+                                  String(downTime));
                 }
             }
             g_pingTime.add(Ping.averageTime());
@@ -337,7 +344,7 @@ checkMoistureTaskHandler()
     float moistureDelta =
       g_soilMoisture.getAverage() - g_moistureBeforeWatering;
 
-    if (moistureDelta < 1.0) {
+    if (moistureDelta < 0.5) {
         logger.println("Maybe we are out of water...");
         logger.println("Delta: " + FLOAT_TO_STRING(moistureDelta));
     }

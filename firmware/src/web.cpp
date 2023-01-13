@@ -62,6 +62,14 @@ handleDataJson(AsyncWebServerRequest* request)
                  minutes % 60,
                  uptime % 60);
         statusJson["Uptime"] = String(buffer);
+
+#ifdef HAS_DHT_SENSOR
+        if (uptime > 0) {
+            statusJson["DHT Read Errors"] =
+              String(g_dhtReadErrors) + " (" +
+              String(g_dhtReadErrors / uptime * 60 * 60, 2) + "/h)";
+        }
+#endif
     }
     statusJson["Internet"] = String((g_hasInternet) ? "online" : "offline");
     statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
@@ -70,9 +78,6 @@ handleDataJson(AsyncWebServerRequest* request)
     statusJson["MQTT"] = String((g_mqttEnabled) ? "enabled" : "disabled");
     statusJson["Packages Sent"] = String(g_packagesSent);
     statusJson["Watering Cycles"] = String(g_wateringCycles);
-#ifdef HAS_DHT_SENSOR
-    statusJson["DHT Read Errors"] = String(g_dhtReadErrors);
-#endif
 
     JSONVar inputsJson;
 #ifdef HAS_MOISTURE_SENSOR
