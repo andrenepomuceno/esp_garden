@@ -33,6 +33,7 @@
         "wateringOn": 0,
         "dht": 23,
         "soilMoisture": 36,
-        "luminosity": 39
+        "luminosity": 39,
+        "waterLevel": 34
     }
 }

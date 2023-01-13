@@ -62,15 +62,13 @@ handleDataJson(AsyncWebServerRequest* request)
                  minutes % 60,
                  uptime % 60);
         statusJson["Uptime"] = String(buffer);
-
-#ifdef HAS_DHT_SENSOR
-        if (uptime > 0) {
-            statusJson["DHT Read Errors"] =
-              String(g_dhtReadErrors) + " (" +
-              String(g_dhtReadErrors / uptime * 60 * 60, 2) + "/h)";
-        }
-#endif
     }
+#ifdef HAS_DHT_SENSOR
+    if (g_dhtTotalReads > 0) {
+        statusJson["DHT Error Rate"] =
+          String((float)g_dhtReadErrors / (float)g_dhtTotalReads * 100, 2);
+    }
+#endif
     statusJson["Internet"] = String((g_hasInternet) ? "online" : "offline");
     statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
     statusJson["Ping"] = String(g_pingTime.getAverage()) + "ms";
@@ -87,6 +85,7 @@ handleDataJson(AsyncWebServerRequest* request)
     soilMoisture["var"] = String(g_soilMoisture.variance);
     inputsJson["Soil Moisture"] = soilMoisture;
 #endif
+
 #ifdef HAS_LUMINOSITY_SENSOR
     JSONVar luminosity;
     luminosity["val"] = String(g_luminosity.getLast());
@@ -94,6 +93,7 @@ handleDataJson(AsyncWebServerRequest* request)
     luminosity["var"] = String(g_luminosity.variance);
     inputsJson["Luminosity"] = luminosity;
 #endif
+
 #ifdef HAS_DHT_SENSOR
     JSONVar temperature;
     temperature["val"] = String(g_temperature.getLast());
@@ -106,6 +106,14 @@ handleDataJson(AsyncWebServerRequest* request)
     airHumidity["avg"] = String(g_airHumidity.getAverage());
     airHumidity["var"] = String(g_airHumidity.variance);
     inputsJson["Air Humidity"] = airHumidity;
+#endif
+
+#ifdef HAS_WATER_LEVEL_SENSOR
+    JSONVar waterLevel;
+    waterLevel["val"] = String(g_waterLevel.getLast());
+    waterLevel["avg"] = String(g_waterLevel.getAverage());
+    waterLevel["var"] = String(g_waterLevel.variance);
+    inputsJson["Water Level"] = waterLevel;
 #endif
 
     JSONVar outputsJson;

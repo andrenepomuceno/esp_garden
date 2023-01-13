@@ -30,6 +30,7 @@ extern uint8_t g_wateringPinOn;
 extern uint8_t g_dhtPin;
 extern uint8_t g_soilMoisturePin;
 extern uint8_t g_luminosityPin;
+extern uint8_t g_waterLevelPin;
 
 bool
 loadConfigFile(unsigned deviceID);

@@ -9,13 +9,20 @@ const time_t g_safeTimestamp = 1609459200; // 01/01/2021
 #ifdef HAS_MOISTURE_SENSOR
 extern AccumulatorV2 g_soilMoisture;
 #endif
+
 #ifdef HAS_LUMINOSITY_SENSOR
 extern AccumulatorV2 g_luminosity;
 #endif
+
 #ifdef HAS_DHT_SENSOR
 extern AccumulatorV2 g_temperature;
 extern AccumulatorV2 g_airHumidity;
 extern unsigned g_dhtReadErrors;
+extern unsigned g_dhtTotalReads;
+#endif
+
+#ifdef HAS_WATER_LEVEL_SENSOR
+extern AccumulatorV2 g_waterLevel;
 #endif
 
 extern bool g_wateringState;

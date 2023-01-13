@@ -65,6 +65,7 @@ static DHT_Unified g_dht(g_dhtPin, DHT11);
 AccumulatorV2 g_temperature(g_mqttTaskPeriod / g_dhtTaskPeriod);
 AccumulatorV2 g_airHumidity(g_mqttTaskPeriod / g_dhtTaskPeriod);
 unsigned g_dhtReadErrors = 0;
+unsigned g_dhtTotalReads = 0;
 #endif
 
 #ifdef HAS_MOISTURE_SENSOR
@@ -74,6 +75,11 @@ static float g_moistureBeforeWatering = 0.0;
 
 #ifdef HAS_LUMINOSITY_SENSOR
 AccumulatorV2 g_luminosity(g_mqttTaskPeriod / g_ioTaskPeriod);
+#endif
+
+#ifdef HAS_WATER_LEVEL_SENSOR
+#define ADC_TO_WATER_LEVEL(v) v
+AccumulatorV2 g_waterLevel(g_mqttTaskPeriod / g_ioTaskPeriod);
 #endif
 
 static WiFiClient g_wifiClient;
@@ -98,6 +104,10 @@ ioTaskHandler()
 #ifdef HAS_LUMINOSITY_SENSOR
     g_luminosity.add(ADC_TO_PERCENT(analogRead(g_luminosityPin)));
 #endif
+
+#ifdef HAS_WATER_LEVEL_SENSOR
+    g_waterLevel.add(ADC_TO_WATER_LEVEL(analogRead(g_waterLevelPin)));
+#endif
 }
 
 #ifdef HAS_DHT_SENSOR
@@ -121,6 +131,7 @@ dhtTaskHandler()
         error = true;
     }
 
+    ++g_dhtTotalReads;
     if (error) {
         ++g_dhtReadErrors;
         //logger.println("DHT read error.");

@@ -37,6 +37,7 @@ uint8_t g_wateringPinOn = 0;
 uint8_t g_dhtPin = 23;
 uint8_t g_soilMoisturePin = A0;
 uint8_t g_luminosityPin = A3;
+uint8_t g_waterLevelPin = A6;
 
 #include <Arduino_JSON.h>
 
@@ -116,6 +117,9 @@ loadConfigFile(unsigned deviceID)
 #endif
 #if defined(HAS_LUMINOSITY_SENSOR)
     g_luminosityPin = (int)io["luminosity"];
+#endif
+#if defined(HAS_WATER_LEVEL_SENSOR)
+    g_waterLevelPin = (int)io["waterLevel"];
 #endif
 
     const int minChar = 4;
