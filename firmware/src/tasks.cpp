@@ -44,6 +44,7 @@ DECLARE_TASK(dht, 10 * 1000); // 10 s
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
 static const unsigned g_pingField = 3;
+static const unsigned g_waterLevelField = 4;
 static const unsigned g_luminosityField = 5;
 static const unsigned g_temperatureField = 6;
 static const unsigned g_airHumidityField = 7;
@@ -78,7 +79,8 @@ AccumulatorV2 g_luminosity(g_mqttTaskPeriod / g_ioTaskPeriod);
 #endif
 
 #ifdef HAS_WATER_LEVEL_SENSOR
-#define ADC_TO_WATER_LEVEL(v) v
+#define ADC_TO_WATER_LEVEL(v) (9.0 - 12.0 * sin(4.04 - 1.61 * (3.3 * v / 4095.0)))
+//#define ADC_TO_WATER_LEVEL(v) (v)
 AccumulatorV2 g_waterLevel(g_mqttTaskPeriod / g_ioTaskPeriod);
 #endif
 
@@ -177,6 +179,10 @@ mqttTaskHandler()
                  FLOAT_TO_STRING(g_temperature.getAverage()));
     mqttAddField(g_airHumidityField,
                  FLOAT_TO_STRING(g_airHumidity.getAverage()));
+#endif
+
+#ifdef HAS_WATER_LEVEL_SENSOR
+    mqttAddField(g_waterLevelField, FLOAT_TO_STRING(g_waterLevel.getAverage()));
 #endif
 
     mqttAddField(g_pingField, String(g_pingTime.getAverage()));
