@@ -17,6 +17,9 @@ extern bool g_ledBlinkEnabled;
 extern AccumulatorV2 g_pingTime;
 extern unsigned g_connectionLossCount;
 
+extern AccumulatorV2 g_voltage;
+extern AccumulatorV2 g_current;
+
 void
 tasksSetup();
 

@@ -7,9 +7,9 @@ function fillTable(id, data, mode) {
       if (mode != 'status') tr.append($('<th/>').html(i++).attr("scope", "row"));
       tr.append($('<td/>').html(key));
       if (mode == 'inputs') {
-        tr.append($('<td/>').html(data[key].val));
-        tr.append($('<td/>').html(data[key].avg));
-        tr.append($('<td/>').html(data[key].var));
+        tr.append($('<td/>').html(data[key].val.toFixed(3)));
+        tr.append($('<td/>').html(data[key].avg.toFixed(3)));
+        tr.append($('<td/>').html(data[key].var.toFixed(3)));
       } else if (mode == 'outputs') {
         tr.append($('<td/>').html(data[key]));
       } else {
@@ -30,12 +30,12 @@ function updateUI(info) {
 }
 
 function refresh() {
-  setTimeout(refresh, 1 * 1000);
+  setTimeout(refresh, 500);
 
   $.ajax({
     dataType: "json",
     url: "/data.json",
-    timeout: 500,
+    timeout: 250,
     success: updateUI
   });
 
@@ -44,7 +44,7 @@ function refresh() {
 
   $.ajax({
     url: "/logs",
-    timeout: 500,
+    timeout: 250,
     success: function (log) {
       $("#textarea-logs").text(log);
       if ($("#input-scroll").prop("checked") == true) {

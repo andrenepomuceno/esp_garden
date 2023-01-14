@@ -1,4 +1,5 @@
 #include "tasks.h"
+#include "ina3221.h"
 #include "logger.h"
 #include "mqtt.h"
 #include "talkback.h"
@@ -7,11 +8,7 @@
 #include <TaskScheduler.h>
 #include <WiFi.h>
 #include <list>
-#ifdef HAS_DHT_SENSOR
-#include <Adafruit_Sensor.h>
-#include <DHT.h>
-#include <DHT_U.h>
-#endif
+#include <INA3221.h>
 
 #define FLOAT_TO_STRING(x) (String(x, 2))
 #define ADC_TO_PERCENT(x) ((x * 100.0) / 4095.0)
@@ -26,13 +23,13 @@
 
 static Scheduler g_taskScheduler;
 
-DECLARE_TASK(io, 1000);                         // 1 s
+DECLARE_TASK(io, 250);
 DECLARE_TASK(ledBlink, 1000);                   // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
-DECLARE_TASK(checkInternet, 15 * 1000);         // 30 s
-DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
-DECLARE_TASK(mqtt, 10 * 1000);              // 2 min
-DECLARE_TASK(talkBack, 5 * 60 * 1000);          // 5 min
+DECLARE_TASK(checkInternet, 60 * 1000);
+DECLARE_TASK(logBackup, 60 * 60 * 1000); // 1 h
+DECLARE_TASK(mqtt, 30 * 1000);
+DECLARE_TASK(talkBack, 5 * 60 * 1000); // 5 min
 
 static const unsigned g_voltageField = 1;
 static const unsigned g_currentField = 2;
@@ -52,10 +49,15 @@ unsigned g_packagesSent = 0;
 bool g_ledBlinkEnabled = false;
 unsigned g_connectionLossCount = 0;
 
+INA3221 g_ina3221(INA3221_ADDR40_GND);
+AccumulatorV2 g_voltage(g_mqttTaskPeriod / g_ioTaskPeriod);
+AccumulatorV2 g_current(g_mqttTaskPeriod / g_ioTaskPeriod);
+
 static void
 ioTaskHandler()
 {
-
+    g_voltage.add(g_ina3221.getVoltage(INA3221_CH1));
+    g_current.add(g_ina3221.getCurrent(INA3221_CH1));
 }
 
 void
@@ -82,6 +84,8 @@ mqttTaskHandler()
         return;
     }
 
+    mqttAddField(g_voltageField, String(g_voltage.getAverage(), 3));
+    mqttAddField(g_currentField, String(g_current.getAverage(), 3));
     mqttAddField(g_pingField, String(g_pingTime.getAverage()));
 
     char timestamp[64];
@@ -222,6 +226,10 @@ void
 tasksSetup()
 {
     logger.println("Tasks setup...");
+
+    g_ina3221.begin();
+    g_ina3221.reset();
+    g_ina3221.setShuntRes(100, 100, 100);
 
     talkBack.setTalkBackID(g_talkBackID);
     talkBack.setAPIKey(g_talkBackAPIKey);

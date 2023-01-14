@@ -73,6 +73,18 @@ handleDataJson(AsyncWebServerRequest* request)
 
     JSONVar inputsJson;
 
+    JSONVar voltage;
+    voltage["val"] = g_voltage.getLast();
+    voltage["avg"] = g_voltage.getAverage();
+    voltage["var"] = g_voltage.variance;
+    inputsJson["Voltage"] = voltage;
+
+    JSONVar current;
+    current["val"] = g_current.getLast();
+    current["avg"] = g_current.getAverage();
+    current["var"] = g_current.variance;
+    inputsJson["Current"] = current;
+
     JSONVar outputsJson;
 
     JSONVar responseJson;
