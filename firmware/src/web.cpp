@@ -63,61 +63,17 @@ handleDataJson(AsyncWebServerRequest* request)
                  uptime % 60);
         statusJson["Uptime"] = String(buffer);
     }
-#ifdef HAS_DHT_SENSOR
-    if (g_dhtTotalReads > 0) {
-        statusJson["DHT Error Rate"] =
-          String((float)g_dhtReadErrors / (float)g_dhtTotalReads * 100, 2);
-    }
-#endif
+
     statusJson["Internet"] = String((g_hasInternet) ? "online" : "offline");
     statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
     statusJson["Ping"] = String(g_pingTime.getAverage()) + "ms";
     statusJson["Connection Loss Count"] = String(g_connectionLossCount);
     statusJson["MQTT"] = String((g_mqttEnabled) ? "enabled" : "disabled");
     statusJson["Packages Sent"] = String(g_packagesSent);
-    statusJson["Watering Cycles"] = String(g_wateringCycles);
 
     JSONVar inputsJson;
-#ifdef HAS_MOISTURE_SENSOR
-    JSONVar soilMoisture;
-    soilMoisture["val"] = String(g_soilMoisture.getLast());
-    soilMoisture["avg"] = String(g_soilMoisture.getAverage());
-    soilMoisture["var"] = String(g_soilMoisture.variance);
-    inputsJson["Soil Moisture"] = soilMoisture;
-#endif
-
-#ifdef HAS_LUMINOSITY_SENSOR
-    JSONVar luminosity;
-    luminosity["val"] = String(g_luminosity.getLast());
-    luminosity["avg"] = String(g_luminosity.getAverage());
-    luminosity["var"] = String(g_luminosity.variance);
-    inputsJson["Luminosity"] = luminosity;
-#endif
-
-#ifdef HAS_DHT_SENSOR
-    JSONVar temperature;
-    temperature["val"] = String(g_temperature.getLast());
-    temperature["avg"] = String(g_temperature.getAverage());
-    temperature["var"] = String(g_temperature.variance);
-    inputsJson["Temperature"] = temperature;
-
-    JSONVar airHumidity;
-    airHumidity["val"] = String(g_airHumidity.getLast());
-    airHumidity["avg"] = String(g_airHumidity.getAverage());
-    airHumidity["var"] = String(g_airHumidity.variance);
-    inputsJson["Air Humidity"] = airHumidity;
-#endif
-
-#ifdef HAS_WATER_LEVEL_SENSOR
-    JSONVar waterLevel;
-    waterLevel["val"] = String(g_waterLevel.getLast());
-    waterLevel["avg"] = String(g_waterLevel.getAverage());
-    waterLevel["var"] = String(g_waterLevel.variance);
-    inputsJson["Water Level"] = waterLevel;
-#endif
 
     JSONVar outputsJson;
-    outputsJson["Watering"] = String(g_wateringState);
 
     JSONVar responseJson;
     responseJson["Status"] = statusJson;
@@ -137,11 +93,7 @@ handleControl(AsyncWebServerRequest* request)
 
     for (int i = 0; i < request->params(); ++i) {
         AsyncWebParameter* param = request->getParam(i);
-        if ((param->name() == "watering") && (param->value() == "enable")) {
-            startWatering();
-        } else if (param->name() == "wateringTime") {
-            startWatering(param->value().toInt());
-        } else if (param->name() == "mqtt") {
+        if (param->name() == "mqtt") {
             if (param->value() == "enable") {
                 mqttEnable(true);
             } else if (param->value() == "disable") {

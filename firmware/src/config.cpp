@@ -1,9 +1,10 @@
 #include "config.h"
 #include "logger.h"
 #include <SPIFFS.h>
+#include <Arduino_JSON.h>
 
 // device
-String g_hostname = "espgarden";
+String g_hostname = "battery-monitor";
 String g_timezone = "<-03>3";
 
 // wifi
@@ -31,15 +32,6 @@ int g_mqttPort = 8883;
 String g_mqttCACert = "/thingspeak.pem";
 
 // pins
-uint8_t g_buttonPin = 0;
-uint8_t g_wateringPin = 15;
-uint8_t g_wateringPinOn = 0;
-uint8_t g_dhtPin = 23;
-uint8_t g_soilMoisturePin = A0;
-uint8_t g_luminosityPin = A3;
-uint8_t g_waterLevelPin = A6;
-
-#include <Arduino_JSON.h>
 
 bool
 loadConfigFile(unsigned deviceID)
@@ -105,22 +97,6 @@ loadConfigFile(unsigned deviceID)
     g_mqttCACert = mqtt["cacert"];
 
     JSONVar io = configJson["io"];
-    g_buttonPin = (int)io["button"];
-    g_wateringPin = (int)io["watering"];
-    g_wateringPinOn = (int)io["wateringOn"];
-
-#if defined(HAS_DHT_SENSOR)
-    g_dhtPin = (int)io["dht"];
-#endif
-#if defined(HAS_MOISTURE_SENSOR)
-    g_soilMoisturePin = (int)io["soilMoisture"];
-#endif
-#if defined(HAS_LUMINOSITY_SENSOR)
-    g_luminosityPin = (int)io["luminosity"];
-#endif
-#if defined(HAS_WATER_LEVEL_SENSOR)
-    g_waterLevelPin = (int)io["waterLevel"];
-#endif
 
     const int minChar = 4;
     if ((g_hostname.length() < minChar) || (g_ssid.length() < minChar) ||

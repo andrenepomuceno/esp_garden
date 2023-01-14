@@ -24,13 +24,5 @@ extern String g_mqttServer;
 extern int g_mqttPort;
 extern String g_mqttCACert;
 
-extern uint8_t g_buttonPin;
-extern uint8_t g_wateringPin;
-extern uint8_t g_wateringPinOn;
-extern uint8_t g_dhtPin;
-extern uint8_t g_soilMoisturePin;
-extern uint8_t g_luminosityPin;
-extern uint8_t g_waterLevelPin;
-
 bool
 loadConfigFile(unsigned deviceID);
