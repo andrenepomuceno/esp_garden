@@ -26,10 +26,9 @@ static Scheduler g_taskScheduler;
 DECLARE_TASK(io, 250);
 DECLARE_TASK(ledBlink, 1000);                   // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
-DECLARE_TASK(checkInternet, 60 * 1000);
+DECLARE_TASK(checkInternet, 15 * 1000);
 DECLARE_TASK(logBackup, 60 * 60 * 1000); // 1 h
 DECLARE_TASK(mqtt, 30 * 1000);
-DECLARE_TASK(talkBack, 5 * 60 * 1000); // 5 min
 
 static const unsigned g_voltageField = 1;
 static const unsigned g_currentField = 2;
@@ -142,25 +141,6 @@ clockUpdateTaskHandler()
 }
 
 static void
-talkBackTaskHandler()
-{
-    if (!g_mqttEnabled || !g_hasInternet) {
-        return;
-    }
-
-    String response;
-
-    digitalWrite(LED_BUILTIN, 1);
-    if (talkBack.execute(response) == false) {
-        logger.println("TalkBack failure.");
-        return;
-    }
-    digitalWrite(LED_BUILTIN, 0);
-
-    // ...
-}
-
-static void
 checkInternetTaskHandler()
 {
     if (!g_wifiConnected || !g_hasNetwork) {
@@ -231,10 +211,6 @@ tasksSetup()
     g_ina3221.reset();
     g_ina3221.setShuntRes(100, 100, 100);
 
-    talkBack.setTalkBackID(g_talkBackID);
-    talkBack.setAPIKey(g_talkBackAPIKey);
-    talkBack.begin(g_wifiClient);
-
     logger.println("Waiting for internet connection...");
     while (!g_hasInternet) {
         checkInternetTaskHandler();
@@ -253,7 +229,6 @@ tasksSetup()
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
     g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
     g_mqttTask.enableDelayed(g_mqttTaskPeriod);
-    g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
     g_ledBlinkTask.enableDelayed(g_ledBlinkTaskPeriod);
     g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
 

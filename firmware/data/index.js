@@ -1,4 +1,5 @@
 function fillTable(id, data, mode) {
+    if (data == {} || data == undefined) return
     var i = 0;
     var tbody = $(id);
     tbody.empty();
@@ -24,7 +25,6 @@ function updateUI(info) {
   fillTable("#tbody-status", info["Status"], 'status');
   fillTable("#tbody-inputs", info["Inputs"], 'inputs');
   fillTable("#tbody-outputs", info["Outputs"], 'outputs');
-  $("#input-watering").prop("checked", (info["Outputs"]["Watering"] == 1) ? true : false);
   $("#input-mqtt").prop("checked", (info["Status"]["MQTT"] == "enabled") ? true : false);
   $("#a-thingspeak-link").attr("href", "https://thingspeak.com/channels/" + info["Channel"]);
 }
@@ -38,9 +38,6 @@ function refresh() {
     timeout: 250,
     success: updateUI
   });
-
-  /*let info = {"Status":{"Hostname":"espgarden1","Date/Time":"2023-01-08 16:11:59","Uptime":"0d 0h 5m 19s","Internet":"online","Signal Strength":"100%","ThingSpeak":"enabled","Packages Sent":"2","Watering Cycles":"0","DHT Read Errors":"3"},"Inputs":{"Soil Moisture":{"val":"41.27","avg":"41.70","var":"0.03"},"Luminosity":{"val":"53.09","avg":"52.65","var":"0.02"},"Temperature":{"val":"26.70","avg":"26.63","var":"0.01"},"Air Humidity":{"val":"82.00","avg":"82.33","var":"0.14"}},"Outputs":{"Watering":"0"},"Channel":"1348790"};
-  updateUI(info);*/
 
   $.ajax({
     url: "/logs",
@@ -56,14 +53,6 @@ function refresh() {
 
 $(function onReady() {
   refresh();
-});
-
-$("#input-watering").click(function (event) {
-  event.preventDefault();
-  let wateringTime = $("#input-watering-time").val();
-  if (this.checked && confirm("Start watering for " + wateringTime + " seconds?")) {
-    $.post("/control", { "wateringTime": 1000 * wateringTime });
-  }
 });
 
 $("#input-mqtt").click(function (event) {
