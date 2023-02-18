@@ -338,7 +338,12 @@ checkInternetTaskHandler()
                                   String(downTime));
                 }
             }
-            g_pingTime.add(Ping.averageTime());
+            float avgTime = Ping.averageTime();
+            if (!isnan(avgTime) && avgTime > 0.0 && avgTime < 1e6) {
+                g_pingTime.add(avgTime);
+            } else {
+                logger.println("Invalid avgTime " + String(avgTime));
+            }
             g_hasInternet = true;
             return;
         }
