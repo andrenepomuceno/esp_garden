@@ -104,7 +104,7 @@ Logger::backupSetup()
 void
 Logger::backup()
 {
-    println("Starting log backup...");
+    //println("Starting log backup...");
 
     String logFilename = "/log" + String(currentLog) + ".txt";
     if (logOffset == 0) {
@@ -136,5 +136,5 @@ Logger::backup()
         bufferOffset += len;
     }
 
-    println("Log backup done!");
+    //println("Log backup done!");
 }

@@ -1,24 +1,38 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def plot_function(data, name):
+def plotFunction(data, name):
     fig, ax = plt.subplots()
     ax.plot(data, lw=0.5)
     fig.autofmt_xdate()
     plt.savefig(name)
     plt.clf()
+    
+def process(name):
+    print(f"processing {name}...")
+    data = fieldList[name].resample(sample_rate).mean()
+    plotFunction(data, name + '.svg')
 
-df = pd.read_csv('feeds.csv', parse_dates=['created_at'], index_col=['created_at'])
+df = pd.read_csv(
+    'feeds(3).csv',
+    sep=',',
+    index_col=['created_at'],
+    parse_dates=['created_at'],
+    infer_datetime_format=True,
+    verbose=True,
+    dtype={'status': str})
 
+df = df[('2023' & df.field3 < 10e6)]
 sample_rate = '1h'
-moisture = df['field1'].resample(sample_rate).mean()
-plot_function(moisture, 'moisture.svg')
 
-luminosity = df['field5'].resample(sample_rate).mean()
-plot_function(luminosity, 'luminosity.svg')
+fieldList = {
+    'moisture': df.field1,
+    'ping': df.field3,
+    'waterLevel': df.field4,
+    'luminosity': df.field5,
+    'temperature': df.field6,
+    'airHumidity': df.field7
+}
 
-temperature = df['field6'].resample(sample_rate).mean()
-plot_function(temperature, 'temperature.svg')
-
-air_humidity = df['field7'].resample(sample_rate).mean()
-plot_function(air_humidity, 'air_humidity.svg')
+for field in fieldList:
+    process(field)
