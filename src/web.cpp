@@ -1,9 +1,9 @@
 #include "SPIFFS.h"
-#include "accumulator_v2.h"
-#include "config.h"
-#include "html.h"
-#include "logger.h"
-#include "tasks.h"
+#include "BuildConfig.h"
+#include "core/accumulator_v2.h"
+#include "core/config.h"
+#include "core/logger.h"
+#include "core/tasks.h"
 #include <Arduino_JSON.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>

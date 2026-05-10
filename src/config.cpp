@@ -1,5 +1,5 @@
-#include "config.h"
-#include "logger.h"
+#include "core/config.h"
+#include "core/logger.h"
 #include <SPIFFS.h>
 
 // device

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "accumulator_v2.h"
-#include "config.h"
+#include "core/accumulator_v2.h"
+#include "core/config.h"
 #include <time.h>
 
 const time_t g_safeTimestamp = 1609459200; // 01/01/2021

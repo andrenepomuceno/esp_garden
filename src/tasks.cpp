@@ -1,8 +1,9 @@
-#include "tasks.h"
-#include "logger.h"
-#include "mqtt.h"
-#include "talkback.h"
-#include "web.h"
+#include "core/tasks.h"
+#include "BuildConfig.h"
+#include "core/logger.h"
+#include "network/mqtt.h"
+#include "network/talkback.h"
+#include "network/web.h"
 #include <ESP32Ping.h>
 #include <CriticalTaskScheduler.h>
 #include <WiFi.h>

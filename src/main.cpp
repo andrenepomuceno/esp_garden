@@ -1,7 +1,8 @@
 #include "SPIFFS.h"
-#include "logger.h"
-#include "tasks.h"
-#include "web.h"
+#include "BuildConfig.h"
+#include "core/logger.h"
+#include "core/tasks.h"
+#include "network/web.h"
 #include <Arduino.h>
 
 void

@@ -1,6 +1,6 @@
-#include "mqtt.h"
-#include "config.h"
-#include "logger.h"
+#include "network/mqtt.h"
+#include "core/config.h"
+#include "core/logger.h"
 #include <PubSubClient.h>
 #include <SPIFFS.h>
 #include <WiFiClientSecure.h>

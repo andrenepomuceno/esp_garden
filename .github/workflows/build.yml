@@ -1,0 +1,75 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build firmware
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        environment: [espgarden1, espgarden2, espgarden3, espgarden4]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: ${{ runner.os }}-pio-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Provision config.json
+        run: cp data/config.template.json data/config.json
+
+      - name: Build firmware
+        run: pio run -e ${{ matrix.environment }}
+
+      - name: Build SPIFFS image
+        run: pio run -e ${{ matrix.environment }} -t buildfs
+
+      - name: Prepare release artifacts
+        run: |
+          mkdir -p artifacts
+          cp .pio/build/${{ matrix.environment }}/firmware.bin \
+             artifacts/esp-garden-${{ matrix.environment }}-firmware.bin
+          cp .pio/build/${{ matrix.environment }}/spiffs.bin \
+             artifacts/esp-garden-${{ matrix.environment }}-spiffs.bin
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp-garden-${{ matrix.environment }}
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: Upload release assets
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/esp-garden-${{ matrix.environment }}-firmware.bin
+            artifacts/esp-garden-${{ matrix.environment }}-spiffs.bin

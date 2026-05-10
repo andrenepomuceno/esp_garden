@@ -1,4 +1,4 @@
-#include "accumulator_v2.h"
+#include "core/accumulator_v2.h"
 
 AccumulatorV2::AccumulatorV2(unsigned maxLen)
   : lastAvg(0.0)
