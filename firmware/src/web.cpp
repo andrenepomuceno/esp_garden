@@ -5,10 +5,10 @@
 #include "logger.h"
 #include "tasks.h"
 #include <Arduino_JSON.h>
-#include <AsyncElegantOTA.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
+#include <Update.h>
 #include <time.h>
 
 static AsyncWebServer g_webServer(80);
@@ -136,7 +136,7 @@ handleControl(AsyncWebServerRequest* request)
     digitalWrite(LED_BUILTIN, 1);
 
     for (int i = 0; i < request->params(); ++i) {
-        AsyncWebParameter* param = request->getParam(i);
+        const AsyncWebParameter* param = request->getParam(i);
         if ((param->name() == "watering") && (param->value() == "enable")) {
             startWatering();
         } else if (param->name() == "wateringTime") {
@@ -166,6 +166,80 @@ handleLogs(AsyncWebServerRequest* request)
     request->send(200, "text/plain", output);
 
     digitalWrite(LED_BUILTIN, 0);
+}
+
+static bool g_otaEnabled = false;
+
+static void
+handleUpdateEnable(AsyncWebServerRequest* request)
+{
+    g_otaEnabled = true;
+    logger.println("[OTA] Enabled OTA");
+    request->send(200);
+}
+
+static void
+handleUpdateRequest(AsyncWebServerRequest* request)
+{
+    if (!g_otaEnabled) {
+        request->send(400);
+        return;
+    }
+
+    bool error = Update.hasError();
+    int code = error ? 500 : 200;
+    const char* content = error ? "FAIL" : "OK";
+    AsyncWebServerResponse* response =
+      request->beginResponse(code, "text/plain", content);
+    response->addHeader("Connection", "close");
+    response->addHeader("Access-Control-Allow-Origin", "*");
+    request->send(response);
+
+    if (!error) {
+        delay(500);
+        ESP.restart();
+    }
+}
+
+static void
+handleUpdateUpload(AsyncWebServerRequest* request,
+                   String filename,
+                   size_t index,
+                   uint8_t* data,
+                   size_t len,
+                   bool final)
+{
+    if (!g_otaEnabled) {
+        request->send(400);
+        return;
+    }
+
+    if (!index) {
+        logger.println("[OTA] Starting update: " + filename);
+        int cmd = (filename == "filesystem") ? U_SPIFFS : U_FLASH;
+        if (request->hasParam("MD5", true)) {
+            Update.setMD5(request->getParam("MD5", true)->value().c_str());
+        }
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
+            logger.println(String("[OTA] ") + Update.errorString());
+            return request->send(400, "text/plain", "OTA could not begin");
+        }
+    }
+
+    if (len) {
+        if (Update.write(data, len) != len) {
+            logger.println(String("[OTA] ") + Update.errorString());
+            return request->send(400, "text/plain", "OTA could not write");
+        }
+    }
+
+    if (final) {
+        if (!Update.end(true)) {
+            logger.println(String("[OTA] ") + Update.errorString());
+            return request->send(400, "text/plain", "OTA could not end");
+        }
+        logger.println("[OTA] Complete!");
+    }
 }
 
 static void
@@ -226,13 +300,13 @@ webSetup()
     g_webServer.on("/data.json", HTTP_GET, handleDataJson);
     g_webServer.on("/control", HTTP_POST, handleControl);
     g_webServer.on("/logs", HTTP_GET, handleLogs);
+    g_webServer.on("/updateEnable", HTTP_POST, handleUpdateEnable);
+    g_webServer.on(
+      "/update", HTTP_POST, handleUpdateRequest, handleUpdateUpload);
     g_webServer.serveStatic("/", SPIFFS, "/")
       .setAuthentication(g_otaUser.c_str(), g_otaPassword.c_str());
     g_webServer.onNotFound(
       [](AsyncWebServerRequest* request) { request->send(404); });
-
-    AsyncElegantOTA.begin(
-      &g_webServer, g_otaUser.c_str(), g_otaPassword.c_str());
 
     g_webServer.begin();
 

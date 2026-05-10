@@ -4,7 +4,7 @@
 #include "talkback.h"
 #include "web.h"
 #include <ESP32Ping.h>
-#include <TaskScheduler.h>
+#include <CriticalTaskScheduler.h>
 #include <WiFi.h>
 #include <list>
 #ifdef HAS_DHT_SENSOR
@@ -19,12 +19,10 @@
 #define DECLARE_TASK(name, period)                                             \
     static void name##TaskHandler();                                           \
     static const unsigned g_##name##TaskPeriod = period;                       \
-    static Task g_##name##Task(g_##name##TaskPeriod,                           \
-                               TASK_FOREVER,                                   \
-                               &name##TaskHandler,                             \
-                               &g_taskScheduler)
+    static TSTask g_##name##Task(#name, g_##name##TaskPeriod,                  \
+                                 &name##TaskHandler)
 
-static Scheduler g_taskScheduler;
+static TSScheduler g_taskScheduler;
 
 DECLARE_TASK(io, 1000);                         // 1 s
 DECLARE_TASK(watering, 100);                    // 100 ms
@@ -243,10 +241,12 @@ clockUpdateTaskHandler()
 static void
 wateringTaskHandler()
 {
-    auto runs = g_wateringTask.getRunCounter();
-    unsigned elapsedTime = (runs - 1) * g_wateringTaskPeriod;
+    static unsigned long wateringStartTime = 0;
+    unsigned long elapsedTime = millis() - wateringStartTime;
 
-    if (runs == 1) {
+    if (!g_wateringState) {
+        wateringStartTime = millis();
+        elapsedTime = 0;
         mqttAddField(g_wateringField, String(g_wateringTime));
 #if !USE_WATERING_PWM
         digitalWrite(g_wateringPin, g_wateringPinOn);
@@ -397,6 +397,21 @@ void
 tasksSetup()
 {
     logger.println("Tasks setup...");
+
+    g_taskScheduler.addTask(&g_ioTask);
+    g_taskScheduler.addTask(&g_wateringTask);
+    g_taskScheduler.addTask(&g_ledBlinkTask);
+    g_taskScheduler.addTask(&g_clockUpdateTask);
+    g_taskScheduler.addTask(&g_checkInternetTask);
+    g_taskScheduler.addTask(&g_logBackupTask);
+    g_taskScheduler.addTask(&g_mqttTask);
+    g_taskScheduler.addTask(&g_talkBackTask);
+#ifdef HAS_MOISTURE_SENSOR
+    g_taskScheduler.addTask(&g_checkMoistureTask);
+#endif
+#ifdef HAS_DHT_SENSOR
+    g_taskScheduler.addTask(&g_dhtTask);
+#endif
 
     pinMode(g_buttonPin, INPUT);
 
