@@ -1,3 +1,1 @@
-[submodule "firmware/lib/AsyncElegantOTA"]
-	path = firmware/lib/AsyncElegantOTA
-	url = git@github.com:andrenepomuceno/AsyncElegantOTA.git
+
