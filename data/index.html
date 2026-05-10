@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet"
+    integrity="sha384-GLhlTQ8iRABdZLl6O3oVMWSktQOp6b7In1Zl3/Jr59b6EGGoI1aFkw7cmDA6j6gD" crossorigin="anonymous">
+  <title>ESP Garden</title>
+  <style>
+    .control-panel {
+      display: flex;
+    }
+
+    .control-panel .row {
+      align-items: center;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>&#x1F331; ESP Garden</h1>
+    <a id="a-thingspeak-link" href="#" class="link-primary">ThingSpeak</a>
+    <a href="/update.html" class="link-primary ms-2">Update</a>
+    <h2>Status</h2>
+    <table class="table table-striped">
+      <tbody id="tbody-status"></tbody>
+    </table>
+    <h2>Inputs</h2>
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th scope="col">#</th>
+          <th scope="col">Name</th>
+          <th scope="col">Value</th>
+          <th scope="col">Average</th>
+          <th scope="col">Variance</th>
+        </tr>
+      </thead>
+      <tbody id="tbody-inputs"></tbody>
+    </table>
+    <h2>Outputs</h2>
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th scope="col">#</th>
+          <th scope="col">Name</th>
+          <th scope="col">Value</th>
+        </tr>
+      </thead>
+      <tbody id="tbody-outputs"></tbody>
+    </table>
+    <h2>Control</h2>
+    <div class="control-panel">
+      <div class="row">
+        <div class="col">
+          <div class="form-check form-switch">
+            <input id="input-mqtt" class="form-check-input" type="checkbox">
+            <label class="form-check-label" for="input-mqtt">MQTT</label>
+          </div>
+        </div>
+        <div class="col">
+          <input type="number" class="form-control" id="input-watering-time" placeholder="5" min="1" max="20" value="5">
+          <label for="input-watering-time">Watering Time</label>
+        </div>
+        <div class="col">
+          <div class="form-check form-switch">
+            <input id="input-watering" class="form-check-input" type="checkbox">
+            <label class="form-check-label" for="input-watering">Start</label>
+          </div>
+        </div>
+        <div class="col">
+          <button id="button-reset" type="button" class="btn btn-primary">Reset</button>
+        </div>
+      </div>
+    </div>
+    <h2>Logs</h2>
+    <textarea class="form-control" id="textarea-logs" rows="8" readonly></textarea>
+    <div class="form-check form-switch">
+      <input id="input-scroll" class="form-check-input checked" type="checkbox" checked>
+      <label class="form-check-label" for="input-scroll">Automatic scroll</label>
+    </div>
+  </div>
+
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"
+    integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"
+    integrity="sha384-w76AqPfDkMBDXo30jS1Sgez6pr3x5MlQ1ZAGC+nuZB+EYdgRZgiwxhTBTkF7CXvN"
+    crossorigin="anonymous"></script>
+  <script src="index.js"></script>
+</body>
+<footer></footer>
+
+</html>
