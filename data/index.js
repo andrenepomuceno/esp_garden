@@ -1,83 +1,175 @@
-function fillTable(id, data, mode) {
-    var i = 0;
-    var tbody = $(id);
-    tbody.empty();
+// ESP Garden — dashboard UI
+(function () {
+  var POLL_INTERVAL_MS = 1000;
+  var REQUEST_TIMEOUT_MS = 1500;
+  var pollTimer = null;
+  var pageVisible = true;
+
+  // ---------- helpers ----------
+  function statusBadge(value) {
+    var v = String(value).toLowerCase();
+    var cls = 'text-bg-secondary';
+    if (v === 'online' || v === 'enabled') cls = 'text-bg-success';
+    else if (v === 'offline' || v === 'disabled') cls = 'text-bg-danger';
+    return '<span class="badge ' + cls + '">' + value + '</span>';
+  }
+
+  function formatStatusValue(key, value) {
+    if (key === 'Internet' || key === 'MQTT') return statusBadge(value);
+    if (key === 'Signal Strength') {
+      var pct = parseInt(value, 10);
+      var cls = 'text-bg-success';
+      if (isNaN(pct)) cls = 'text-bg-secondary';
+      else if (pct < 30) cls = 'text-bg-danger';
+      else if (pct < 60) cls = 'text-bg-warning';
+      return '<span class="badge num-badge ' + cls + '">' + value + '</span>';
+    }
+    return '<span class="num-badge">' + value + '</span>';
+  }
+
+  function fillStatus(data) {
+    var rows = '';
     for (var key in data) {
-      var tr = $('<tr/>');
-      if (mode != 'status') tr.append($('<th/>').html(i++).attr("scope", "row"));
-      tr.append($('<td/>').html(key));
-      if (mode == 'inputs') {
-        tr.append($('<td/>').html(data[key].val));
-        tr.append($('<td/>').html(data[key].avg));
-        tr.append($('<td/>').html(data[key].var));
-      } else if (mode == 'outputs') {
-        tr.append($('<td/>').html(data[key]));
+      rows += '<tr><th scope="row" class="fw-normal text-muted">' + key + '</th>' +
+              '<td class="text-end">' + formatStatusValue(key, data[key]) + '</td></tr>';
+    }
+    $('#tbody-status').html(rows);
+  }
+
+  function fillInputs(data) {
+    var rows = '';
+    for (var key in data) {
+      var d = data[key] || {};
+      rows += '<tr>' +
+              '<th scope="row" class="fw-normal">' + key + '</th>' +
+              '<td class="text-end num-badge">' + (d.val || '') + '</td>' +
+              '<td class="text-end num-badge text-muted">' + (d.avg || '') + '</td>' +
+              '<td class="text-end num-badge text-muted">' + (d.var || '') + '</td>' +
+              '</tr>';
+    }
+    $('#tbody-inputs').html(rows);
+  }
+
+  function fillOutputs(data) {
+    var rows = '';
+    for (var key in data) {
+      var v = data[key];
+      var label = (v == 1 || v === '1') ? '<span class="badge text-bg-info">ON</span>'
+                                        : '<span class="badge text-bg-secondary">OFF</span>';
+      rows += '<tr><th scope="row" class="fw-normal">' + key + '</th>' +
+              '<td class="text-end">' + label + '</td></tr>';
+    }
+    $('#tbody-outputs').html(rows);
+  }
+
+  function setConnection(online) {
+    var dot = $('#conn-dot');
+    if (online) {
+      dot.addClass('online');
+      $('#conn-text').text('online');
+    } else {
+      dot.removeClass('online');
+      $('#conn-text').text('disconnected');
+    }
+  }
+
+  function updateUI(info) {
+    setConnection(true);
+    var hostname = info.Status && info.Status.Hostname;
+    if (hostname) {
+      document.title = hostname + ' — ESP Garden';
+      $('#status-host').text(hostname);
+    }
+    fillStatus(info.Status || {});
+    fillInputs(info.Inputs || {});
+    fillOutputs(info.Outputs || {});
+    $('#input-watering').prop('checked', String(info.Outputs && info.Outputs.Watering) === '1');
+    $('#input-mqtt').prop('checked', info.Status && info.Status.MQTT === 'enabled');
+    if (info.Channel) {
+      $('#a-thingspeak-link').attr('href', 'https://thingspeak.com/channels/' + info.Channel);
+    }
+  }
+
+  // ---------- polling ----------
+  function poll() {
+    $.ajax({
+      dataType: 'json',
+      url: '/data.json',
+      timeout: REQUEST_TIMEOUT_MS,
+      success: updateUI,
+      error: function () { setConnection(false); }
+    });
+
+    $.ajax({
+      url: '/logs',
+      timeout: REQUEST_TIMEOUT_MS,
+      success: function (log) {
+        var ta = $('#textarea-logs');
+        ta.val(log);
+        if ($('#input-scroll').prop('checked')) {
+          ta.scrollTop(ta[0].scrollHeight);
+        }
+      }
+    });
+  }
+
+  function startPolling() {
+    if (pollTimer) return;
+    poll();
+    pollTimer = setInterval(function () {
+      if (pageVisible) poll();
+    }, POLL_INTERVAL_MS);
+  }
+
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  // ---------- handlers ----------
+  $(function () {
+    startPolling();
+
+    document.addEventListener('visibilitychange', function () {
+      pageVisible = !document.hidden;
+      if (pageVisible) poll();
+    });
+
+    $('#input-watering').on('click', function (event) {
+      event.preventDefault();
+      var seconds = parseInt($('#input-watering-time').val(), 10) || 5;
+      if (this.checked && confirm('Start watering for ' + seconds + ' seconds?')) {
+        $.post('/control', { wateringTime: 1000 * seconds });
       } else {
-        tr.append($('<td/>').html(data[key]));
+        this.checked = false;
       }
-      tbody.append(tr);
-    }
-  }
+    });
 
-function updateUI(info) {
-  document.title = info["Status"]["Hostname"];
-  fillTable("#tbody-status", info["Status"], 'status');
-  fillTable("#tbody-inputs", info["Inputs"], 'inputs');
-  fillTable("#tbody-outputs", info["Outputs"], 'outputs');
-  $("#input-watering").prop("checked", (info["Outputs"]["Watering"] == 1) ? true : false);
-  $("#input-mqtt").prop("checked", (info["Status"]["MQTT"] == "enabled") ? true : false);
-  $("#a-thingspeak-link").attr("href", "https://thingspeak.com/channels/" + info["Channel"]);
-}
+    $('#input-mqtt').on('click', function (event) {
+      event.preventDefault();
+      $.post('/control', { mqtt: this.checked ? 'enable' : 'disable' });
+    });
 
-function refresh() {
-  setTimeout(refresh, 1 * 1000);
-
-  $.ajax({
-    dataType: "json",
-    url: "/data.json",
-    timeout: 500,
-    success: updateUI
-  });
-
-  /*let info = {"Status":{"Hostname":"espgarden1","Date/Time":"2023-01-08 16:11:59","Uptime":"0d 0h 5m 19s","Internet":"online","Signal Strength":"100%","ThingSpeak":"enabled","Packages Sent":"2","Watering Cycles":"0","DHT Read Errors":"3"},"Inputs":{"Soil Moisture":{"val":"41.27","avg":"41.70","var":"0.03"},"Luminosity":{"val":"53.09","avg":"52.65","var":"0.02"},"Temperature":{"val":"26.70","avg":"26.63","var":"0.01"},"Air Humidity":{"val":"82.00","avg":"82.33","var":"0.14"}},"Outputs":{"Watering":"0"},"Channel":"1348790"};
-  updateUI(info);*/
-
-  $.ajax({
-    url: "/logs",
-    timeout: 500,
-    success: function (log) {
-      $("#textarea-logs").text(log);
-      if ($("#input-scroll").prop("checked") == true) {
-        $("#textarea-logs").scrollTop($("#textarea-logs")[0].scrollHeight);
+    $('#button-reset').on('click', function (event) {
+      event.preventDefault();
+      if (confirm('Reset the device now?')) {
+        $.post('/control', { reset: '1' });
+        setConnection(false);
       }
-    }
+    });
+
+    $('#button-logs-copy').on('click', function () {
+      var text = $('#textarea-logs').val() || '';
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+      } else {
+        var ta = document.getElementById('textarea-logs');
+        ta.select();
+        try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+      }
+      var btn = $(this);
+      var orig = btn.html();
+      btn.html('&#x2705;');
+      setTimeout(function () { btn.html(orig); }, 1000);
+    });
   });
-}
-
-$(function onReady() {
-  refresh();
-});
-
-$("#input-watering").click(function (event) {
-  event.preventDefault();
-  let wateringTime = $("#input-watering-time").val();
-  if (this.checked && confirm("Start watering for " + wateringTime + " seconds?")) {
-    $.post("/control", { "wateringTime": 1000 * wateringTime });
-  }
-});
-
-$("#input-mqtt").click(function (event) {
-  event.preventDefault();
-  if (this.checked) {
-    $.post("/control", { "mqtt": "enable" });
-  } else {
-    $.post("/control", { "mqtt": "disable" });
-  }
-});
-
-$("#button-reset").click(function (event) {
-  event.preventDefault();
-  if (confirm("Reset now?")) {
-    $.post("/control", { "reset": "1" });
-  }
-});
+})();

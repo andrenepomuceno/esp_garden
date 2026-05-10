@@ -8,79 +8,176 @@
     integrity="sha384-GLhlTQ8iRABdZLl6O3oVMWSktQOp6b7In1Zl3/Jr59b6EGGoI1aFkw7cmDA6j6gD" crossorigin="anonymous">
   <title>ESP Garden</title>
   <style>
-    .control-panel {
-      display: flex;
+    body {
+      padding-bottom: 2rem;
     }
 
-    .control-panel .row {
+    .card {
+      margin-bottom: 1rem;
+    }
+
+    .card-header {
+      font-weight: 600;
+      padding: .5rem .75rem;
+      display: flex;
       align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-body {
+      padding: .75rem;
+    }
+
+    .table {
+      margin-bottom: 0;
+      font-size: .9rem;
+    }
+
+    .table th,
+    .table td {
+      padding: .4rem .5rem;
+      vertical-align: middle;
+    }
+
+    .conn-dot {
+      display: inline-block;
+      width: .65rem;
+      height: .65rem;
+      border-radius: 50%;
+      background: #dc3545;
+      margin-right: .35rem;
+      vertical-align: middle;
+      transition: background .3s ease;
+    }
+
+    .conn-dot.online {
+      background: #198754;
+      box-shadow: 0 0 .35rem rgba(25, 135, 84, .6);
+    }
+
+    #textarea-logs {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .8rem;
+      background: #1a1a1a;
+      resize: vertical;
+    }
+
+    .control-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .75rem;
+      align-items: center;
+    }
+
+    .control-row > * {
+      flex: 1 1 12rem;
+    }
+
+    .num-badge {
+      font-variant-numeric: tabular-nums;
     }
   </style>
 </head>
 
 <body>
-  <div class="container">
-    <h1>&#x1F331; ESP Garden</h1>
-    <a id="a-thingspeak-link" href="#" class="link-primary">ThingSpeak</a>
-    <a href="/update.html" class="link-primary ms-2">Update</a>
-    <h2>Status</h2>
-    <table class="table table-striped">
-      <tbody id="tbody-status"></tbody>
-    </table>
-    <h2>Inputs</h2>
-    <table class="table table-striped">
-      <thead>
-        <tr>
-          <th scope="col">#</th>
-          <th scope="col">Name</th>
-          <th scope="col">Value</th>
-          <th scope="col">Average</th>
-          <th scope="col">Variance</th>
-        </tr>
-      </thead>
-      <tbody id="tbody-inputs"></tbody>
-    </table>
-    <h2>Outputs</h2>
-    <table class="table table-striped">
-      <thead>
-        <tr>
-          <th scope="col">#</th>
-          <th scope="col">Name</th>
-          <th scope="col">Value</th>
-        </tr>
-      </thead>
-      <tbody id="tbody-outputs"></tbody>
-    </table>
-    <h2>Control</h2>
-    <div class="control-panel">
-      <div class="row">
-        <div class="col">
+  <div class="container py-3" style="max-width: 960px;">
+
+    <header class="d-flex flex-wrap align-items-center justify-content-between mb-3">
+      <h1 class="m-0 fs-3">&#x1F331; ESP Garden</h1>
+      <div class="small">
+        <span><span id="conn-dot" class="conn-dot"></span><span id="conn-text">connecting…</span></span>
+        <a id="a-thingspeak-link" href="#" class="link-primary ms-3" target="_blank" rel="noopener">ThingSpeak</a>
+        <a href="/update.html" class="link-primary ms-2">Update</a>
+      </div>
+    </header>
+
+    <div class="row g-2">
+      <div class="col-12 col-lg-6">
+        <div class="card">
+          <div class="card-header">
+            <span>Status</span>
+            <span id="status-host" class="badge text-bg-secondary"></span>
+          </div>
+          <div class="card-body p-0">
+            <table class="table table-striped table-sm">
+              <tbody id="tbody-status"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-lg-6">
+        <div class="card">
+          <div class="card-header"><span>Inputs</span></div>
+          <div class="card-body p-0">
+            <table class="table table-striped table-sm">
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col" class="text-end">Value</th>
+                  <th scope="col" class="text-end">Avg</th>
+                  <th scope="col" class="text-end">Var</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-inputs"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><span>Outputs</span></div>
+          <div class="card-body p-0">
+            <table class="table table-striped table-sm">
+              <tbody id="tbody-outputs"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span>Control</span></div>
+      <div class="card-body">
+        <div class="control-row">
           <div class="form-check form-switch">
             <input id="input-mqtt" class="form-check-input" type="checkbox">
             <label class="form-check-label" for="input-mqtt">MQTT</label>
           </div>
-        </div>
-        <div class="col">
-          <input type="number" class="form-control" id="input-watering-time" placeholder="5" min="1" max="20" value="5">
-          <label for="input-watering-time">Watering Time</label>
-        </div>
-        <div class="col">
+
+          <div>
+            <label for="input-watering-time" class="form-label small mb-1">Watering Time (s)</label>
+            <input type="number" class="form-control form-control-sm" id="input-watering-time" min="1" max="60" value="5">
+          </div>
+
           <div class="form-check form-switch">
             <input id="input-watering" class="form-check-input" type="checkbox">
-            <label class="form-check-label" for="input-watering">Start</label>
+            <label class="form-check-label" for="input-watering">Start Watering</label>
           </div>
-        </div>
-        <div class="col">
-          <button id="button-reset" type="button" class="btn btn-primary">Reset</button>
+
+          <div class="d-grid">
+            <button id="button-reset" type="button" class="btn btn-outline-danger btn-sm">&#x21BB; Reset Device</button>
+          </div>
         </div>
       </div>
     </div>
-    <h2>Logs</h2>
-    <textarea class="form-control" id="textarea-logs" rows="8" readonly></textarea>
-    <div class="form-check form-switch">
-      <input id="input-scroll" class="form-check-input checked" type="checkbox" checked>
-      <label class="form-check-label" for="input-scroll">Automatic scroll</label>
+
+    <div class="card">
+      <div class="card-header">
+        <span>Logs</span>
+        <div class="d-flex gap-2 align-items-center">
+          <div class="form-check form-switch m-0">
+            <input id="input-scroll" class="form-check-input" type="checkbox" checked>
+            <label class="form-check-label small" for="input-scroll">Auto-scroll</label>
+          </div>
+          <button id="button-logs-copy" type="button" class="btn btn-outline-secondary btn-sm" title="Copy">&#x1F4CB;</button>
+          <a id="button-logs-download" href="/logs" download="esp-garden.log" class="btn btn-outline-secondary btn-sm" title="Download">&#x2B07;</a>
+        </div>
+      </div>
+      <div class="card-body p-2">
+        <textarea class="form-control" id="textarea-logs" rows="14" readonly></textarea>
+      </div>
     </div>
+
   </div>
 
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"
@@ -90,6 +187,5 @@
     crossorigin="anonymous"></script>
   <script src="index.js"></script>
 </body>
-<footer></footer>
 
 </html>
