@@ -9,6 +9,12 @@ const time_t g_safeTimestamp = 1609459200; // 01/01/2021
 
 #ifdef HAS_MOISTURE_SENSOR
 extern AccumulatorV2 g_soilMoisture[MOISTURE_SENSOR_COUNT];
+
+// "Dry" / "Humid" / "Wet" for probe `index`, or "" when that probe has no
+// two-point calibration. Bands are thirds of the probe's own physical span, so
+// they are comparable between probes with different gain and offset.
+String
+moistureState(unsigned index);
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR

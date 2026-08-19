@@ -33,14 +33,43 @@
     "io": {
         "button": 0,
         "relays": [
-            { "pin": 19, "on": 0, "name": "Watering" },
-            { "pin": 16, "on": 0, "name": "Relay 2" },
-            { "pin": 17, "on": 0, "name": "Relay 3" },
-            { "pin": 18, "on": 0, "name": "Relay 4" }
+            {
+                "pin": 19,
+                "on": 0,
+                "name": "Watering"
+            },
+            {
+                "pin": 16,
+                "on": 0,
+                "name": "Relay 2"
+            },
+            {
+                "pin": 17,
+                "on": 0,
+                "name": "Relay 3"
+            },
+            {
+                "pin": 18,
+                "on": 0,
+                "name": "Relay 4"
+            }
         ],
         "dht": 23,
-        "soilMoisture": [36, 34],
+        "soilMoisture": [
+            36,
+            34
+        ],
         "luminosity": 39,
         "waterLevel": 34
-    }
+    },
+    "moisture": [
+        {
+            "dry": 0,
+            "wet": 0
+        },
+        {
+            "dry": 0,
+            "wet": 0
+        }
+    ]
 }

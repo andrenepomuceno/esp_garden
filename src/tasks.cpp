@@ -276,6 +276,43 @@ startWatering(unsigned int wateringTime)
     startRelay(0, wateringTime);
 }
 
+#ifdef HAS_MOISTURE_SENSOR
+String
+moistureState(unsigned index)
+{
+    if (index >= MOISTURE_SENSOR_COUNT) {
+        return String();
+    }
+
+    const float dry = config.moistureDry[index];
+    const float wet = config.moistureWet[index];
+    const float span = wet - dry;
+
+    // Uncalibrated. Reporting a band from an unknown scale would be a guess
+    // dressed as a measurement, so the probe reports no state at all.
+    if (fabsf(span) < 1e-3) {
+        return String();
+    }
+
+    // Ordering is not assumed: with the 100-ADC% conversion the air reading is
+    // the smaller number, but a different probe or conversion can invert that.
+    float fraction = (g_soilMoisture[index].getAverage() - dry) / span;
+    if (fraction < 0.0) {
+        fraction = 0.0;
+    } else if (fraction > 1.0) {
+        fraction = 1.0;
+    }
+
+    if (fraction < 1.0 / 3.0) {
+        return String("Dry");
+    }
+    if (fraction < 2.0 / 3.0) {
+        return String("Humid");
+    }
+    return String("Wet");
+}
+#endif
+
 static void
 ioTaskHandler()
 {

@@ -42,7 +42,9 @@
       var d = data[key] || {};
       rows += '<tr>' +
               '<th scope="row" class="fw-normal">' + key + '</th>' +
-              '<td class="text-end num-badge">' + (d.val || '') + '</td>' +
+              '<td class="text-end num-badge">' + (d.val || '') +
+              (d.state ? ' <span class="badge text-bg-secondary">' + d.state + '</span>' : '') +
+              '</td>' +
               '<td class="text-end num-badge text-muted">' + (d.avg || '') + '</td>' +
               '<td class="text-end num-badge text-muted">' + (d.var || '') + '</td>' +
               '</tr>';

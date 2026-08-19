@@ -49,6 +49,14 @@ class ConfigFile
 
     uint8_t dhtPin;
     uint8_t soilMoisturePin[MOISTURE_SENSOR_COUNT];
+
+    // Two-point calibration, per probe: the reading with the probe in air and
+    // the reading submerged in water. Every capacitive probe has its own gain
+    // and offset, so these are not shared. No ordering is assumed — with the
+    // current 100-ADC% conversion the air reading is the SMALLER number.
+    // Equal values disable classification for that probe.
+    float moistureDry[MOISTURE_SENSOR_COUNT];
+    float moistureWet[MOISTURE_SENSOR_COUNT];
     uint8_t luminosityPin;
     uint8_t waterLevelPin;
 

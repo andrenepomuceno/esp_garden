@@ -108,6 +108,12 @@ webUpdateDataCache()
                         ? String("Soil Moisture")
                         : ("Soil Moisture " + String(i + 1));
         addAccumulator(inputsJson, name.c_str(), g_soilMoisture[i]);
+
+        // Empty unless the probe has been calibrated against air and water.
+        const String state = moistureState(i);
+        if (state.length() > 0) {
+            inputsJson[name.c_str()]["state"] = state;
+        }
     }
 #endif
 

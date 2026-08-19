@@ -84,6 +84,11 @@ ConfigFile::ConfigFile()
                                   sizeof(g_defaultSoilMoisturePin[0]);
         soilMoisturePin[i] =
           (i < defaults) ? g_defaultSoilMoisturePin[i] : (uint8_t)A0;
+
+        // Uncalibrated until measured: dry == wet means "do not classify",
+        // which is honest rather than inventing a band from nothing.
+        moistureDry[i] = 0.0;
+        moistureWet[i] = 0.0;
     }
 
     luminosityPin = A3;
@@ -286,6 +291,25 @@ ConfigFile::loadFile(unsigned deviceID)
 #endif
 #if defined(HAS_MOISTURE_SENSOR)
     loadSoilMoisture(*this, io);
+
+    // "moisture": [ {"dry": <air reading>, "wet": <submerged reading>}, ... ]
+    JSONVar moisture = configJson["moisture"];
+    if (JSON.typeof(moisture) == "array") {
+        for (unsigned i = 0;
+             i < MOISTURE_SENSOR_COUNT && i < (unsigned)moisture.length();
+             ++i) {
+            JSONVar entry = moisture[i];
+            if (JSON.typeof(entry) != "object") {
+                continue;
+            }
+            if (entry.hasOwnProperty("dry")) {
+                moistureDry[i] = (double)entry["dry"];
+            }
+            if (entry.hasOwnProperty("wet")) {
+                moistureWet[i] = (double)entry["wet"];
+            }
+        }
+    }
 #endif
 #if defined(HAS_LUMINOSITY_SENSOR)
     luminosityPin = (int)io["luminosity"];
