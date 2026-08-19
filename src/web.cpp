@@ -5,6 +5,7 @@
 #include "core/logger.h"
 #include "core/role.h"
 #include "core/tasks.h"
+#include "core/user_store.h"
 #include "network/custom_login.h"
 #include <Arduino_JSON.h>
 #include <AsyncTCP.h>
@@ -306,6 +307,168 @@ handleUpdateUpload(AsyncWebServerRequest* request,
     }
 }
 
+// Credentials are masked on the way out and restored on the way back in, so a
+// plaintext secret never leaves the device — unlike fullbot, which serves the
+// raw /config.json to any authenticated session.
+static const char* const g_secretPaths[][2] = {
+    { "wifi", "password" },     { "ota", "password" },
+    { "thingSpeak", "apiKey" }, { "talkBack", "apiKey" },
+    { "mqtt", "password" },
+};
+static const size_t g_secretCount =
+  sizeof(g_secretPaths) / sizeof(g_secretPaths[0]);
+
+static void
+handleConfigGet(AsyncWebServerRequest* request)
+{
+    String raw = config.readFile();
+    if (raw.isEmpty()) {
+        request->send(500, "text/plain", "config unreadable");
+        return;
+    }
+
+    JSONVar doc = JSON.parse(raw);
+    if (JSON.typeof(doc) == "undefined") {
+        request->send(500, "text/plain", "config unparseable");
+        return;
+    }
+
+    for (size_t i = 0; i < g_secretCount; ++i) {
+        const char* section = g_secretPaths[i][0];
+        const char* key = g_secretPaths[i][1];
+        if (JSON.typeof(doc[section]) != "object") {
+            continue;
+        }
+        if (doc[section].hasOwnProperty(key)) {
+            doc[section][key] = g_configSecretMask;
+        }
+    }
+
+    AsyncWebServerResponse* response =
+      request->beginResponse(200, "application/json", JSON.stringify(doc));
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+}
+
+static void
+handleConfigPost(AsyncWebServerRequest* request)
+{
+    if (!request->hasParam("config", true)) {
+        request->send(400, "text/plain", "missing 'config' parameter");
+        return;
+    }
+
+    JSONVar incoming = JSON.parse(request->getParam("config", true)->value());
+    if (JSON.typeof(incoming) != "object") {
+        request->send(400, "text/plain", "config is not a JSON object");
+        return;
+    }
+
+    // Refuse a document addressed at a different device. Without this a config
+    // pasted from another garden would be written, and loadFile() would then
+    // reject it on the next boot — leaving the device on compiled defaults it
+    // cannot connect with, and unreachable to fix.
+    String id = (const char*)incoming["id"];
+    char* endPtr;
+    if (strtol(id.c_str(), &endPtr, 16) != (long)config.deviceId) {
+        request->send(400, "text/plain", "config id does not match this device");
+        return;
+    }
+
+    JSONVar stored = JSON.parse(config.readFile());
+    const bool haveStored = (JSON.typeof(stored) == "object");
+
+    String newOtaPassword;
+    for (size_t i = 0; i < g_secretCount; ++i) {
+        const char* section = g_secretPaths[i][0];
+        const char* key = g_secretPaths[i][1];
+
+        // Every JSONVar is bound to a named local before being read.
+        // Arduino_JSON's operator[] returns BY VALUE, so casting
+        // `incoming[section][key]` straight to const char* reads a buffer that
+        // the temporary already freed and yields an empty String. That made
+        // every mask comparison fail silently and wrote the masks over the real
+        // credentials — verified against a live device.
+        JSONVar incomingSection = incoming[section];
+        if (JSON.typeof(incomingSection) != "object" ||
+            !incomingSection.hasOwnProperty(key)) {
+            continue;
+        }
+
+        JSONVar incomingValue = incomingSection[key];
+        const String value = (const char*)incomingValue;
+
+        if (value != g_configSecretMask) {
+            if (strcmp(section, "ota") == 0 && strcmp(key, "password") == 0) {
+                newOtaPassword = value;
+            }
+            continue;
+        }
+
+        if (!haveStored) {
+            continue;
+        }
+        JSONVar storedSection = stored[section];
+        if (JSON.typeof(storedSection) != "object" ||
+            !storedSection.hasOwnProperty(key)) {
+            continue;
+        }
+
+        JSONVar storedValue = storedSection[key];
+        const String restored = (const char*)storedValue;
+        if (restored.isEmpty()) {
+            continue;
+        }
+
+        // Assign the C string, never the JSONVar: move-assign from an rvalue
+        // JSONVar is broken in this library and produces a null child.
+        incoming[section][key] = restored.c_str();
+    }
+
+    // Refuse to persist a document that still carries a mask. Writing one
+    // replaces a real credential with eight asterisks, and the damage only
+    // surfaces at the next boot — as an unreachable device.
+    for (size_t i = 0; i < g_secretCount; ++i) {
+        JSONVar section = incoming[g_secretPaths[i][0]];
+        if (JSON.typeof(section) != "object" ||
+            !section.hasOwnProperty(g_secretPaths[i][1])) {
+            continue;
+        }
+        JSONVar value = section[g_secretPaths[i][1]];
+        if (String((const char*)value) == g_configSecretMask) {
+            logger.error("Refusing to save config: could not restore " +
+                         String(g_secretPaths[i][0]) + "." +
+                         String(g_secretPaths[i][1]));
+            request->send(500, "text/plain", "secret restore failed");
+            return;
+        }
+    }
+
+    if (!config.saveFile(JSON.stringify(incoming))) {
+        request->send(500, "text/plain", "failed to write config");
+        return;
+    }
+
+    // The login password lives in /users.json, not /config.json, so changing
+    // ota.password has to be pushed into the user store or the new value would
+    // only take effect after a filesystem deploy wiped /users.json.
+    if (!newOtaPassword.isEmpty()) {
+        const String username = (const char*)incoming["ota"]["username"];
+        if (!username.isEmpty()) {
+            userStore.upsert(username, newOtaPassword, Role::ADMIN);
+            userStore.save();
+            logger.warning("Credentials updated for '" + username +
+                           "'. Existing sessions stay valid until logout.");
+        }
+    }
+
+    // Nothing re-reads config.json at runtime.
+    AsyncWebServerResponse* response = request->beginResponse(
+      200, "application/json", "{\"saved\":true,\"restartRequired\":true}");
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+}
+
 // Refuses a path outright. Used to shadow files that a serveStatic below would
 // otherwise expose.
 static void
@@ -407,6 +570,10 @@ webSetup()
     g_webServer.on("/control", HTTP_POST, handleControl)
       .addMiddleware(operatorOnly);
     g_webServer.on("/logs", HTTP_GET, handleLogs).addMiddleware(adminOnly);
+    g_webServer.on("/config.json", HTTP_GET, handleConfigGet)
+      .addMiddleware(adminOnly);
+    g_webServer.on("/config.json", HTTP_POST, handleConfigPost)
+      .addMiddleware(adminOnly);
     g_webServer.on("/updateEnable", HTTP_POST, handleUpdateEnable)
       .addMiddleware(adminOnly);
     g_webServer

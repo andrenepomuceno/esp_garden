@@ -57,7 +57,20 @@ class ConfigFile
     ConfigFile();
 
     bool loadFile(unsigned deviceID);
+
+    // Replaces /config.json wholesale — there is no merge at this level. The
+    // caller is responsible for having produced a complete document; the
+    // handler in web.cpp does that by merging into the file already on disk.
+    // Takes effect on the next boot: nothing re-reads the file at runtime.
+    bool saveFile(const String& content);
+
+    // Raw text of /config.json, or an empty String when it cannot be read.
+    String readFile();
 };
+
+// Value substituted for every secret in GET /config.json. Sending it back
+// unchanged in POST /config.json keeps the stored value.
+extern const char* const g_configSecretMask;
 
 extern ConfigFile config;
 

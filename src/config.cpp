@@ -265,6 +265,46 @@ ConfigFile::loadFile(unsigned deviceID)
     return true;
 }
 
+const char* const g_configSecretMask = "********";
+
+String
+ConfigFile::readFile()
+{
+    File configFile = SPIFFS.open("/config.json", FILE_READ);
+    if (configFile == false) {
+        logger.error("Failed to open /config.json for reading.");
+        return String();
+    }
+
+    String data = configFile.readString();
+    configFile.close();
+    return data;
+}
+
+bool
+ConfigFile::saveFile(const String& content)
+{
+    // FILE_WRITE truncates. A short write leaves a corrupt document behind, so
+    // the length is checked rather than trusting print().
+    File configFile = SPIFFS.open("/config.json", FILE_WRITE);
+    if (configFile == false) {
+        logger.error("Failed to open /config.json for writing.");
+        return false;
+    }
+
+    const size_t written = configFile.print(content);
+    configFile.close();
+
+    if (written != content.length()) {
+        logger.error("Short write to /config.json: " + String(written) + "/" +
+                     String(content.length()) + " bytes.");
+        return false;
+    }
+
+    logger.info("Saved /config.json (" + String(written) + " bytes).");
+    return true;
+}
+
 bool
 loadConfigFile(unsigned deviceID)
 {

@@ -162,7 +162,20 @@ username that is not stored yet.
 |---|---|
 | `/data.json` | any signed-in user |
 | `/control` | OPERATOR |
-| `/logs`, `/updateEnable`, `/update`, `/spiffs/*` | ADMIN |
+| `/config.json`, `/logs`, `/updateEnable`, `/update`, `/spiffs/*` | ADMIN |
+
+### Changing settings without reflashing
+
+`GET /config.json` returns the current configuration with every secret
+(`wifi.password`, `ota.password`, `thingSpeak.apiKey`, `talkBack.apiKey`,
+`mqtt.password`) replaced by `********`. Edit the document, send it back as the
+`config` form parameter of `POST /config.json`, and any field still carrying the
+mask keeps its stored value — so credentials never leave the device.
+
+The write replaces the whole file, and the document's `id` must match the
+device. Nothing re-reads the configuration at runtime: the response carries
+`restartRequired: true`, and the change takes effect on the next boot
+(`POST /control` with `reset=1`).
 
 ### Partition table
 

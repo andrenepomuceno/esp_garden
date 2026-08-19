@@ -314,6 +314,71 @@ class AuthSim:
 STATE = DeviceState()
 AUTH = AuthSim()
 
+# Mirror of g_configSecretMask in src/web.cpp. Secrets are replaced by this on
+# GET and restored from the stored document when POSTed back unchanged.
+CONFIG_SECRET_MASK = "********"
+CONFIG_SECRET_PATHS = [
+    ("wifi", "password"),
+    ("ota", "password"),
+    ("thingSpeak", "apiKey"),
+    ("talkBack", "apiKey"),
+    ("mqtt", "password"),
+]
+
+SIM_CONFIG = {
+    "version": 2,
+    "id": "1a2b",
+    "hostname": "espgarden-sim",
+    "timezone": "<-03>3",
+    "wifi": {"ssid": "sim-wifi", "password": "sim-wifi-password"},
+    "ota": {"username": "admin", "password": "admin"},
+    "thingSpeak": {"apiKey": "SIMKEY0000000000", "channel": 1348790},
+    "talkBack": {"apiKey": "SIMTALK000000000", "channel": 42661},
+    "mqtt": {
+        "clientID": "sim-client",
+        "username": "sim-user",
+        "password": "sim-password",
+        "server": "mqtt3.thingspeak.com",
+        "port": 8883,
+        "cacert": "/thingspeak.pem",
+    },
+    "log": {"level": 4},
+    "io": {
+        "button": 0,
+        "relays": [
+            {"pin": 19, "on": 0, "name": "Watering"},
+            {"pin": 16, "on": 0, "name": "Relay 2"},
+            {"pin": 17, "on": 0, "name": "Relay 3"},
+            {"pin": 18, "on": 0, "name": "Relay 4"},
+        ],
+        "dht": 23,
+        "soilMoisture": [36, 34],
+        "luminosity": 39,
+    },
+}
+
+
+def config_masked() -> dict:
+    doc = json.loads(json.dumps(SIM_CONFIG))  # deep copy
+    for section, key in CONFIG_SECRET_PATHS:
+        if key in doc.get(section, {}):
+            doc[section][key] = CONFIG_SECRET_MASK
+    return doc
+
+
+def config_apply(incoming: dict) -> tuple[bool, str]:
+    if not isinstance(incoming, dict):
+        return False, "config is not a JSON object"
+    if str(incoming.get("id", "")).lower() != str(SIM_CONFIG["id"]).lower():
+        return False, "config id does not match this device"
+    for section, key in CONFIG_SECRET_PATHS:
+        sec = incoming.get(section)
+        if isinstance(sec, dict) and sec.get(key) == CONFIG_SECRET_MASK:
+            sec[key] = SIM_CONFIG.get(section, {}).get(key)
+    SIM_CONFIG.clear()
+    SIM_CONFIG.update(incoming)
+    return True, "saved"
+
 # Served without a token: the pages carry no data, and the login page has to
 # load before a token can exist. Mirrors servePublicFile() in src/web.cpp.
 PUBLIC_PATHS = {
@@ -401,6 +466,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/data.json":
             self._send_json(STATE.snapshot())
+        elif path == "/config.json":
+            self._send_json(config_masked())
         elif path == "/logs":
             body = STATE.logs_text().encode("utf-8")
             self._send(HTTPStatus.OK, body, "text/plain; charset=utf-8")
@@ -437,6 +504,24 @@ class Handler(BaseHTTPRequestHandler):
 
         if not self._authorized():
             self._unauthorized()
+            return
+
+        if path == "/config.json":
+            params = parse_qs(raw.decode("utf-8", errors="replace"))
+            if "config" not in params:
+                self._send(HTTPStatus.BAD_REQUEST, b"missing 'config' parameter")
+                return
+            try:
+                incoming = json.loads(params["config"][0])
+            except ValueError:
+                self._send(HTTPStatus.BAD_REQUEST, b"config is not a JSON object")
+                return
+            ok, message = config_apply(incoming)
+            if not ok:
+                self._send(HTTPStatus.BAD_REQUEST, message.encode())
+                return
+            STATE.log("info", "Saved /config.json")
+            self._send_json({"saved": True, "restartRequired": True})
             return
 
         if path == "/control":
