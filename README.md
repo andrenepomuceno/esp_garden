@@ -7,7 +7,10 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
 - **Automated irrigation** — timed watering triggered locally or remotely via ThingSpeak TalkBack
 - **Multi-zone relay control** — up to 4 independently timed relays, switched off by a dedicated real-time task
 - **Environmental monitoring** — soil moisture (up to 2 probes), luminosity, temperature, humidity, and water level
-- **Local web UI** — real-time status dashboard served directly from the device
+- **Local web UI** — dashboard, configuration editor and account management, served
+  from the device with no CDN dependency (jQuery is bundled)
+- **Per-probe moisture classification** — Dry / Humid / Wet from a two-point
+  calibration, shown on the dashboard
 - **Cloud logging** — sensor data published to ThingSpeak over MQTT every 2 minutes
 - **Internet watchdog** — pings Google/Cloudflare DNS and reports connectivity losses
 - **NTP time sync** — clock synchronized daily via Brazilian NTP pool
@@ -120,6 +123,10 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
     "log": {
         "level": 4               // 0 disable .. 4 info (default) .. 6 trace
     },
+    "moisture": [                // two-point calibration, one entry per probe
+        { "dry": 0, "wet": 0 },  // dry = reading in air, wet = submerged
+        { "dry": 0, "wet": 0 }   // equal values disable classification
+    ],
     "io": {                      // GPIO pin overrides (optional)
         "button": 0,
         "relays": [              // index 0 is the watering relay on every board
@@ -191,6 +198,40 @@ The firmware ships a custom 4 MB layout (`partitions/esp_garden_4mb.csv`) with
 1.69 MB per OTA slot. **This cannot be delivered over OTA** — a board flashed
 with the stock table needs one serial upload (`pio run -e <env> -t upload`) to
 move to it.
+
+## Soil Moisture Calibration
+
+Each capacitive probe has its own gain and offset, so Dry / Humid / Wet cannot
+come from a shared threshold — nor from channel history. A month of stored data
+was fitted and rejected for this: a drying trend alone explains 86 % of the
+variance, so clustering it into three groups just returns slices of that trend.
+
+Calibrate each probe with two readings instead:
+
+1. Hold the probe **in air** (connected — a disconnected probe floats to a rail
+   and that value is useless) and note the value on the dashboard. That is `dry`.
+2. Submerge it to its marked line in water. That is `wet`.
+3. Enter both in **Config → moisture**, save and restart.
+
+Until `dry` and `wet` differ the probe reports no state and the dashboard shows
+no badge, rather than a made-up one.
+
+To inspect a channel's history and see what it does and does not support:
+
+```bash
+python scripts/moisture_calibration.py --days 30
+python scripts/moisture_calibration.py --days 30 --end 2023-03-08   # a past window
+python scripts/moisture_calibration.py --dry 94.0 --wet 12.0        # emit bands
+```
+
+## Web Interface
+
+| Page | Role | What it does |
+|---|---|---|
+| `/` | any signed-in user | Sensors, relay buttons, logs |
+| `/config.html` | ADMIN | Edit the configuration in tabs; secrets stay masked |
+| `/users.html` | ADMIN | Add, edit and remove accounts and roles |
+| `/update.html` | ADMIN | Firmware and filesystem OTA |
 
 ## Remote Control (TalkBack)
 
