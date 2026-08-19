@@ -37,6 +37,12 @@ class CustomLogin
     // Allocates one middleware per guarded route, at webSetup() time only.
     AsyncMiddlewareFunction* requireRole(Role minRole);
 
+    // Drops every session, persistent ones included. MUST be called after any
+    // UserStore mutation that reorders entries: a Session stores the user's
+    // INDEX, and removing an entry shifts every later one, so live sessions
+    // would silently start resolving to a different account — and to its role.
+    void invalidateAllSessions();
+
   private:
     static constexpr size_t kTokenLen = 64;
     static constexpr size_t kNonceLen = 32;

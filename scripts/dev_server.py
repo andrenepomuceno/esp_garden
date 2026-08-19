@@ -442,10 +442,70 @@ PUBLIC_PATHS = {
     "/update.js",
     "/config.html",
     "/config.js",
+    "/users.html",
+    "/users.js",
     "/jquery.js",
     "/spark-md5.js",
     "/favicon.ico",
 }
+
+# Mirrors UserStore. Password hashes and salts are deliberately absent: the
+# device never serves them, so neither does the simulator.
+SIM_USERS = [{"username": "admin", "role": 2}]
+
+
+def users_apply(params: dict) -> tuple[int, str, bool]:
+    """Mirrors handleUsersPost in src/web.cpp. Returns (status, message, reauth)."""
+    action = params.get("action", "")
+    username = params.get("username", "").strip()
+    password = params.get("password", "")
+    try:
+        role = int(params.get("role", 1))
+    except ValueError:
+        role = 0
+
+    if not username:
+        return 400, "Missing username", False
+    if role not in (1, 2):
+        return 400, "Invalid role", False
+
+    index = next((i for i, u in enumerate(SIM_USERS)
+                  if u["username"] == username), -1)
+    admins = sum(1 for u in SIM_USERS if u["role"] == 2)
+
+    if action == "delete":
+        if index < 0:
+            return 404, "User not found", False
+        if SIM_USERS[index]["role"] == 2 and admins <= 1:
+            return 400, "Cannot delete the last admin", False
+        SIM_USERS.pop(index)
+        # The device stores a user INDEX in each session, so removing an entry
+        # forces every session to be dropped. Mirrored here or the simulator
+        # would let a stale token keep working.
+        AUTH.tokens.clear()
+        return 200, f"User '{username}' deleted", True
+
+    if action == "upsert":
+        if index >= 0 and SIM_USERS[index]["role"] == 2 and role != 2 and admins <= 1:
+            return 400, "Cannot demote the last admin", False
+        if not password:
+            if index < 0:
+                return 400, "Password required for a new user", False
+            SIM_USERS[index]["role"] = role
+        else:
+            if len(password) < CONFIG_MIN_STRING_LENGTH:
+                return (400,
+                        f"Password must have at least {CONFIG_MIN_STRING_LENGTH} characters",
+                        False)
+            if index >= 0:
+                SIM_USERS[index]["role"] = role
+            else:
+                SIM_USERS.append({"username": username, "role": role})
+            if username == AUTH.USERNAME:
+                AUTH.set_password(password)
+        return 200, f"User '{username}' saved with role {role}", False
+
+    return 400, "Invalid action", False
 
 
 def _ticker() -> None:
@@ -521,6 +581,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(STATE.snapshot())
         elif path == "/config.json":
             self._send_json(config_masked())
+        elif path == "/users.json":
+            self._send_json(SIM_USERS)
         elif path == "/logs":
             body = STATE.logs_text().encode("utf-8")
             self._send(HTTPStatus.OK, body, "text/plain; charset=utf-8")
@@ -557,6 +619,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if not self._authorized():
             self._unauthorized()
+            return
+
+        if path == "/users":
+            params = {k: v[0] for k, v in
+                      parse_qs(raw.decode("utf-8", errors="replace")).items()}
+            status, message, reauth = users_apply(params)
+            if status != 200:
+                self._send(status, message.encode())
+            else:
+                STATE.log("info", message)
+                self._send_json({"reauth": reauth})
             return
 
         if path == "/config.json":

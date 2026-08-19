@@ -546,6 +546,18 @@ CustomLogin::begin()
 }
 
 void
+CustomLogin::invalidateAllSessions()
+{
+    for (auto& session : sessions) {
+        session.active = false;
+        session.persistent = false;
+        memset(session.token, 0, sizeof(session.token));
+    }
+    savePersistentSessions();
+    logger.warning("All sessions invalidated; every client must sign in again.");
+}
+
+void
 CustomLogin::authorizeFunction(AsyncWebServerRequest* request,
                                ArMiddlewareNext next)
 {
