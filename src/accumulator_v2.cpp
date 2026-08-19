@@ -8,6 +8,19 @@ AccumulatorV2::AccumulatorV2(unsigned maxLen)
 }
 
 void
+AccumulatorV2::setMaxLen(unsigned len)
+{
+    if (len == 0) {
+        return;
+    }
+
+    maxLen = len;
+    while (sampleList.size() > maxLen) {
+        sampleList.pop_front();
+    }
+}
+
+void
 AccumulatorV2::add(const float value)
 {
     sampleList.push_back(value);

@@ -39,13 +39,15 @@ DECLARE_TASK(io, 1000);                         // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
 DECLARE_TASK(checkInternet, 15 * 1000);         // 15 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
-DECLARE_TASK(mqtt, 2 * 60 * 1000);              // 2 min
-DECLARE_TASK(talkBack, 5 * 60 * 1000);          // 5 min
+DECLARE_TASK(mqtt, 1 * 60 * 1000);              // 1 min
+DECLARE_TASK(talkBack, 1 * 60 * 1000);          // 1 min
 #ifdef HAS_MOISTURE_SENSOR
 DECLARE_TASK(checkMoisture, 4 * 60 * 60 * 1000); // 4 h
 #endif
 #ifdef HAS_DHT_SENSOR
-DECLARE_TASK(dht, 10 * 1000); // 10 s
+// At the DHT11's sampling floor: the Adafruit driver returns its cached
+// reading rather than an error when polled faster than once per second.
+DECLARE_TASK(dht, 1 * 1000); // 1 s
 #endif
 
 // Switching a pump off on time is the one deadline in this firmware that has a
@@ -565,6 +567,17 @@ tasksSetup()
 #endif
 #ifdef HAS_DHT_SENSOR
     g_taskScheduler.addTask(&g_dhtTask);
+#endif
+
+    // Every scalar accumulator sizes its window from the MQTT period at
+    // construction, so each average covers exactly one publish interval. An
+    // array cannot pass a constructor argument, so the probes are sized here
+    // instead — otherwise they silently keep the 120-sample default and their
+    // averages span a different interval from every other channel.
+#ifdef HAS_MOISTURE_SENSOR
+    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+        g_soilMoisture[i].setMaxLen(g_mqttTaskPeriod / g_ioTaskPeriod);
+    }
 #endif
 
     pinMode(config.buttonPin, INPUT);
