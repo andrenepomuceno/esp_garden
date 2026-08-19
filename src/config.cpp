@@ -28,13 +28,12 @@ String& g_mqttServer = config.mqttServer;
 int& g_mqttPort = config.mqttPort;
 String& g_mqttCACert = config.mqttCACert;
 
-uint8_t& g_buttonPin = config.buttonPin;
-uint8_t& g_wateringPin = config.wateringPin;
-uint8_t& g_wateringPinOn = config.wateringPinOn;
-uint8_t& g_dhtPin = config.dhtPin;
-uint8_t& g_soilMoisturePin = config.soilMoisturePin;
-uint8_t& g_luminosityPin = config.luminosityPin;
-uint8_t& g_waterLevelPin = config.waterLevelPin;
+// Relay 0 keeps GPIO 15 so boards already in the field are unaffected. It is a
+// strapping pin (MTDO) — new hardware should override it in config.json.
+static const uint8_t g_defaultRelayPin[] = { 15, 16, 17, 18 };
+// A0 and A6 are both ADC1. ADC2 cannot be read while WiFi is associated, so
+// every analog channel has to come from GPIO 32-39.
+static const uint8_t g_defaultSoilMoisturePin[] = { A0, A6 };
 
 ConfigFile::ConfigFile()
 {
@@ -68,15 +67,91 @@ ConfigFile::ConfigFile()
 
     // pins
     buttonPin = 0;
-    wateringPin = 15;
-    wateringPinOn = 0;
+
+    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+        const unsigned defaults =
+          sizeof(g_defaultRelayPin) / sizeof(g_defaultRelayPin[0]);
+        relayPin[i] = (i < defaults) ? g_defaultRelayPin[i] : 0;
+        relayPinOn[i] = 0; // active low
+        relayName[i] = (i == 0) ? "Watering" : ("Relay " + String(i + 1));
+    }
+
     dhtPin = 23;
-    soilMoisturePin = A0;
+
+    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+        const unsigned defaults = sizeof(g_defaultSoilMoisturePin) /
+                                  sizeof(g_defaultSoilMoisturePin[0]);
+        soilMoisturePin[i] =
+          (i < defaults) ? g_defaultSoilMoisturePin[i] : (uint8_t)A0;
+    }
+
     luminosityPin = A3;
     waterLevelPin = A6;
 
     // log
     logLevel = LOG_INFO;
+}
+
+// Reads `io.relays` (array of {pin, on, name}) when present, otherwise falls
+// back to the legacy scalar `io.watering` / `io.wateringOn` pair so a config
+// written for a single-relay device still loads unchanged.
+static void
+loadRelays(ConfigFile& cfg, JSONVar& io)
+{
+    JSONVar relays = io["relays"];
+
+    if (JSON.typeof(relays) == "array") {
+        const unsigned count = relays.length();
+        if (count < RELAY_COUNT) {
+            logger.warning("Config declares " + String(count) + " relays, " +
+                           String(RELAY_COUNT) +
+                           " compiled in. Missing entries keep defaults.");
+        }
+
+        for (unsigned i = 0; i < RELAY_COUNT && i < count; ++i) {
+            JSONVar relay = relays[i];
+            cfg.relayPin[i] = (int)relay["pin"];
+            cfg.relayPinOn[i] = (int)relay["on"];
+
+            // An absent name keeps the compiled default rather than blanking
+            // the label the dashboard renders.
+            if (JSON.typeof(relay["name"]) == "string") {
+                cfg.relayName[i] = (const char*)relay["name"];
+            }
+        }
+        return;
+    }
+
+    if (JSON.typeof(io["watering"]) != "undefined") {
+        cfg.relayPin[0] = (int)io["watering"];
+        cfg.relayPinOn[0] = (int)io["wateringOn"];
+    }
+}
+
+// `io.soilMoisture` is either a bare pin number (legacy, one probe) or an
+// array of pins.
+static void
+loadSoilMoisture(ConfigFile& cfg, JSONVar& io)
+{
+    JSONVar pins = io["soilMoisture"];
+
+    if (JSON.typeof(pins) == "array") {
+        const unsigned count = pins.length();
+        if (count < MOISTURE_SENSOR_COUNT) {
+            logger.warning("Config declares " + String(count) +
+                           " moisture probes, " +
+                           String(MOISTURE_SENSOR_COUNT) + " compiled in.");
+        }
+
+        for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT && i < count; ++i) {
+            cfg.soilMoisturePin[i] = (int)pins[i];
+        }
+        return;
+    }
+
+    if (JSON.typeof(pins) != "undefined") {
+        cfg.soilMoisturePin[0] = (int)pins;
+    }
 }
 
 bool
@@ -144,14 +219,13 @@ ConfigFile::loadFile(unsigned deviceID)
 
     JSONVar io = configJson["io"];
     buttonPin = (int)io["button"];
-    wateringPin = (int)io["watering"];
-    wateringPinOn = (int)io["wateringOn"];
+    loadRelays(*this, io);
 
 #if defined(HAS_DHT_SENSOR)
     dhtPin = (int)io["dht"];
 #endif
 #if defined(HAS_MOISTURE_SENSOR)
-    soilMoisturePin = (int)io["soilMoisture"];
+    loadSoilMoisture(*this, io);
 #endif
 #if defined(HAS_LUMINOSITY_SENSOR)
     luminosityPin = (int)io["luminosity"];
@@ -159,6 +233,21 @@ ConfigFile::loadFile(unsigned deviceID)
 #if defined(HAS_WATER_LEVEL_SENSOR)
     waterLevelPin = (int)io["waterLevel"];
 #endif
+
+    // An out-of-range log level would silence the device entirely, so it is
+    // clamped rather than trusted.
+    if (JSON.typeof(configJson["log"]) != "undefined") {
+        JSONVar log = configJson["log"];
+        if (JSON.typeof(log["level"]) != "undefined") {
+            int level = (int)log["level"];
+            if ((level >= LOG_DISABLE) && (level <= LOG_TRACE)) {
+                logLevel = level;
+            } else {
+                logger.warning("Ignoring out-of-range log level " +
+                               String(level));
+            }
+        }
+    }
 
     const int minChar = 4;
     if ((hostname.length() < minChar) || (ssid.length() < minChar) ||
@@ -178,6 +267,22 @@ ConfigFile::loadFile(unsigned deviceID)
 bool
 loadConfigFile(unsigned deviceID)
 {
-    return config.loadFile(deviceID);
+    bool success = config.loadFile(deviceID);
+
+    logger.setLogLevel((LogLevel)config.logLevel);
+
+    // The config may have moved a relay to a different pin than the one
+    // relayPinsSafeInit() parked at boot; park the new one too.
+    relayPinsSafeInit();
+
+    return success;
 }
 
+void
+relayPinsSafeInit()
+{
+    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+        pinMode(config.relayPin[i], OUTPUT);
+        digitalWrite(config.relayPin[i], !config.relayPinOn[i]);
+    }
+}

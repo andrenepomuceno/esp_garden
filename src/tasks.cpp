@@ -4,10 +4,11 @@
 #include "network/mqtt.h"
 #include "network/talkback.h"
 #include "network/web.h"
-#include <ESP32Ping.h>
 #include <CriticalTaskScheduler.h>
+#include <ESP32Ping.h>
 #include <WiFi.h>
 #include <list>
+#include <new>
 #ifdef HAS_DHT_SENSOR
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
@@ -23,13 +24,20 @@
     static TSTask g_##name##Task(#name, g_##name##TaskPeriod,                  \
                                  &name##TaskHandler)
 
+// Critical tasks run on a dedicated FreeRTOS task instead of the cooperative
+// loop() pump, so a blocking background handler cannot delay them.
+#define DECLARE_CRITICAL_TASK(name, period)                                    \
+    static void name##TaskHandler();                                           \
+    static const unsigned g_##name##TaskPeriod = period;                       \
+    static TSTask g_##name##Task(#name, g_##name##TaskPeriod,                  \
+                                 &name##TaskHandler, true)
+
 static TSScheduler g_taskScheduler;
+static TSFreeRTOSCriticalRunner g_criticalRunner(g_taskScheduler);
 
 DECLARE_TASK(io, 1000);                         // 1 s
-DECLARE_TASK(watering, 100);                    // 100 ms
-DECLARE_TASK(ledBlink, 1000);                   // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
-DECLARE_TASK(checkInternet, 15 * 1000);         // 30 s
+DECLARE_TASK(checkInternet, 15 * 1000);         // 15 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
 DECLARE_TASK(mqtt, 2 * 60 * 1000);              // 2 min
 DECLARE_TASK(talkBack, 5 * 60 * 1000);          // 5 min
@@ -40,18 +48,42 @@ DECLARE_TASK(checkMoisture, 4 * 60 * 60 * 1000); // 4 h
 DECLARE_TASK(dht, 10 * 1000); // 10 s
 #endif
 
+// Switching a pump off on time is the one deadline in this firmware that has a
+// physical cost when missed, so it does not share the cooperative pump with
+// Ping, TalkBack and the MQTT drain — any of which blocks for seconds.
+DECLARE_CRITICAL_TASK(relays, CRITICAL_TASKS_PERIOD_MS);
+
+// Critical for a different reason: it is the only indication that the config
+// failed to load, and that failure makes tasksSetup() block forever waiting for
+// an internet connection the device cannot get. On the cooperative pump the
+// error blink would never run in precisely the case it exists to report.
+DECLARE_CRITICAL_TASK(ledBlink, 1000);
+
+// ThingSpeak channels have exactly 8 fields and the numbering is a permanent
+// contract with the data already stored. Field 4 belongs to the water level
+// where that sensor exists; on a board without it the slot is free for the
+// second soil probe. Relays 1..N have no field — they are local-only.
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
 static const unsigned g_pingField = 3;
+#ifdef HAS_WATER_LEVEL_SENSOR
 static const unsigned g_waterLevelField = 4;
+#elif MOISTURE_SENSOR_COUNT > 1
+static const unsigned g_soilMoisture2Field = 4;
+#endif
 static const unsigned g_luminosityField = 5;
 static const unsigned g_temperatureField = 6;
 static const unsigned g_airHumidityField = 7;
 static const unsigned g_bootTimeField = 8;
 
+#if defined(HAS_MOISTURE_SENSOR) && defined(HAS_WATER_LEVEL_SENSOR) &&         \
+  (MOISTURE_SENSOR_COUNT > 1)
+#warning "Second soil probe has no ThingSpeak field while the water level sensor occupies field 4."
+#endif
+
 const unsigned int g_wateringDefaultTime = 5 * 1000;
-static const unsigned g_wateringMaxTime = 20 * 1000;
-static unsigned g_wateringTime = g_wateringDefaultTime;
+static const unsigned g_relayMaxTime = 20 * 1000;
+
 AccumulatorV2 g_pingTime(g_mqttTaskPeriod / g_checkInternetTaskPeriod);
 static String g_mqttMessage = "";
 
@@ -61,7 +93,11 @@ static const unsigned g_wateringPWMTime = 2 * 1000;
 #endif
 
 #ifdef HAS_DHT_SENSOR
-static DHT_Unified g_dht(g_dhtPin, DHT11);
+// Constructed in tasksSetup(), not at static-init time: DHT_Unified copies the
+// pin in its constructor, and at static-init config.json has not been read yet,
+// so a file-scope instance permanently runs on the compiled default pin.
+alignas(DHT_Unified) static uint8_t g_dhtStorage[sizeof(DHT_Unified)];
+static DHT_Unified* g_dht = nullptr;
 AccumulatorV2 g_temperature(g_mqttTaskPeriod / g_dhtTaskPeriod);
 AccumulatorV2 g_airHumidity(g_mqttTaskPeriod / g_dhtTaskPeriod);
 unsigned g_dhtReadErrors = 0;
@@ -69,8 +105,8 @@ unsigned g_dhtTotalReads = 0;
 #endif
 
 #ifdef HAS_MOISTURE_SENSOR
-AccumulatorV2 g_soilMoisture(g_mqttTaskPeriod / g_ioTaskPeriod);
-static float g_moistureBeforeWatering = 0.0;
+AccumulatorV2 g_soilMoisture[MOISTURE_SENSOR_COUNT];
+static float g_moistureBeforeWatering[MOISTURE_SENSOR_COUNT] = { 0.0 };
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
@@ -79,14 +115,31 @@ AccumulatorV2 g_luminosity(g_mqttTaskPeriod / g_ioTaskPeriod);
 
 #ifdef HAS_WATER_LEVEL_SENSOR
 #define ADC_TO_WATER_LEVEL(v) (9.0 - 12.0 * sin(4.04 - 1.61 * (3.3 * v / 4095.0)))
-//#define ADC_TO_WATER_LEVEL(v) (v)
 AccumulatorV2 g_waterLevel(g_mqttTaskPeriod / g_ioTaskPeriod);
 #endif
+
+void
+mqttAddField(int field, String val);
+void
+mqttAddStatus(String status);
+
+struct RelayState
+{
+    bool on;
+    unsigned long startTime;
+    unsigned long duration;
+};
+
+static RelayState g_relay[RELAY_COUNT] = {};
+
+// The relay task runs on its own FreeRTOS task while startRelay() is called
+// from loop() (TalkBack) and from async_tcp (the /control handler), so every
+// read-modify-write of g_relay goes through this spinlock.
+static portMUX_TYPE g_relayMux = portMUX_INITIALIZER_UNLOCKED;
 
 static WiFiClient g_wifiClient;
 static TalkBack talkBack;
 
-bool g_wateringState = false;
 bool g_hasInternet = false;
 time_t g_bootTime = 0;
 bool g_mqttEnabled = true;
@@ -96,36 +149,167 @@ bool g_ledBlinkEnabled = false;
 unsigned g_connectionLossCount = 0;
 
 static void
+relayWrite(unsigned index, bool on)
+{
+    const uint8_t level = on ? config.relayPinOn[index] : !config.relayPinOn[index];
+
+#if USE_WATERING_PWM
+    if (index == 0) {
+        ledcWrite(g_wateringPWMChannel, level ? 1023 : 0);
+        return;
+    }
+#endif
+
+    digitalWrite(config.relayPin[index], level);
+}
+
+static void
+relaysTaskHandler()
+{
+    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+        bool expired = false;
+
+        portENTER_CRITICAL(&g_relayMux);
+        if (g_relay[i].on &&
+            (millis() - g_relay[i].startTime >= g_relay[i].duration)) {
+            g_relay[i].on = false;
+            expired = true;
+        }
+        portEXIT_CRITICAL(&g_relayMux);
+
+        if (expired) {
+            relayWrite(i, false);
+        }
+    }
+}
+
+bool
+relayIsOn(unsigned index)
+{
+    if (index >= RELAY_COUNT) {
+        return false;
+    }
+
+    portENTER_CRITICAL(&g_relayMux);
+    const bool on = g_relay[index].on;
+    portEXIT_CRITICAL(&g_relayMux);
+
+    return on;
+}
+
+unsigned long
+relayRemaining(unsigned index)
+{
+    if (index >= RELAY_COUNT) {
+        return 0;
+    }
+
+    portENTER_CRITICAL(&g_relayMux);
+    const RelayState state = g_relay[index];
+    portEXIT_CRITICAL(&g_relayMux);
+
+    if (!state.on) {
+        return 0;
+    }
+
+    const unsigned long elapsed = millis() - state.startTime;
+    return (elapsed >= state.duration) ? 0 : (state.duration - elapsed);
+}
+
+void
+startRelay(unsigned index, unsigned int duration)
+{
+    if (index >= RELAY_COUNT) {
+        logger.error("Invalid relay index: " + String(index));
+        return;
+    }
+
+    if ((duration == 0) || (duration > g_relayMaxTime)) {
+        logger.error("Invalid relay time: " + String(duration));
+        return;
+    }
+
+    bool started = false;
+
+    portENTER_CRITICAL(&g_relayMux);
+    if (!g_relay[index].on) {
+        g_relay[index].on = true;
+        g_relay[index].startTime = millis();
+        g_relay[index].duration = duration;
+        started = true;
+    }
+    portEXIT_CRITICAL(&g_relayMux);
+
+    if (!started) {
+        logger.warning(config.relayName[index] + " already active.");
+        return;
+    }
+
+    logger.info("Starting " + config.relayName[index] + " for " +
+                String(duration) + " ms");
+    relayWrite(index, true);
+
+    if (index == 0) {
+        ++g_wateringCycles;
+        mqttAddField(g_wateringField, String(duration));
+
+#ifdef HAS_MOISTURE_SENSOR
+        for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+            g_moistureBeforeWatering[i] = g_soilMoisture[i].getAverage();
+        }
+        g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
+#endif
+    }
+}
+
+void
+startWatering(unsigned int wateringTime)
+{
+    startRelay(0, wateringTime);
+}
+
+static void
 ioTaskHandler()
 {
 #ifdef HAS_MOISTURE_SENSOR
-    g_soilMoisture.add(100.0 - ADC_TO_PERCENT(analogRead(g_soilMoisturePin)));
+    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+        g_soilMoisture[i].add(
+          100.0 - ADC_TO_PERCENT(analogRead(config.soilMoisturePin[i])));
+    }
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
-    g_luminosity.add(ADC_TO_PERCENT(analogRead(g_luminosityPin)));
+    g_luminosity.add(ADC_TO_PERCENT(analogRead(config.luminosityPin)));
 #endif
 
 #ifdef HAS_WATER_LEVEL_SENSOR
-    g_waterLevel.add(ADC_TO_WATER_LEVEL(analogRead(g_waterLevelPin)));
+    g_waterLevel.add(ADC_TO_WATER_LEVEL(analogRead(config.waterLevelPin)));
 #endif
+
+    // Same task, same thread as the accumulator writes above — the request
+    // handler must never walk these lists itself.
+    webUpdateDataCache();
 }
 
 #ifdef HAS_DHT_SENSOR
 static void
 dhtTaskHandler()
 {
+    if (g_dht == nullptr) {
+        return;
+    }
+
     sensors_event_t event;
     bool error = false;
 
-    g_dht.temperature().getEvent(&event);
+    g_dht->temperature().getEvent(&event);
     if (isnan(event.temperature) == false) {
         g_temperature.add(event.temperature);
     } else {
         error = true;
     }
 
-    g_dht.humidity().getEvent(&event);
+    g_dht->humidity().getEvent(&event);
     if (isnan(event.relative_humidity) == false) {
         g_airHumidity.add(event.relative_humidity);
     } else {
@@ -135,7 +319,6 @@ dhtTaskHandler()
     ++g_dhtTotalReads;
     if (error) {
         ++g_dhtReadErrors;
-        //logger.println("DHT read error.");
     }
 }
 #endif
@@ -158,15 +341,19 @@ mqttTaskHandler()
     static std::list<String> msgQueue;
 
     if (!g_mqttEnabled || !g_hasInternet) {
-        logger.println("MQTT skipped.");
-        logger.println("g_mqttEnabled = " + String(g_mqttEnabled) +
-                       " g_hasInternet = " + String(g_hasInternet));
+        logger.info("MQTT skipped.");
+        logger.info("g_mqttEnabled = " + String(g_mqttEnabled) +
+                    " g_hasInternet = " + String(g_hasInternet));
         return;
     }
 
 #ifdef HAS_MOISTURE_SENSOR
     mqttAddField(g_soilMoistureField,
-                 FLOAT_TO_STRING(g_soilMoisture.getAverage()));
+                 FLOAT_TO_STRING(g_soilMoisture[0].getAverage()));
+#if !defined(HAS_WATER_LEVEL_SENSOR) && (MOISTURE_SENSOR_COUNT > 1)
+    mqttAddField(g_soilMoisture2Field,
+                 FLOAT_TO_STRING(g_soilMoisture[1].getAverage()));
+#endif
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
@@ -198,12 +385,10 @@ mqttTaskHandler()
     int errors = 0;
     const unsigned maxMsgQueueSize = 60 * 60 * 1000 / g_mqttTaskPeriod;
     while (msgQueue.size() > maxMsgQueueSize) {
-        logger.println("msgQueue is full, discarding messages..");
+        logger.warning("msgQueue is full, discarding messages..");
         msgQueue.pop_front();
     }
     while (msgQueue.size() > 0) {
-        // logger.println("Publish [" + String(msgQueue.size()) + "]: " +
-        // msgQueue.front());
         bool success = mqttPublish(g_thingSpeakChannelNumber, msgQueue.front());
 
         if (success) {
@@ -211,10 +396,10 @@ mqttTaskHandler()
             msgQueue.pop_front();
             errors = 0;
         } else {
-            logger.println("mqttPublish failed.");
+            logger.error("mqttPublish failed.");
             ++errors;
             if (errors > 3) {
-                logger.println("Giving up for now...");
+                logger.warning("Giving up for now...");
                 break;
             }
         }
@@ -225,10 +410,10 @@ mqttTaskHandler()
 void
 clockUpdateTaskHandler()
 {
-    logger.println("Syncing clock...");
+    logger.info("Syncing clock...");
 
     if (!g_hasInternet) {
-        logger.println("Syncing skipped, no internet connection.");
+        logger.warning("Syncing skipped, no internet connection.");
         return;
     }
 
@@ -237,51 +422,6 @@ clockUpdateTaskHandler()
 
     setenv("TZ", g_timezone.c_str(), 1); // America/Sao Paulo
     tzset();
-}
-
-static void
-wateringTaskHandler()
-{
-    static unsigned long wateringStartTime = 0;
-    unsigned long elapsedTime = millis() - wateringStartTime;
-
-    if (!g_wateringState) {
-        wateringStartTime = millis();
-        elapsedTime = 0;
-        mqttAddField(g_wateringField, String(g_wateringTime));
-#if !USE_WATERING_PWM
-        digitalWrite(g_wateringPin, g_wateringPinOn);
-#else
-        ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
-#endif
-        g_wateringState = true;
-
-#ifdef HAS_MOISTURE_SENSOR
-        g_moistureBeforeWatering = g_soilMoisture.getAverage();
-#endif
-    } else if (elapsedTime > g_wateringTime) {
-#if !USE_WATERING_PWM
-        digitalWrite(g_wateringPin, !g_wateringPinOn);
-#else
-        ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
-#endif
-
-        g_wateringTime = g_wateringDefaultTime;
-        g_wateringTask.disable();
-        g_wateringState = false;
-
-#ifdef HAS_MOISTURE_SENSOR
-        g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
-#endif
-    } else {
-#if USE_WATERING_PWM
-        // start the pump gently
-        if (elapsedTime <= g_wateringPWMTime) {
-            ledcWrite(g_wateringPWMChannel,
-                      (elapsedTime * 1023) / g_wateringPWMTime);
-        }
-#endif
-    }
 }
 
 static void
@@ -295,18 +435,28 @@ talkBackTaskHandler()
 
     digitalWrite(LED_BUILTIN, 1);
     if (talkBack.execute(response) == false) {
-        logger.println("TalkBack failure.");
+        logger.error("TalkBack failure.");
         return;
     }
     digitalWrite(LED_BUILTIN, 0);
 
-    if (response.indexOf("watering:") != -1) {
+    // watering:<ms>        -> relay 0, kept for existing TalkBack queues
+    // relay:<index>:<ms>   -> any relay
+    if (response.indexOf("relay:") != -1) {
+        int first = response.indexOf("relay:") + 6;
+        int second = response.indexOf(":", first);
+        if (second != -1) {
+            unsigned index = response.substring(first, second).toInt();
+            unsigned time = response.substring(second + 1).toInt();
+            logger.info("Executing TalkBack relay task.");
+            startRelay(index, time);
+        }
+    } else if (response.indexOf("watering:") != -1) {
         int index = response.indexOf(":");
         String timeStr = response.substring(index + 1);
         if (timeStr.length() > 0) {
-            logger.println("Executing TalkBack watering task.");
-            int wateringTime = timeStr.toInt();
-            startWatering(wateringTime);
+            logger.info("Executing TalkBack watering task.");
+            startWatering(timeStr.toInt());
         }
     }
 }
@@ -329,11 +479,11 @@ checkInternetTaskHandler()
         bool success = Ping.ping(addressList[i], 2); // retry at least one time
         if (success) {
             if (!g_hasInternet) {
-                logger.println("Internet connection detected!");
+                logger.info("Internet connection detected!");
 
                 if (connectionLostTime != 0) {
                     time_t downTime = time(NULL) - connectionLostTime;
-                    logger.println("Down time: " + String(downTime) + " s");
+                    logger.info("Down time: " + String(downTime) + " s");
 
                     mqttAddStatus("Im back online! Downtime: " +
                                   String(downTime));
@@ -343,7 +493,7 @@ checkInternetTaskHandler()
             if (!isnan(avgTime) && avgTime > 0.0 && avgTime < 1e6) {
                 g_pingTime.add(avgTime);
             } else {
-                logger.println("Invalid avgTime " + String(avgTime));
+                logger.warning("Invalid avgTime " + String(avgTime));
             }
             g_hasInternet = true;
             return;
@@ -351,7 +501,7 @@ checkInternetTaskHandler()
     }
 
     if (g_hasInternet) {
-        logger.println("Internet connection lost.");
+        logger.warning("Internet connection lost.");
         g_hasInternet = false;
         connectionLostTime = time(NULL);
         ++g_connectionLossCount;
@@ -364,12 +514,15 @@ checkInternetTaskHandler()
 static void
 checkMoistureTaskHandler()
 {
-    float moistureDelta =
-      g_soilMoisture.getAverage() - g_moistureBeforeWatering;
+    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+        float moistureDelta =
+          g_soilMoisture[i].getAverage() - g_moistureBeforeWatering[i];
 
-    if (moistureDelta < 0.5) {
-        logger.println("Maybe we are out of water...");
-        logger.println("Delta: " + FLOAT_TO_STRING(moistureDelta));
+        if (moistureDelta < 0.5) {
+            logger.warning("Probe " + String(i) +
+                           ": no moisture gain after watering. Delta: " +
+                           FLOAT_TO_STRING(moistureDelta));
+        }
     }
 
     g_checkMoistureTask.disable();
@@ -382,9 +535,9 @@ ledBlinkTaskHandler()
     static bool on = false;
     if (g_ledBlinkEnabled) {
         on = !on;
-        digitalWrite(BUILTIN_LED, on);
+        digitalWrite(LED_BUILTIN, on);
     } else {
-        digitalWrite(BUILTIN_LED, 0);
+        digitalWrite(LED_BUILTIN, 0);
     }
 }
 
@@ -397,10 +550,10 @@ logBackupTaskHandler()
 void
 tasksSetup()
 {
-    logger.println("Tasks setup...");
+    logger.info("Tasks setup...");
 
     g_taskScheduler.addTask(&g_ioTask);
-    g_taskScheduler.addTask(&g_wateringTask);
+    g_taskScheduler.addTask(&g_relaysTask);
     g_taskScheduler.addTask(&g_ledBlinkTask);
     g_taskScheduler.addTask(&g_clockUpdateTask);
     g_taskScheduler.addTask(&g_checkInternetTask);
@@ -414,22 +567,30 @@ tasksSetup()
     g_taskScheduler.addTask(&g_dhtTask);
 #endif
 
-    pinMode(g_buttonPin, INPUT);
+    pinMode(config.buttonPin, INPUT);
 
-    pinMode(g_wateringPin, OUTPUT);
-    digitalWrite(g_wateringPin, !g_wateringPinOn);
-
+    // Relay pins were already parked by relayPinsSafeInit() before and after
+    // the config load; this only covers the PWM variant's channel setup.
 #if USE_WATERING_PWM
-    ledcAttachPin(g_wateringPin, 0);
+    ledcAttachPin(config.relayPin[0], g_wateringPWMChannel);
     ledcSetup(g_wateringPWMChannel, 10e3, 10);
-    ledcWrite(g_wateringPWMChannel, !g_wateringPinOn);
+    ledcWrite(g_wateringPWMChannel, 0);
 #endif
 
     talkBack.setTalkBackID(g_talkBackID);
     talkBack.setAPIKey(g_talkBackAPIKey);
     talkBack.begin(g_wifiClient);
 
-    logger.println("Waiting for internet connection...");
+    // Relay timing must be live before the blocking waits below: they can hold
+    // setup() for minutes, and a relay commanded in that window still has to
+    // switch off on schedule.
+    g_relaysTask.enable();
+    g_ledBlinkTask.enable();
+    if (!g_criticalRunner.start()) {
+        logger.fatal("Failed to start the critical task runner.");
+    }
+
+    logger.info("Waiting for internet connection...");
     while (!g_hasInternet) {
         checkInternetTaskHandler();
         delay(1000);
@@ -445,17 +606,17 @@ tasksSetup()
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
 #ifdef HAS_DHT_SENSOR
-    g_dht.begin();
+    g_dht = new (g_dhtStorage) DHT_Unified(config.dhtPin, DHT11);
+    g_dht->begin();
     g_dhtTask.enableDelayed(g_dhtTaskPeriod);
 #endif
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
     g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
     g_mqttTask.enableDelayed(g_mqttTaskPeriod);
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
-    g_ledBlinkTask.enableDelayed(g_ledBlinkTaskPeriod);
     g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
 
-    logger.println("Tasks setup done!");
+    logger.info("Tasks setup done!");
     logger.backup();
 }
 
@@ -467,31 +628,12 @@ tasksLoop()
 }
 
 void
-startWatering(unsigned int wateringTime)
-{
-    if ((wateringTime == 0) || (wateringTime > g_wateringMaxTime)) {
-        logger.println("Invalid watering time: " + String(wateringTime));
-        return;
-    }
-
-    if (g_wateringTask.isEnabled() == false) {
-        logger.println("Starting watering for " + String(wateringTime) + " ms");
-
-        g_wateringTime = wateringTime;
-        ++g_wateringCycles;
-        g_wateringTask.enable();
-    } else {
-        logger.println("Watering already enabled.");
-    }
-}
-
-void
 mqttEnable(bool enable)
 {
     if (enable == true) {
-        logger.println("MQTT enabled.");
+        logger.info("MQTT enabled.");
     } else {
-        logger.println("MQTT disabled.");
+        logger.info("MQTT disabled.");
     }
 
     g_mqttEnabled = enable;

@@ -9,12 +9,20 @@
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 #include <Update.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <time.h>
 
 static AsyncWebServer g_webServer(80);
 
 bool g_wifiConnected = false;
 bool g_hasNetwork = false;
+
+// Rendered by webUpdateDataCache() from loop() and served verbatim by the
+// request handler, which runs on the async_tcp task. The mutex covers the
+// String itself; the sensor accumulators are only ever touched by the writer.
+static String g_dataJson = "{}";
+static SemaphoreHandle_t g_dataMutex = nullptr;
 
 static unsigned
 getSignalStrength()
@@ -35,11 +43,19 @@ getSignalStrength()
     return rssiAcc.getAverage();
 }
 
-void
-handleDataJson(AsyncWebServerRequest* request)
+static void
+addAccumulator(JSONVar& inputs, const char* name, AccumulatorV2& acc)
 {
-    digitalWrite(LED_BUILTIN, 1);
+    JSONVar entry;
+    entry["val"] = String(acc.getLast());
+    entry["avg"] = String(acc.getAverage());
+    entry["var"] = String(acc.variance);
+    inputs[name] = entry;
+}
 
+void
+webUpdateDataCache()
+{
     struct tm timeinfo;
     getLocalTime(&timeinfo);
     time_t now = mktime(&timeinfo);
@@ -51,6 +67,7 @@ handleDataJson(AsyncWebServerRequest* request)
 
     JSONVar statusJson;
     statusJson["Hostname"] = g_hostname;
+    statusJson["Firmware"] = FW_VERSION;
     strftime(buffer, sizeof(buffer), "%F %T", &timeinfo);
     statusJson["Date/Time"] = String(buffer);
     if (g_bootTime > g_safeTimestamp) {
@@ -79,53 +96,80 @@ handleDataJson(AsyncWebServerRequest* request)
 
     JSONVar inputsJson;
 #ifdef HAS_MOISTURE_SENSOR
-    JSONVar soilMoisture;
-    soilMoisture["val"] = String(g_soilMoisture.getLast());
-    soilMoisture["avg"] = String(g_soilMoisture.getAverage());
-    soilMoisture["var"] = String(g_soilMoisture.variance);
-    inputsJson["Soil Moisture"] = soilMoisture;
+    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+        // A single probe keeps the historical label so existing dashboards and
+        // the simulator do not have to special-case one device.
+        String name = (MOISTURE_SENSOR_COUNT == 1)
+                        ? String("Soil Moisture")
+                        : ("Soil Moisture " + String(i + 1));
+        addAccumulator(inputsJson, name.c_str(), g_soilMoisture[i]);
+    }
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
-    JSONVar luminosity;
-    luminosity["val"] = String(g_luminosity.getLast());
-    luminosity["avg"] = String(g_luminosity.getAverage());
-    luminosity["var"] = String(g_luminosity.variance);
-    inputsJson["Luminosity"] = luminosity;
+    addAccumulator(inputsJson, "Luminosity", g_luminosity);
 #endif
 
 #ifdef HAS_DHT_SENSOR
-    JSONVar temperature;
-    temperature["val"] = String(g_temperature.getLast());
-    temperature["avg"] = String(g_temperature.getAverage());
-    temperature["var"] = String(g_temperature.variance);
-    inputsJson["Temperature"] = temperature;
-
-    JSONVar airHumidity;
-    airHumidity["val"] = String(g_airHumidity.getLast());
-    airHumidity["avg"] = String(g_airHumidity.getAverage());
-    airHumidity["var"] = String(g_airHumidity.variance);
-    inputsJson["Air Humidity"] = airHumidity;
+    addAccumulator(inputsJson, "Temperature", g_temperature);
+    addAccumulator(inputsJson, "Air Humidity", g_airHumidity);
 #endif
 
 #ifdef HAS_WATER_LEVEL_SENSOR
-    JSONVar waterLevel;
-    waterLevel["val"] = String(g_waterLevel.getLast());
-    waterLevel["avg"] = String(g_waterLevel.getAverage());
-    waterLevel["var"] = String(g_waterLevel.variance);
-    inputsJson["Water Level"] = waterLevel;
+    addAccumulator(inputsJson, "Water Level", g_waterLevel);
 #endif
 
     JSONVar outputsJson;
-    outputsJson["Watering"] = String(g_wateringState);
+    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+        outputsJson[config.relayName[i].c_str()] =
+          String(relayIsOn(i) ? 1 : 0);
+    }
+
+    JSONVar relaysJson;
+    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+        JSONVar relay;
+        relay["index"] = (int)i;
+        relay["name"] = config.relayName[i];
+        relay["on"] = relayIsOn(i) ? 1 : 0;
+        relay["remaining"] = (double)relayRemaining(i);
+        relaysJson[i] = relay;
+    }
 
     JSONVar responseJson;
     responseJson["Status"] = statusJson;
     responseJson["Inputs"] = inputsJson;
     responseJson["Outputs"] = outputsJson;
+    responseJson["Relays"] = relaysJson;
     responseJson["Channel"] = String(g_thingSpeakChannelNumber);
 
-    request->send(200, "application/json", JSON.stringify(responseJson));
+    String rendered = JSON.stringify(responseJson);
+
+    if (g_dataMutex == nullptr) {
+        g_dataJson = rendered;
+        return;
+    }
+
+    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
+        g_dataJson = rendered;
+        xSemaphoreGive(g_dataMutex);
+    }
+}
+
+void
+handleDataJson(AsyncWebServerRequest* request)
+{
+    digitalWrite(LED_BUILTIN, 1);
+
+    String payload;
+    if ((g_dataMutex != nullptr) &&
+        (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE)) {
+        payload = g_dataJson;
+        xSemaphoreGive(g_dataMutex);
+    } else {
+        payload = g_dataJson;
+    }
+
+    request->send(200, "application/json", payload);
 
     digitalWrite(LED_BUILTIN, 0);
 }
@@ -134,6 +178,18 @@ void
 handleControl(AsyncWebServerRequest* request)
 {
     digitalWrite(LED_BUILTIN, 1);
+
+    // relay + relayTime address any relay; watering / wateringTime are the
+    // legacy spelling for relay 0 and stay supported.
+    if (request->hasParam("relay", true)) {
+        const unsigned index =
+          request->getParam("relay", true)->value().toInt();
+        unsigned duration = g_wateringDefaultTime;
+        if (request->hasParam("relayTime", true)) {
+            duration = request->getParam("relayTime", true)->value().toInt();
+        }
+        startRelay(index, duration);
+    }
 
     for (int i = 0; i < request->params(); ++i) {
         const AsyncWebParameter* param = request->getParam(i);
@@ -174,7 +230,7 @@ static void
 handleUpdateEnable(AsyncWebServerRequest* request)
 {
     g_otaEnabled = true;
-    logger.println("[OTA] Enabled OTA");
+    logger.info("[OTA] Enabled OTA");
     request->send(200);
 }
 
@@ -194,6 +250,10 @@ handleUpdateRequest(AsyncWebServerRequest* request)
     response->addHeader("Connection", "close");
     response->addHeader("Access-Control-Allow-Origin", "*");
     request->send(response);
+
+    // Disarm either way: a flag left set accepts an unsolicited image for as
+    // long as the device stays up.
+    g_otaEnabled = false;
 
     if (!error) {
         delay(500);
@@ -215,44 +275,44 @@ handleUpdateUpload(AsyncWebServerRequest* request,
     }
 
     if (!index) {
-        logger.println("[OTA] Starting update: " + filename);
+        logger.info("[OTA] Starting update: " + filename);
         int cmd = (filename == "filesystem") ? U_SPIFFS : U_FLASH;
         if (request->hasParam("MD5", true)) {
             Update.setMD5(request->getParam("MD5", true)->value().c_str());
         }
         if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
-            logger.println(String("[OTA] ") + Update.errorString());
+            logger.error(String("[OTA] ") + Update.errorString());
             return request->send(400, "text/plain", "OTA could not begin");
         }
     }
 
     if (len) {
         if (Update.write(data, len) != len) {
-            logger.println(String("[OTA] ") + Update.errorString());
+            logger.error(String("[OTA] ") + Update.errorString());
             return request->send(400, "text/plain", "OTA could not write");
         }
     }
 
     if (final) {
         if (!Update.end(true)) {
-            logger.println(String("[OTA] ") + Update.errorString());
+            logger.error(String("[OTA] ") + Update.errorString());
             return request->send(400, "text/plain", "OTA could not end");
         }
-        logger.println("[OTA] Complete!");
+        logger.info("[OTA] Complete!");
     }
 }
 
 static void
 wifiConnected(WiFiEvent_t event, WiFiEventInfo_t info)
 {
-    logger.println("Wifi connected.");
+    logger.info("Wifi connected.");
     g_wifiConnected = true;
 }
 
 static void
 wifiGotIP(WiFiEvent_t event, WiFiEventInfo_t info)
 {
-    logger.println("IP address: " + WiFi.localIP().toString());
+    logger.info("IP address: " + WiFi.localIP().toString());
     g_hasNetwork = true;
 }
 
@@ -260,7 +320,7 @@ static void
 wifiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
 {
     if (g_wifiConnected) {
-        logger.println("Wifi disconnected. Reconnecting...");
+        logger.warning("Wifi disconnected. Reconnecting...");
     }
 
     g_wifiConnected = false;
@@ -272,7 +332,10 @@ wifiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
 void
 webSetup()
 {
-    logger.println("Web setup...");
+    logger.info("Web setup...");
+
+    g_dataMutex = xSemaphoreCreateMutex();
+    webUpdateDataCache();
 
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(g_hostname.c_str());
@@ -282,7 +345,7 @@ webSetup()
     WiFi.begin(g_ssid.c_str(), g_wifiPassword.c_str());
 
     if (MDNS.begin(g_hostname.c_str()) == false) {
-        logger.println("Error starting mDNS!");
+        logger.warning("Error starting mDNS!");
     }
 
     g_webServer.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -310,5 +373,5 @@ webSetup()
 
     g_webServer.begin();
 
-    logger.println("Web setup done!");
+    logger.info("Web setup done!");
 }

@@ -61,16 +61,20 @@ class DeviceState:
         self.connection_loss_count = 0
         self.dht_total_reads = 0
         self.dht_read_errors = 0
-        self.watering_state = 0
-        self.watering_until = 0.0
         self.logs: deque[str] = deque(maxlen=self.LOG_CAPACITY)
+
+        # Mirrors config.io.relays. Index 0 is the watering relay, as in the
+        # firmware — TalkBack and the legacy `watering` control target it.
+        self.relay_names = ["Watering", "Relay 2", "Relay 3", "Relay 4"]
+        self.relays = [{"on": 0, "until": 0.0} for _ in self.relay_names]
 
         # Sensor accumulators: rolling state to fake sensible averages/variance.
         self._sensors = {
-            "Soil Moisture": _Sensor(45.0, amplitude=8.0, period=900, noise=1.5),
-            "Luminosity":    _Sensor(55.0, amplitude=35.0, period=120, noise=4.0),
-            "Temperature":   _Sensor(25.5, amplitude=3.0, period=1800, noise=0.4),
-            "Air Humidity":  _Sensor(70.0, amplitude=8.0, period=2400, noise=1.5),
+            "Soil Moisture 1": _Sensor(45.0, amplitude=8.0, period=900, noise=1.5),
+            "Soil Moisture 2": _Sensor(38.0, amplitude=6.0, period=1100, noise=1.5),
+            "Luminosity":      _Sensor(55.0, amplitude=35.0, period=120, noise=4.0),
+            "Temperature":     _Sensor(25.5, amplitude=3.0, period=1800, noise=0.4),
+            "Air Humidity":    _Sensor(70.0, amplitude=8.0, period=2400, noise=1.5),
         }
 
         self.log("info", "Simulator booted")
@@ -88,13 +92,32 @@ class DeviceState:
             return "\n".join(self.logs) + "\n"
 
     # ----- control -----
-    def start_watering(self, duration_ms: int) -> None:
-        duration_ms = max(100, min(60_000, duration_ms))
+    def start_relay(self, index: int, duration_ms: int) -> None:
+        if not 0 <= index < len(self.relays):
+            self.log("error", f"Invalid relay index: {index}")
+            return
+        # The firmware caps a relay at 20 s (g_relayMaxTime) and rejects 0.
+        if duration_ms <= 0 or duration_ms > 20_000:
+            self.log("error", f"Invalid relay time: {duration_ms}")
+            return
+        # self.log() takes the same non-reentrant lock, so every log call has to
+        # stay outside the guarded block.
         with self.lock:
-            self.watering_state = 1
-            self.watering_until = time.time() + duration_ms / 1000.0
-            self.watering_cycles += 1
-        self.log("info", f"Watering started for {duration_ms} ms")
+            busy = bool(self.relays[index]["on"])
+            if not busy:
+                self.relays[index]["on"] = 1
+                self.relays[index]["until"] = time.time() + duration_ms / 1000.0
+                if index == 0:
+                    self.watering_cycles += 1
+
+        if busy:
+            self.log("warning", f"{self.relay_names[index]} already active.")
+            return
+
+        self.log("info", f"Starting {self.relay_names[index]} for {duration_ms} ms")
+
+    def start_watering(self, duration_ms: int) -> None:
+        self.start_relay(0, duration_ms)
 
     def set_mqtt(self, enabled: bool) -> None:
         with self.lock:
@@ -108,17 +131,20 @@ class DeviceState:
             self.packages_sent = 0
             self.watering_cycles = 0
             self.connection_loss_count = 0
-            self.watering_state = 0
-            self.watering_until = 0.0
+            for relay in self.relays:
+                relay["on"] = 0
+                relay["until"] = 0.0
 
     # ----- snapshot -----
     def tick(self) -> None:
         """Advance simulated state once per second."""
         now = time.time()
+        finished = []
         with self.lock:
-            if self.watering_state and now >= self.watering_until:
-                self.watering_state = 0
-                self.log("info", "Watering finished")
+            for index, relay in enumerate(self.relays):
+                if relay["on"] and now >= relay["until"]:
+                    relay["on"] = 0
+                    finished.append(self.relay_names[index])
             for sensor in self._sensors.values():
                 sensor.update()
             # Mqtt publishes a "package" every 30s when enabled.
@@ -129,6 +155,10 @@ class DeviceState:
             if random.random() < 0.02:
                 self.dht_read_errors += 1
 
+        # Logging takes the same lock, so it cannot happen inside the block.
+        for name in finished:
+            self.log("info", f"{name} finished")
+
     def snapshot(self) -> dict:
         with self.lock:
             uptime = int(time.time() - self.boot_time)
@@ -138,6 +168,7 @@ class DeviceState:
 
             status = {
                 "Hostname": self.hostname,
+                "Firmware": "2.0.0",
                 "Date/Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "Uptime": f"{days}d {hours}h {minutes}m {seconds}s",
                 "Internet": "online",
@@ -161,10 +192,29 @@ class DeviceState:
                 for name, s in self._sensors.items()
             }
 
+            outputs = {
+                name: str(self.relays[i]["on"])
+                for i, name in enumerate(self.relay_names)
+            }
+            relays = [
+                {
+                    "index": i,
+                    "name": name,
+                    "on": self.relays[i]["on"],
+                    "remaining": max(
+                        0, int((self.relays[i]["until"] - time.time()) * 1000)
+                    )
+                    if self.relays[i]["on"]
+                    else 0,
+                }
+                for i, name in enumerate(self.relay_names)
+            ]
+
             return {
                 "Status": status,
                 "Inputs": inputs,
-                "Outputs": {"Watering": str(self.watering_state)},
+                "Outputs": outputs,
+                "Relays": relays,
                 "Channel": self.channel,
             }
 
@@ -276,6 +326,13 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- control parser ----------
     def _handle_control(self, params: dict[str, str]) -> None:
+        if "relay" in params:
+            try:
+                index = int(params["relay"])
+                ms = int(params.get("relayTime", 5000))
+            except ValueError:
+                index, ms = -1, 0
+            STATE.start_relay(index, ms)
         if "wateringTime" in params:
             try:
                 ms = int(params["wateringTime"])

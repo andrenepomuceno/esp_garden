@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BuildConfig.h"
 #include <Arduino.h>
 
 class ConfigFile
@@ -35,10 +36,17 @@ class ConfigFile
 
     // pins
     uint8_t buttonPin;
-    uint8_t wateringPin;
-    uint8_t wateringPinOn;
+
+    // Relays. Index 0 is the watering relay on every board — TalkBack, the
+    // legacy `watering` control parameter and the ThingSpeak watering field all
+    // address it. relayPinOn holds the logic level that ENERGISES the relay
+    // (0 for the usual active-low opto-isolated boards).
+    uint8_t relayPin[RELAY_COUNT];
+    uint8_t relayPinOn[RELAY_COUNT];
+    String relayName[RELAY_COUNT];
+
     uint8_t dhtPin;
-    uint8_t soilMoisturePin;
+    uint8_t soilMoisturePin[MOISTURE_SENSOR_COUNT];
     uint8_t luminosityPin;
     uint8_t waterLevelPin;
 
@@ -53,7 +61,9 @@ class ConfigFile
 extern ConfigFile config;
 
 // Backward-compatible references to config members.
-// Existing code continues to use g_* directly; new code should prefer config.<field>.
+// Existing code continues to use g_* directly; new code should prefer
+// config.<field>. Pin fields deliberately have no alias — they are arrays now
+// and every user goes through config.
 extern String& g_hostname;
 extern String& g_timezone;
 
@@ -76,14 +86,12 @@ extern String& g_mqttServer;
 extern int& g_mqttPort;
 extern String& g_mqttCACert;
 
-extern uint8_t& g_buttonPin;
-extern uint8_t& g_wateringPin;
-extern uint8_t& g_wateringPinOn;
-extern uint8_t& g_dhtPin;
-extern uint8_t& g_soilMoisturePin;
-extern uint8_t& g_luminosityPin;
-extern uint8_t& g_waterLevelPin;
-
 bool
 loadConfigFile(unsigned deviceID);
 
+// Drive every relay to its idle level. Called as the first statement of
+// setup(): until pinMode() runs the pins float, and an active-low relay board
+// reads a floating input as "energise". Boot takes seconds (SPIFFS mount, config
+// load, WiFi association), which is long enough to run a pump dry.
+void
+relayPinsSafeInit();

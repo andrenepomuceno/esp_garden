@@ -1,5 +1,6 @@
 #include "SPIFFS.h"
 #include "BuildConfig.h"
+#include "core/config.h"
 #include "core/logger.h"
 #include "core/tasks.h"
 #include "network/web.h"
@@ -10,19 +11,26 @@ setup(void)
 {
     bool error = false;
 
+    // First statement on purpose. Until a pin is driven it floats, and an
+    // active-low relay board reads that as "energise" — everything below
+    // (SPIFFS mount, config load, WiFi association) takes seconds, which is
+    // long enough to run a pump dry. Uses the compiled defaults; loadConfigFile
+    // parks the pins again once the real assignment is known.
+    relayPinsSafeInit();
+
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, 0);
 
-    logger.println("");
-    logger.println("Initializing...");
+    logger.info("");
+    logger.info("Initializing ESP Garden " FW_VERSION "...");
 
     digitalWrite(LED_BUILTIN, 1);
 
     unsigned id = ESP.getEfuseMac() % 0x10000;
-    logger.println("ID: " + String(id, 16));
+    logger.info("ID: " + String(id, 16));
 
     if (!SPIFFS.begin(true)) {
-        logger.println("Failed to initialize SPIFFS.");
+        logger.error("Failed to initialize SPIFFS.");
         error = true;
     }
 
@@ -30,15 +38,17 @@ setup(void)
         error = true;
     }
 
+    // Set before tasksSetup(): that call blocks until the device has internet
+    // and a valid clock, which never happens when the config failed to load and
+    // the compiled WiFi defaults cannot associate. Assigning it afterwards left
+    // the only failure indicator unreachable in exactly the case it exists for.
+    g_ledBlinkEnabled = error;
+
     logger.backupSetup();
     webSetup();
     tasksSetup();
 
     digitalWrite(LED_BUILTIN, 0);
-
-    if (error) {
-        g_ledBlinkEnabled = true;
-    }
 }
 
 void

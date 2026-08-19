@@ -5,7 +5,8 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
 ## Features
 
 - **Automated irrigation** — timed watering triggered locally or remotely via ThingSpeak TalkBack
-- **Environmental monitoring** — soil moisture, luminosity, temperature, humidity, and water level
+- **Multi-zone relay control** — up to 4 independently timed relays, switched off by a dedicated real-time task
+- **Environmental monitoring** — soil moisture (up to 2 probes), luminosity, temperature, humidity, and water level
 - **Local web UI** — real-time status dashboard served directly from the device
 - **Cloud logging** — sensor data published to ThingSpeak over MQTT every 2 minutes
 - **Internet watchdog** — pings Google/Cloudflare DNS and reports connectivity losses
@@ -14,23 +15,35 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
 
 ## Hardware
 
-| Environment | Board | Sensors |
-|---|---|---|
-| `espgarden1` | NodeMCU-32S | Soil moisture, luminosity, DHT11 (temp + humidity) |
-| `espgarden2` | ESP32 DOIT DevKit v1 | Luminosity |
-| `espgarden3` | ESP32 DOIT DevKit v1 | Soil moisture, luminosity |
-| `espgarden4` | ESP32 DOIT DevKit v1 | — (base config) |
+| Environment | Board | Sensors | Relays |
+|---|---|---|---|
+| `espgarden1` | NodeMCU-32S | Soil moisture, luminosity, DHT11 (temp + humidity) | 1 |
+| `espgarden2` | ESP32 DOIT DevKit v1 | Luminosity | 1 |
+| `espgarden3` | ESP32 DOIT DevKit v1 | Soil moisture, luminosity | 1 |
+| `espgarden4` | ESP32 DOIT DevKit v1 | — (base config) | 1 |
+| `espgarden5` | ESP32 DOIT DevKit v1 | 2× soil moisture, luminosity, DHT11 | 4 |
 
-### Sensors & Pinout (defaults)
+### Sensors & Pinout (`espgarden5` defaults)
 
 | Signal | Pin | Notes |
 |---|---|---|
 | Button | GPIO 0 | Boot button |
-| Watering relay | GPIO 15 | Active-low (`wateringOn = 0`) |
-| DHT11 | GPIO 23 | Temperature & humidity |
-| Soil moisture | A0 (GPIO 36) | Capacitive sensor v2.0, % reported |
-| Luminosity | A3 (GPIO 39) | 5 mm LDR, % reported |
-| Water level | A6 (GPIO 34) | Analog, converted via calibration curve |
+| Relay 1 — Watering | GPIO 19 | Active-low (`on = 0`) |
+| Relay 2 | GPIO 16 | Active-low |
+| Relay 3 | GPIO 17 | Active-low |
+| Relay 4 | GPIO 18 | Active-low |
+| DHT11 | GPIO 23 | Data line, 4.7–10 kΩ pull-up to 3V3 |
+| Soil moisture 1 | GPIO 36 (`VP`, A0) | Capacitive sensor v2.0, % reported |
+| Soil moisture 2 | GPIO 34 (A6) | Capacitive sensor v2.0, % reported |
+| Luminosity | GPIO 39 (`VN`, A3) | 5 mm LDR in a divider with 10 kΩ to GND, % reported |
+| Water level | GPIO 34 (A6) | Analog, converted via calibration curve (not on `espgarden5`) |
+
+Two hardware rules constrain these choices:
+
+- **Every analog input must be on ADC1 (GPIO 32–39).** ADC2 cannot be read while WiFi is associated.
+- **GPIO 34–39 are input-only and have no internal pull-up** — fine for the LDR and the moisture probes, unusable for the DHT11 or a relay. Relay pins also avoid the strapping pins (0, 2, 5, 12, 15) and GPIO 6–11 (SPI flash).
+
+Older boards keep the historical watering relay on GPIO 15; that is a strapping pin (MTDO) and new hardware should not reuse it.
 
 Pin assignments can be overridden per device in `config.json` (see below).
 
@@ -95,17 +108,30 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
         "port": 8883,
         "cacert": "/thingspeak.pem"
     },
+    "log": {
+        "level": 4               // 0 disable .. 4 info (default) .. 6 trace
+    },
     "io": {                      // GPIO pin overrides (optional)
         "button": 0,
-        "watering": 15,
-        "wateringOn": 0,         // logic level that activates the relay
+        "relays": [              // index 0 is the watering relay on every board
+            { "pin": 19, "on": 0, "name": "Watering" },
+            { "pin": 16, "on": 0, "name": "Relay 2" },
+            { "pin": 17, "on": 0, "name": "Relay 3" },
+            { "pin": 18, "on": 0, "name": "Relay 4" }
+        ],
         "dht": 23,
-        "soilMoisture": 36,
+        "soilMoisture": [36, 34],
         "luminosity": 39,
         "waterLevel": 34
     }
 }
 ```
+
+`io.relays` and `io.soilMoisture` also accept the pre-2.0 spelling — a scalar
+`"watering"` / `"wateringOn"` pair and a scalar `"soilMoisture"` — so a config
+written for a single-relay device still loads unchanged. Entries beyond the
+count compiled into the firmware (`RELAY_COUNT`, `MOISTURE_SENSOR_COUNT` in
+`platformio.ini`) are ignored, and missing ones keep their compiled defaults.
 
 The device ID is printed to the serial monitor on every boot (`ID: 1a2b`).
 
@@ -115,19 +141,25 @@ Send commands to the device via the ThingSpeak TalkBack queue:
 
 | Command | Description |
 |---|---|
-| `watering:<ms>` | Start watering for `<ms>` milliseconds (max 20 000 ms) |
+| `watering:<ms>` | Start the watering relay for `<ms>` milliseconds (max 20 000 ms) |
+| `relay:<index>:<ms>` | Start relay `<index>` (0-based) for `<ms>` milliseconds (max 20 000 ms) |
 
-Example: `watering:5000` triggers a 5-second watering cycle.
+Example: `watering:5000` triggers a 5-second watering cycle; `relay:2:3000`
+runs the third relay for 3 seconds.
 
 ## Task Schedule
 
+Tasks marked **critical** run on a dedicated FreeRTOS task; the rest share the
+cooperative pump driven from `loop()`, where one blocking handler (ping,
+TalkBack, an MQTT drain) stalls every other background task for its duration.
+
 | Task | Period | Description |
 |---|---|---|
-| `io` | 1 s | Read ADC sensors (moisture, luminosity, water level) |
+| `relays` | 50 ms — **critical** | Switch each relay off when its timer expires |
+| `ledBlink` | 1 s — **critical** | Blink built-in LED (enabled on config error) |
+| `io` | 1 s | Read ADC sensors and rebuild the `/data.json` payload |
 | `dht` | 10 s | Read temperature and humidity from DHT11 |
-| `watering` | 100 ms | Watering state machine (pin control + timing) |
 | `checkInternet` | 15 s | Ping DNS servers, update connectivity state |
-| `ledBlink` | 1 s | Blink built-in LED (enabled on config error) |
 | `mqtt` | 2 min | Publish averaged sensor data to ThingSpeak |
 | `talkBack` | 5 min | Poll ThingSpeak TalkBack for remote commands |
 | `clockUpdate` | 24 h | Re-sync NTP clock |

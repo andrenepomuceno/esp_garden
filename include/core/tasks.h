@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BuildConfig.h"
 #include "core/accumulator_v2.h"
 #include "core/config.h"
 #include <time.h>
@@ -7,7 +8,7 @@
 const time_t g_safeTimestamp = 1609459200; // 01/01/2021
 
 #ifdef HAS_MOISTURE_SENSOR
-extern AccumulatorV2 g_soilMoisture;
+extern AccumulatorV2 g_soilMoisture[MOISTURE_SENSOR_COUNT];
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
@@ -24,8 +25,6 @@ extern unsigned g_dhtTotalReads;
 #ifdef HAS_WATER_LEVEL_SENSOR
 extern AccumulatorV2 g_waterLevel;
 #endif
-
-extern bool g_wateringState;
 
 extern time_t g_bootTime;
 extern bool g_hasInternet;
@@ -47,6 +46,20 @@ tasksSetup();
 void
 tasksLoop();
 
+// Energise relay `index` for `duration` ms. Rejects an out-of-range index, a
+// zero duration and anything above g_relayMaxTime. A relay already running is
+// left alone rather than retriggered.
+void
+startRelay(unsigned index, unsigned int duration);
+
+bool
+relayIsOn(unsigned index);
+
+// Remaining on-time in ms, 0 when the relay is idle.
+unsigned long
+relayRemaining(unsigned index);
+
+// Relay 0 is the watering relay on every board.
 void
 startWatering(unsigned int wateringTime = g_wateringDefaultTime);
 

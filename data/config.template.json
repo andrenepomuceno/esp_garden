@@ -1,5 +1,5 @@
 {
-    "version": 1,
+    "version": 2,
     "id": "1a2b",
     "hostname": "device hostname",
     "timezone": "<-03>3",
@@ -27,12 +27,19 @@
         "port": 8883,
         "cacert": "/thingspeak.pem"
     },
+    "log": {
+        "level": 4
+    },
     "io": {
         "button": 0,
-        "watering": 15,
-        "wateringOn": 0,
+        "relays": [
+            { "pin": 19, "on": 0, "name": "Watering" },
+            { "pin": 16, "on": 0, "name": "Relay 2" },
+            { "pin": 17, "on": 0, "name": "Relay 3" },
+            { "pin": 18, "on": 0, "name": "Relay 4" }
+        ],
         "dht": 23,
-        "soilMoisture": 36,
+        "soilMoisture": [36, 34],
         "luminosity": 39,
         "waterLevel": 34
     }

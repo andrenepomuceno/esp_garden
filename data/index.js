@@ -62,6 +62,38 @@
     $('#tbody-outputs').html(rows);
   }
 
+  // The button set is rebuilt only when the relay list itself changes: polling
+  // runs once a second and re-rendering every tick would fight the user's click.
+  var relaySignature = '';
+
+  function renderRelays(relays) {
+    if (!relays || !relays.length) return;
+
+    var signature = relays.map(function (r) { return r.index + ':' + r.name; }).join('|');
+    if (signature !== relaySignature) {
+      relaySignature = signature;
+      var html = '';
+      for (var i = 0; i < relays.length; i++) {
+        html += '<div><button type="button" class="btn btn-outline-primary btn-sm relay-btn"' +
+                ' data-index="' + relays[i].index + '"' +
+                ' data-name="' + relays[i].name + '">' + relays[i].name + '</button></div>';
+      }
+      $('#relay-buttons').html(html);
+    }
+
+    for (var j = 0; j < relays.length; j++) {
+      var relay = relays[j];
+      var btn = $('.relay-btn[data-index="' + relay.index + '"]');
+      var active = (relay.on == 1 || relay.on === '1');
+      btn.toggleClass('btn-outline-primary', !active).toggleClass('btn-info', active);
+      if (active) {
+        btn.text(relay.name + ' — ' + Math.ceil((relay.remaining || 0) / 1000) + 's');
+      } else {
+        btn.text(relay.name);
+      }
+    }
+  }
+
   function setConnection(online) {
     var dot = $('#conn-dot');
     if (online) {
@@ -83,7 +115,7 @@
     fillStatus(info.Status || {});
     fillInputs(info.Inputs || {});
     fillOutputs(info.Outputs || {});
-    $('#input-watering').prop('checked', String(info.Outputs && info.Outputs.Watering) === '1');
+    renderRelays(info.Relays);
     $('#input-mqtt').prop('checked', info.Status && info.Status.MQTT === 'enabled');
     if (info.Channel) {
       $('#a-thingspeak-link').attr('href', 'https://thingspeak.com/channels/' + info.Channel);
@@ -134,13 +166,14 @@
       if (pageVisible) poll();
     });
 
-    $('#input-watering').on('click', function (event) {
+    // Delegated: the buttons are generated from /data.json after this runs.
+    $('#relay-buttons').on('click', '.relay-btn', function (event) {
       event.preventDefault();
+      var index = $(this).data('index');
+      var name = $(this).data('name');
       var seconds = parseInt($('#input-watering-time').val(), 10) || 5;
-      if (this.checked && confirm('Start watering for ' + seconds + ' seconds?')) {
-        $.post('/control', { wateringTime: 1000 * seconds });
-      } else {
-        this.checked = false;
+      if (confirm('Activate ' + name + ' for ' + seconds + ' seconds?')) {
+        $.post('/control', { relay: index, relayTime: 1000 * seconds });
       }
     });
 

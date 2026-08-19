@@ -18,7 +18,7 @@ jobs:
 
     strategy:
       matrix:
-        environment: [espgarden1, espgarden2, espgarden3, espgarden4]
+        environment: [espgarden1, espgarden2, espgarden3, espgarden4, espgarden5]
 
     steps:
       - name: Checkout repository

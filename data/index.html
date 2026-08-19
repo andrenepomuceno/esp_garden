@@ -76,6 +76,10 @@
     .num-badge {
       font-variant-numeric: tabular-nums;
     }
+
+    #relay-buttons .btn {
+      width: 100%;
+    }
   </style>
 </head>
 
@@ -145,19 +149,16 @@
           </div>
 
           <div>
-            <label for="input-watering-time" class="form-label small mb-1">Watering Time (s)</label>
-            <input type="number" class="form-control form-control-sm" id="input-watering-time" min="1" max="60" value="5">
-          </div>
-
-          <div class="form-check form-switch">
-            <input id="input-watering" class="form-check-input" type="checkbox">
-            <label class="form-check-label" for="input-watering">Start Watering</label>
+            <label for="input-watering-time" class="form-label small mb-1">Relay Time (s)</label>
+            <input type="number" class="form-control form-control-sm" id="input-watering-time" min="1" max="20" value="5">
           </div>
 
           <div class="d-grid">
             <button id="button-reset" type="button" class="btn btn-outline-danger btn-sm">&#x21BB; Reset Device</button>
           </div>
         </div>
+
+        <div id="relay-buttons" class="control-row mt-3"></div>
       </div>
     </div>
 

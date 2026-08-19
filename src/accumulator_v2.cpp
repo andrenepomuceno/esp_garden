@@ -19,6 +19,12 @@ AccumulatorV2::add(const float value)
 float
 AccumulatorV2::getLast() const
 {
+    // The web server answers before the first sensor task has run, and
+    // std::list::back() on an empty list is undefined behaviour.
+    if (sampleList.empty()) {
+        return 0.0;
+    }
+
     return sampleList.back();
 }
 
