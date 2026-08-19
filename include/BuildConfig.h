@@ -8,6 +8,12 @@
 #define USE_OTA 1
 #define USE_TALKBACK 1
 
+// Nonce + SHA-256 login with roles (ported from fullbot-firmware). With this
+// off the web UI falls back to the pre-2.1 behaviour, where only the static
+// file handler was protected and /control, /logs and /update were open to
+// anyone on the LAN.
+#define USE_CUSTOM_LOGIN 1
+
 // Watering control
 #define USE_WATERING_PWM 0
 

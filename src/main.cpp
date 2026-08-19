@@ -3,6 +3,7 @@
 #include "core/config.h"
 #include "core/logger.h"
 #include "core/tasks.h"
+#include "core/user_store.h"
 #include "network/web.h"
 #include <Arduino.h>
 
@@ -37,6 +38,15 @@ setup(void)
     if (!loadConfigFile(id)) {
         error = true;
     }
+
+#if USE_CUSTOM_LOGIN
+    // Seeded from the legacy ota.{username,password} pair on first boot, so a
+    // device that already had a config gets an account without any password
+    // being compiled into the firmware.
+    if (!userStore.load(SPIFFS, config.otaUser, config.otaPassword)) {
+        error = true;
+    }
+#endif
 
     // Set before tasksSetup(): that call blocks until the device has internet
     // and a valid clock, which never happens when the config failed to load and

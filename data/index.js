@@ -159,7 +159,17 @@
 
   // ---------- handlers ----------
   $(function () {
+    // Without a token every guarded endpoint answers 401, which would show an
+    // empty dashboard instead of a login prompt.
+    if (!espAuth.requireToken()) return;
+
     startPolling();
+
+    $('#a-logout').on('click', function (event) {
+      event.preventDefault();
+      stopPolling();
+      espAuth.logout();
+    });
 
     document.addEventListener('visibilitychange', function () {
       pageVisible = !document.hidden;

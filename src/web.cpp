@@ -3,12 +3,16 @@
 #include "core/accumulator_v2.h"
 #include "core/config.h"
 #include "core/logger.h"
+#include "core/role.h"
 #include "core/tasks.h"
+#include "network/custom_login.h"
 #include <Arduino_JSON.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 #include <Update.h>
+// 3.7.x no longer pulls WiFi.h in transitively the way the old fork did.
+#include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <time.h>
@@ -302,6 +306,25 @@ handleUpdateUpload(AsyncWebServerRequest* request,
     }
 }
 
+// Refuses a path outright. Used to shadow files that a serveStatic below would
+// otherwise expose.
+static void
+handleForbidden(AsyncWebServerRequest* request)
+{
+    request->send(403, "text/plain", "Forbidden");
+}
+
+static void
+servePublicFile(const char* route, const char* path, const char* contentType)
+{
+    g_webServer.on(
+      route, HTTP_GET, [path, contentType](AsyncWebServerRequest* request) {
+          digitalWrite(LED_BUILTIN, 1);
+          request->send(SPIFFS, path, contentType);
+          digitalWrite(LED_BUILTIN, 0);
+      });
+}
+
 static void
 wifiConnected(WiFiEvent_t event, WiFiEventInfo_t info)
 {
@@ -348,26 +371,75 @@ webSetup()
         logger.warning("Error starting mDNS!");
     }
 
-    g_webServer.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
-        digitalWrite(LED_BUILTIN, 1);
-        request->send(SPIFFS, "/index.html", "text/html");
-        digitalWrite(LED_BUILTIN, 0);
-    });
-    g_webServer.on(
-      "/favicon.ico", HTTP_GET, [](AsyncWebServerRequest* request) {
-          digitalWrite(LED_BUILTIN, 1);
-          request->send(SPIFFS, "/favicon.ico", "image/x-icon");
-          digitalWrite(LED_BUILTIN, 0);
-      });
+    // Public assets: the pages themselves carry no data, and the login page has
+    // to be reachable before a token exists. Everything that reads or changes
+    // state is guarded below.
+    servePublicFile("/", "/index.html", "text/html");
+    servePublicFile("/index.html", "/index.html", "text/html");
+    servePublicFile("/index.js", "/index.js", "application/javascript");
+    servePublicFile("/login.html", "/login.html", "text/html");
+    servePublicFile("/login.js", "/login.js", "application/javascript");
+    servePublicFile("/sha256.js", "/sha256.js", "application/javascript");
+    servePublicFile("/auth.js", "/auth.js", "application/javascript");
+    servePublicFile("/update.html", "/update.html", "text/html");
+    servePublicFile("/update.js", "/update.js", "application/javascript");
+    servePublicFile("/favicon.ico", "/favicon.ico", "image/x-icon");
 
+#if USE_CUSTOM_LOGIN
+    customLogin.begin();
+
+    g_webServer.on("/nonce", HTTP_GET, [](AsyncWebServerRequest* request) {
+        customLogin.handleNonce(request);
+    });
+    g_webServer.on("/login", HTTP_POST, [](AsyncWebServerRequest* request) {
+        customLogin.handleLogin(request);
+    });
+    g_webServer.on("/logout", HTTP_POST, [](AsyncWebServerRequest* request) {
+        customLogin.handleLogout(request);
+    });
+
+    auto& authenticated = customLogin.authenticationMiddleware;
+    auto* adminOnly = customLogin.requireRole(Role::ADMIN);
+    auto* operatorOnly = customLogin.requireRole(Role::OPERATOR);
+
+    g_webServer.on("/data.json", HTTP_GET, handleDataJson)
+      .addMiddleware(&authenticated);
+    g_webServer.on("/control", HTTP_POST, handleControl)
+      .addMiddleware(operatorOnly);
+    g_webServer.on("/logs", HTTP_GET, handleLogs).addMiddleware(adminOnly);
+    g_webServer.on("/updateEnable", HTTP_POST, handleUpdateEnable)
+      .addMiddleware(adminOnly);
+    g_webServer
+      .on("/update", HTTP_POST, handleUpdateRequest, handleUpdateUpload)
+      .addMiddleware(adminOnly);
+
+    // MUST be registered BEFORE the serveStatic they shadow: handlers are
+    // matched in registration order, and the matcher is a PREFIX, so the
+    // rotated users.bak.json variants are covered too. /config.json carries the
+    // WiFi and MQTT passwords in plaintext, /users.json the password hashes and
+    // salts, /sessions.json live bearer tokens — none of them may ever be
+    // served, even to an admin.
+    g_webServer
+      .on(AsyncURIMatcher::prefix("/spiffs/users"), HTTP_GET, handleForbidden)
+      .addMiddleware(adminOnly);
+    g_webServer
+      .on(AsyncURIMatcher::prefix("/spiffs/sessions"),
+          HTTP_GET,
+          handleForbidden)
+      .addMiddleware(adminOnly);
+    g_webServer
+      .on(AsyncURIMatcher::prefix("/spiffs/config"), HTTP_GET, handleForbidden)
+      .addMiddleware(adminOnly);
+    g_webServer.serveStatic("/spiffs", SPIFFS, "/").addMiddleware(adminOnly);
+#else
     g_webServer.on("/data.json", HTTP_GET, handleDataJson);
     g_webServer.on("/control", HTTP_POST, handleControl);
     g_webServer.on("/logs", HTTP_GET, handleLogs);
     g_webServer.on("/updateEnable", HTTP_POST, handleUpdateEnable);
     g_webServer.on(
       "/update", HTTP_POST, handleUpdateRequest, handleUpdateUpload);
-    g_webServer.serveStatic("/", SPIFFS, "/")
-      .setAuthentication(g_otaUser.c_str(), g_otaPassword.c_str());
+#endif
+
     g_webServer.onNotFound(
       [](AsyncWebServerRequest* request) { request->send(404); });
 

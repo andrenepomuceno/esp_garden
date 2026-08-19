@@ -7,6 +7,7 @@ class ConfigFile
 {
   public:
     // device
+    unsigned deviceId; // low 16 bits of the efuse MAC; must match the file's "id"
     String hostname;
     String timezone;
 

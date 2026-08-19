@@ -11,7 +11,8 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
 - **Cloud logging** — sensor data published to ThingSpeak over MQTT every 2 minutes
 - **Internet watchdog** — pings Google/Cloudflare DNS and reports connectivity losses
 - **NTP time sync** — clock synchronized daily via Brazilian NTP pool
-- **Over-The-Air firmware update** — via the web UI (HTTP basic auth protected)
+- **Authenticated web UI** — nonce + SHA-256 login with OPERATOR/ADMIN roles, per-IP lockout and persistent sessions
+- **Over-The-Air firmware update** — via the web UI (ADMIN only)
 
 ## Hardware
 
@@ -134,6 +135,41 @@ count compiled into the firmware (`RELAY_COUNT`, `MOISTURE_SENSOR_COUNT` in
 `platformio.ini`) are ignored, and missing ones keep their compiled defaults.
 
 The device ID is printed to the serial monitor on every boot (`ID: 1a2b`).
+
+## Authentication
+
+The web UI authenticates with a nonce + SHA-256 challenge — the password never
+crosses the network, and the exchange cannot be replayed:
+
+1. `GET /nonce?username=<u>` → `{nonce, salt, ttlMs}`
+2. `passwordHash = sha256(salt + ":" + password)`
+3. `response = sha256(nonce + ":" + passwordHash)`
+4. `POST /login` with `username`, `nonce`, `response` → `{token, role}`
+5. every later request sends the header `Authorization-Token: <token>`
+
+`curl -u user:pass` does **not** work — there is no HTTP Basic path. Nonces are
+one-shot and expire in 30 s, sessions idle out after 24 h, and five failed
+attempts from one address return `429` for a minute.
+
+**There is no default password in the firmware.** On first boot the device
+migrates `ota.username` / `ota.password` from `config.json` into `/users.json`
+as a salted SHA-256 ADMIN account, and `config.json` is never served over HTTP.
+Change the password by updating `ota.*` and re-uploading the filesystem, having
+first deleted `/users.json` on the device — the migration only runs for a
+username that is not stored yet.
+
+| Route | Role |
+|---|---|
+| `/data.json` | any signed-in user |
+| `/control` | OPERATOR |
+| `/logs`, `/updateEnable`, `/update`, `/spiffs/*` | ADMIN |
+
+### Partition table
+
+The firmware ships a custom 4 MB layout (`partitions/esp_garden_4mb.csv`) with
+1.69 MB per OTA slot. **This cannot be delivered over OTA** — a board flashed
+with the stock table needs one serial upload (`pio run -e <env> -t upload`) to
+move to it.
 
 ## Remote Control (TalkBack)
 

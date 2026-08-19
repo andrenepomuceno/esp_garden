@@ -38,6 +38,7 @@ static const uint8_t g_defaultSoilMoisturePin[] = { A0, A6 };
 ConfigFile::ConfigFile()
 {
     // device
+    deviceId = 0;
     hostname = "espgarden";
     timezone = "<-03>3";
 
@@ -267,6 +268,11 @@ ConfigFile::loadFile(unsigned deviceID)
 bool
 loadConfigFile(unsigned deviceID)
 {
+    // Recorded before the load can fail: /nonce derives the decoy salt for an
+    // unknown user from it, and that must stay stable even on a device whose
+    // config did not load.
+    config.deviceId = deviceID;
+
     bool success = config.loadFile(deviceID);
 
     logger.setLogLevel((LogLevel)config.logLevel);

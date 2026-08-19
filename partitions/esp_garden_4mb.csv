@@ -1,0 +1,25 @@
+# Partition table for every esp-garden board (plain ESP32, 4 MB flash).
+#
+# The stock `default.csv` gives each OTA slot 0x140000 (1.31 MB). The v2
+# firmware sits at ~1.10 MB, so porting the fullbot login/user-store stack on
+# top of it would not fit. This is the same trade fullbot-firmware made for its
+# own 4 MB board (partitions/hw_v2_0_4mb.csv):
+#
+#   app0/app1  0x1B0000 = 1.69 MB each -> ~590 KB (35%) of headroom today
+#   spiffs     0x80000  = 512 KB       -> ~13x the 39 KB currently in use
+#
+# TWO OTA SLOTS ARE DELIBERATE. A single app partition would buy ~1.7 MB and
+# make the device un-updatable over the network — OTA needs somewhere to write
+# the new image before switching to it.
+#
+# WARNING: a partition table change cannot be delivered over OTA, because the
+# running image would be rewriting the map underneath itself. Every board
+# already in the field needs one full serial reflash to move to this layout.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x1B0000,
+app1,       app,  ota_1,    0x1C0000, 0x1B0000,
+spiffs,     data, spiffs,   0x370000, 0x80000,
+coredump,   data, coredump, 0x3F0000, 0x10000,

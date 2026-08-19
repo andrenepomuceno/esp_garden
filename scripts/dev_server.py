@@ -17,10 +17,12 @@ No external dependencies — only the Python standard library.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import random
+import secrets
 import threading
 import time
 from collections import deque
@@ -245,7 +247,87 @@ class _Sensor:
             self.variance = sum((s - mean) ** 2 for s in self.samples) / n
 
 
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class AuthSim:
+    """Mirror of src/custom_login.cpp — nonce + SHA-256 challenge.
+
+    Credentials here are fixed and printed at startup: this simulator only ever
+    binds to a developer machine, and a surprise password would just make the
+    login page untestable.
+    """
+
+    NONCE_TTL_S = 30
+    USERNAME = "admin"
+    PASSWORD = "admin"
+    ROLE_ADMIN = 2
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.salt = "0123456789abcdef"
+        self.password_hash = _sha256(f"{self.salt}:{self.PASSWORD}")
+        self.nonces: dict[str, float] = {}
+        self.tokens: set[str] = set()
+
+    def issue_nonce(self, username: str) -> dict:
+        nonce = secrets.token_hex(16)  # 32 hex chars, as in the firmware
+        now = time.time()
+        with self.lock:
+            self.nonces = {
+                n: t for n, t in self.nonces.items() if now - t <= self.NONCE_TTL_S
+            }
+            self.nonces[nonce] = now
+        # An unknown user still gets a stable decoy salt, so the endpoint cannot
+        # be used to enumerate accounts.
+        salt = self.salt if username == self.USERNAME else _sha256(
+            f"sim:nosuchuser:{username}"
+        )[:16]
+        return {"nonce": nonce, "salt": salt, "ttlMs": self.NONCE_TTL_S * 1000}
+
+    def login(self, username: str, nonce: str, response: str) -> str | None:
+        now = time.time()
+        with self.lock:
+            issued = self.nonces.pop(nonce, None)  # one-shot
+        if issued is None or now - issued > self.NONCE_TTL_S:
+            return None
+        if username != self.USERNAME:
+            return None
+        if response != _sha256(f"{nonce}:{self.password_hash}"):
+            return None
+
+        token = secrets.token_hex(32)  # 64 hex chars
+        with self.lock:
+            self.tokens.add(token)
+        return token
+
+    def logout(self, token: str) -> None:
+        with self.lock:
+            self.tokens.discard(token)
+
+    def valid(self, token: str) -> bool:
+        with self.lock:
+            return token in self.tokens
+
+
 STATE = DeviceState()
+AUTH = AuthSim()
+
+# Served without a token: the pages carry no data, and the login page has to
+# load before a token can exist. Mirrors servePublicFile() in src/web.cpp.
+PUBLIC_PATHS = {
+    "/",
+    "/index.html",
+    "/index.js",
+    "/login.html",
+    "/login.js",
+    "/sha256.js",
+    "/auth.js",
+    "/update.html",
+    "/update.js",
+    "/favicon.ico",
+}
 
 
 def _ticker() -> None:
@@ -292,9 +374,30 @@ class Handler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, target.read_bytes(), ctype)
 
     # ---------- routes ----------
+    # ---------- auth ----------
+    def _authorized(self) -> bool:
+        return AUTH.valid(self.headers.get("Authorization-Token") or "")
+
+    def _unauthorized(self) -> None:
+        self._send(HTTPStatus.UNAUTHORIZED, b"Unauthorized")
+
+    # ---------- routes ----------
     def do_GET(self) -> None:  # noqa: N802 - stdlib signature
         url = urlparse(self.path)
         path = url.path
+
+        if path == "/nonce":
+            username = parse_qs(url.query).get("username", [""])[0]
+            self._send_json(AUTH.issue_nonce(username))
+            return
+
+        if path in PUBLIC_PATHS:
+            self._serve_static(path)
+            return
+
+        if not self._authorized():
+            self._unauthorized()
+            return
 
         if path == "/data.json":
             self._send_json(STATE.snapshot())
@@ -302,13 +405,39 @@ class Handler(BaseHTTPRequestHandler):
             body = STATE.logs_text().encode("utf-8")
             self._send(HTTPStatus.OK, body, "text/plain; charset=utf-8")
         else:
-            self._serve_static(path)
+            # The firmware only registers an explicit allow-list of files; it
+            # has no blanket static handler on "/" any more.
+            self._send(HTTPStatus.NOT_FOUND, b"not found")
 
     def do_POST(self) -> None:  # noqa: N802
         url = urlparse(self.path)
         path = url.path
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
+
+        if path == "/login":
+            params = parse_qs(raw.decode("utf-8", errors="replace"))
+            token = AUTH.login(
+                params.get("username", [""])[0],
+                params.get("nonce", [""])[0],
+                params.get("response", [""])[0],
+            )
+            if token is None:
+                STATE.log("warning", "Unauthorized access attempt")
+                self._send(HTTPStatus.UNAUTHORIZED, b"Unauthorized")
+            else:
+                STATE.log("info", f"Login OK: user='{AUTH.USERNAME}'")
+                self._send_json({"token": token, "role": AUTH.ROLE_ADMIN})
+            return
+
+        if path == "/logout":
+            AUTH.logout(self.headers.get("Authorization-Token") or "")
+            self._send(HTTPStatus.OK, b"OK")
+            return
+
+        if not self._authorized():
+            self._unauthorized()
+            return
 
         if path == "/control":
             params = parse_qs(raw.decode("utf-8", errors="replace"))
@@ -361,7 +490,9 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}/"
     print(f"ESP Garden simulator serving {DATA_DIR} on {url}")
-    print("Endpoints: /  /data.json  /logs  /control  /updateEnable  /update")
+    print(f"Login: {AuthSim.USERNAME} / {AuthSim.PASSWORD}")
+    print("Endpoints: /  /nonce  /login  /logout  /data.json  /logs"
+          "  /control  /updateEnable  /update")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()

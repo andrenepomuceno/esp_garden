@@ -89,6 +89,9 @@ function startUpload(file, updateType) {
 }
 
 $(function () {
+    // OTA is ADMIN-only; without a token every request here answers 401.
+    if (!espAuth.requireToken()) return;
+
     $('#file-input').on('change', function () {
         var file = this.files[0];
         if (!file) return;
