@@ -544,6 +544,8 @@ webSetup()
     servePublicFile("/login.js", "/login.js", "application/javascript");
     servePublicFile("/sha256.js", "/sha256.js", "application/javascript");
     servePublicFile("/auth.js", "/auth.js", "application/javascript");
+    servePublicFile("/config.html", "/config.html", "text/html");
+    servePublicFile("/config.js", "/config.js", "application/javascript");
     servePublicFile("/update.html", "/update.html", "text/html");
     servePublicFile("/update.js", "/update.js", "application/javascript");
     servePublicFile("/favicon.ico", "/favicon.ico", "image/x-icon");

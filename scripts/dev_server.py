@@ -391,6 +391,8 @@ PUBLIC_PATHS = {
     "/auth.js",
     "/update.html",
     "/update.js",
+    "/config.html",
+    "/config.js",
     "/favicon.ico",
 }
 
