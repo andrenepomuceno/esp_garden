@@ -155,6 +155,65 @@ loadSoilMoisture(ConfigFile& cfg, JSONVar& io)
     }
 }
 
+// Two peripherals on one GPIO is not a compile error and not a runtime fault —
+// it just makes one of them read or drive garbage, which looks like a dead
+// sensor. Reported at boot so it is visible in the log instead of being
+// diagnosed from odd readings weeks later.
+void
+ConfigFile::validatePins() const
+{
+    struct PinUse
+    {
+        uint8_t pin;
+        const char* owner;
+    };
+
+    PinUse used[2 + RELAY_COUNT + MOISTURE_SENSOR_COUNT + 2];
+    size_t count = 0;
+    static char relayLabel[RELAY_COUNT][12];
+    static char probeLabel[MOISTURE_SENSOR_COUNT][12];
+
+    used[count++] = { buttonPin, "button" };
+
+    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+        snprintf(relayLabel[i], sizeof(relayLabel[i]), "relay%u", i);
+        used[count++] = { relayPin[i], relayLabel[i] };
+    }
+
+#ifdef HAS_DHT_SENSOR
+    used[count++] = { dhtPin, "dht" };
+#endif
+#ifdef HAS_MOISTURE_SENSOR
+    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+        snprintf(probeLabel[i], sizeof(probeLabel[i]), "moisture%u", i);
+        used[count++] = { soilMoisturePin[i], probeLabel[i] };
+    }
+#endif
+#ifdef HAS_LUMINOSITY_SENSOR
+    used[count++] = { luminosityPin, "luminosity" };
+#endif
+#ifdef HAS_WATER_LEVEL_SENSOR
+    used[count++] = { waterLevelPin, "waterLevel" };
+#endif
+
+    for (size_t i = 0; i < count; ++i) {
+        for (size_t j = i + 1; j < count; ++j) {
+            if (used[i].pin == used[j].pin) {
+                logger.error("Pin conflict: GPIO " + String(used[i].pin) +
+                             " assigned to both " + used[i].owner + " and " +
+                             used[j].owner + ".");
+            }
+        }
+
+        // GPIO 34-39 are input-only on the ESP32 and cannot drive a relay.
+        if ((strncmp(used[i].owner, "relay", 5) == 0) && (used[i].pin >= 34) &&
+            (used[i].pin <= 39)) {
+            logger.error("GPIO " + String(used[i].pin) + " (" + used[i].owner +
+                         ") is input-only and cannot drive a relay.");
+        }
+    }
+}
+
 bool
 ConfigFile::loadFile(unsigned deviceID)
 {
@@ -260,6 +319,8 @@ ConfigFile::loadFile(unsigned deviceID)
           "Invalid config file. String fields must have at least 4 characters.");
         return false;
     }
+
+    validatePins();
 
     logger.info("Loading done.");
     return true;

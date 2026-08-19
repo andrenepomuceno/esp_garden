@@ -58,6 +58,10 @@ class ConfigFile
 
     bool loadFile(unsigned deviceID);
 
+    // Logs every GPIO assigned to more than one peripheral, and every relay
+    // parked on an input-only pin. Diagnostic only — it never refuses a config.
+    void validatePins() const;
+
     // Replaces /config.json wholesale — there is no merge at this level. The
     // caller is responsible for having produced a complete document; the
     // handler in web.cpp does that by merging into the file already on disk.
