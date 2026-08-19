@@ -6,8 +6,9 @@
 // know about when saving.
 (function () {
   var MASK = '********';
-  var original = null; // last document fetched, used as the save template
-  var esc = null;      // bound in $() once espUI is available
+  var original = null;          // last document fetched, used as the save template
+  var esc = null;               // bound in $() once espUI is available
+  var activeTab = '__device';   // survives a re-render so saving keeps your place
 
   function setStatus(kind, message) { espUI.setStatus(kind, message); }
 
@@ -138,6 +139,10 @@
            '</div><div class="card-body">' + body + '</div></div>';
   }
 
+  // Tabs are switched in plain jQuery rather than with Bootstrap's JS: the
+  // pages deliberately carry no CDN script, and the nav-tabs classes below are
+  // CSS only. Every pane stays in the DOM, so collect() still sees the inputs
+  // of tabs the user never opened.
   function render(doc) {
     var scalars = {}, objects = {};
     $.each(doc, function (k, v) {
@@ -145,11 +150,46 @@
       else scalars[k] = v;
     });
 
-    var html = '<div class="card"><div class="card-header">Device</div><div class="card-body">';
-    $.each(scalars, function (k, v) { html += field(k, k, v); });
-    html += '</div></div>';
-    $.each(objects, function (k, v) { html += section(k, v, k); });
-    $('#sections').html(html);
+    var tabs = [{ key: '__device', title: 'Device' }];
+    $.each(objects, function (k) { tabs.push({ key: k, title: label(k) }); });
+
+    var known = false;
+    $.each(tabs, function (_, t) { if (t.key === activeTab) known = true; });
+    if (!known) activeTab = tabs[0].key;
+
+    var nav = '<ul class="nav nav-tabs mb-3" id="config-tabs">';
+    $.each(tabs, function (_, t) {
+      nav += '<li class="nav-item"><a class="nav-link' +
+             (t.key === activeTab ? ' active' : '') + '" href="#" data-tab="' +
+             esc(t.key) + '">' + esc(t.title) + '</a></li>';
+    });
+    nav += '</ul>';
+
+    var panes = '<div class="tab-content">';
+    panes += '<div class="config-pane" data-pane="__device"' +
+             (activeTab === '__device' ? '' : ' style="display:none"') + '>' +
+             '<div class="card"><div class="card-header">Device</div><div class="card-body">';
+    $.each(scalars, function (k, v) { panes += field(k, k, v); });
+    panes += '</div></div></div>';
+
+    $.each(objects, function (k, v) {
+      panes += '<div class="config-pane" data-pane="' + esc(k) + '"' +
+               (k === activeTab ? '' : ' style="display:none"') + '>' +
+               section(k, v, k) + '</div>';
+    });
+    panes += '</div>';
+
+    $('#sections').html(nav + panes);
+  }
+
+  function showTab(key) {
+    activeTab = key;
+    $('#config-tabs').find('.nav-link').each(function () {
+      $(this).toggleClass('active', $(this).data('tab') === key);
+    });
+    $('#sections').find('.config-pane').each(function () {
+      $(this).toggle($(this).data('pane') === key);
+    });
   }
 
   // ---------- save ----------
@@ -249,6 +289,11 @@
     if (!espAuth.requireToken()) return;
     esc = espUI.escapeHtml;
     load();
+
+    $('#sections').on('click', '#config-tabs .nav-link', function (event) {
+      event.preventDefault();
+      showTab($(this).data('tab'));
+    });
 
     $('#sections').on('click', '.btn-add-row', function () {
       var path = $(this).data('array');

@@ -16,6 +16,11 @@
     .field-row { margin-bottom: .6rem; }
     .table td, .table th { padding: .35rem .4rem; vertical-align: middle; }
     .hint { font-size: .78rem; }
+    /* Keeps the tab strip usable if the Bootstrap CSS on the CDN is
+       unreachable — the page still has to work with the WAN down. */
+    #config-tabs { display: flex; flex-wrap: wrap; gap: .25rem; list-style: none; padding-left: 0; }
+    #config-tabs .nav-link { cursor: pointer; }
+    #config-tabs .nav-link.active { font-weight: 600; }
   </style>
 </head>
 

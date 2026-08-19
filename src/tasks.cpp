@@ -62,25 +62,31 @@ DECLARE_CRITICAL_TASK(relays, CRITICAL_TASKS_PERIOD_MS);
 DECLARE_CRITICAL_TASK(ledBlink, 1000);
 
 // ThingSpeak channels have exactly 8 fields and the numbering is a permanent
-// contract with the data already stored. Field 4 belongs to the water level
-// where that sensor exists; on a board without it the slot is free for the
-// second soil probe. Relays 1..N have no field — they are local-only.
+// contract with the data already stored. Relays 1..N have no field — they are
+// local-only.
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
 static const unsigned g_pingField = 3;
 #ifdef HAS_WATER_LEVEL_SENSOR
 static const unsigned g_waterLevelField = 4;
-#elif MOISTURE_SENSOR_COUNT > 1
-static const unsigned g_soilMoisture2Field = 4;
 #endif
 static const unsigned g_luminosityField = 5;
 static const unsigned g_temperatureField = 6;
 static const unsigned g_airHumidityField = 7;
 static const unsigned g_bootTimeField = 8;
 
-#if defined(HAS_MOISTURE_SENSOR) && defined(HAS_WATER_LEVEL_SENSOR) &&         \
-  (MOISTURE_SENSOR_COUNT > 1)
-#warning "Second soil probe has no ThingSpeak field while the water level sensor occupies field 4."
+// Second soil probe. Field 4 is free only on a board without a water level
+// sensor; where both exist the slot has to be chosen deliberately, because
+// reusing a number rewrites the meaning of everything already stored under it.
+// Set -D MOISTURE2_FIELD=<n> in platformio.ini to pick one; leaving it unset
+// keeps the probe on the dashboard and out of the cloud.
+#if (MOISTURE_SENSOR_COUNT > 1) && !defined(MOISTURE2_FIELD) &&                \
+  !defined(HAS_WATER_LEVEL_SENSOR)
+#define MOISTURE2_FIELD 4
+#endif
+
+#if (MOISTURE_SENSOR_COUNT > 1) && !defined(MOISTURE2_FIELD)
+#warning "Second soil probe is dashboard-only: no ThingSpeak field assigned (set -D MOISTURE2_FIELD=<n>)."
 #endif
 
 const unsigned int g_wateringDefaultTime = 5 * 1000;
@@ -352,8 +358,8 @@ mqttTaskHandler()
 #ifdef HAS_MOISTURE_SENSOR
     mqttAddField(g_soilMoistureField,
                  FLOAT_TO_STRING(g_soilMoisture[0].getAverage()));
-#if !defined(HAS_WATER_LEVEL_SENSOR) && (MOISTURE_SENSOR_COUNT > 1)
-    mqttAddField(g_soilMoisture2Field,
+#if (MOISTURE_SENSOR_COUNT > 1) && defined(MOISTURE2_FIELD)
+    mqttAddField(MOISTURE2_FIELD,
                  FLOAT_TO_STRING(g_soilMoisture[1].getAverage()));
 #endif
 #endif
