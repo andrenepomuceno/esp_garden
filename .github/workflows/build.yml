@@ -12,8 +12,40 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    name: Host tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: ${{ runner.os }}-pio-native-${{ hashFiles('platformio.ini') }}
+          restore-keys: ${{ runner.os }}-pio-native-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      # No board and no data/config.json needed: [env:native] builds only the
+      # sources that compile without the Arduino core.
+      - name: Run unit tests
+        run: pio test -e native
+
   build:
     name: Build firmware
+    needs: test
     runs-on: ubuntu-latest
 
     strategy:

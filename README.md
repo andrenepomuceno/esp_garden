@@ -47,7 +47,9 @@ Two hardware rules constrain these choices:
 Older boards keep the historical watering relay on GPIO 15; that is a strapping pin (MTDO) and new hardware should not reuse it.
 
 `espgarden1` (NodeMCU-32S) uses: button 0 · relays **15, 16, 17, 18** ·
-DHT11 23 · soil moisture 36 · luminosity 39 · water level 34. GPIO 16 and 17 are
+DHT11 23 · soil moisture **36 and 35** · luminosity 39 · water level 34.
+Its second probe is dashboard-only — field 4 is the water level there, so
+publishing it needs an explicit `-D MOISTURE2_FIELD=<n>`. GPIO 16 and 17 are
 free there because the ESP32-WROOM-32 has no PSRAM — on a WROVER module they are
 not. `ConfigFile::validatePins()` logs every GPIO claimed by two peripherals and
 every relay parked on an input-only pin (34–39) at boot.
