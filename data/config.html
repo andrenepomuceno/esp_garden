@@ -39,11 +39,11 @@
       replace it. Changes take effect after a restart.
     </div>
 
-    <form id="config-form">
+    <form id="config-form" autocomplete="off">
       <div id="sections"></div>
 
       <div class="d-flex gap-2 flex-wrap">
-        <button id="button-save" type="submit" class="btn btn-primary btn-sm">Save</button>
+        <button id="button-save" type="submit" class="btn btn-primary btn-sm" disabled>Save</button>
         <button id="button-reload" type="button" class="btn btn-outline-secondary btn-sm">Reload</button>
         <button id="button-restart" type="button" class="btn btn-outline-danger btn-sm">Restart device</button>
       </div>
@@ -51,8 +51,7 @@
 
   </div>
 
-  <script src="https://code.jquery.com/jquery-3.6.0.min.js"
-    integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+  <script src="jquery.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"
     integrity="sha384-w76AqPfDkMBDXo30jS1Sgez6pr3x5MlQ1ZAGC+nuZB+EYdgRZgiwxhTBTkF7CXvN"
     crossorigin="anonymous"></script>

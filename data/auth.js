@@ -53,6 +53,29 @@
     });
   }
 
+  // Shared by every page so the alert markup and the escaping rule live in one
+  // place. Messages routinely carry a device response body, which must never be
+  // parsed as HTML in an admin's session.
+  function escapeHtml(text) {
+    return String(text)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function setStatus(kind, message) {
+    var classes = {
+      info: 'alert alert-info',
+      success: 'alert alert-success',
+      warning: 'alert alert-warning',
+      danger: 'alert alert-danger',
+    };
+    var cls = classes[kind] || classes.info;
+    global.jQuery('#status').html(
+      '<div class="' + cls + '">' + escapeHtml(message) + '</div>');
+  }
+
+  global.espUI = { setStatus: setStatus, escapeHtml: escapeHtml };
+
   global.espAuth = {
     getToken: getToken,
     setToken: setToken,

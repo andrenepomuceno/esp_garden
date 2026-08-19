@@ -2,6 +2,7 @@
 
 #include "BuildConfig.h"
 #include <Arduino.h>
+#include <Arduino_JSON.h>
 
 class ConfigFile
 {
@@ -75,6 +76,17 @@ class ConfigFile
 // Value substituted for every secret in GET /config.json. Sending it back
 // unchanged in POST /config.json keeps the stored value.
 extern const char* const g_configSecretMask;
+
+// Shortest acceptable credential/identity string. loadFile() refuses a document
+// that violates this, so anything that writes /config.json must refuse it too.
+extern const unsigned g_configMinStringLength;
+
+// True when `doc` would survive loadFile(). On false, `problem` names the field
+// so the caller can say which one. Exists so the write path cannot persist a
+// document the boot path will reject — that combination leaves the device on
+// compiled defaults it cannot connect with, and unreachable without USB.
+bool
+configDocumentIsUsable(const JSONVar& doc, String& problem);
 
 extern ConfigFile config;
 

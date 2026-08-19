@@ -633,11 +633,27 @@ tasksSetup()
     logger.backup();
 }
 
+static volatile bool g_restartRequested = false;
+static volatile unsigned long g_restartDeadline = 0;
+
+void
+requestRestart()
+{
+    g_restartDeadline = millis() + 500;
+    g_restartRequested = true;
+}
+
 void
 tasksLoop()
 {
     g_taskScheduler.execute();
     mqttLoop();
+
+    // Gives the queued HTTP response time to leave before the reboot.
+    if (g_restartRequested && ((long)(millis() - g_restartDeadline) >= 0)) {
+        logger.warning("Restarting on request.");
+        ESP.restart();
+    }
 }
 
 void

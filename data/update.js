@@ -1,10 +1,7 @@
+// Shared with config.js via auth.js: one alert renderer, one escaping rule.
+// Device response bodies land here and must not be parsed as HTML.
 function setStatus(kind, message) {
-    var classes = {
-        info: 'alert alert-info',
-        success: 'alert alert-success',
-        danger: 'alert alert-danger',
-    };
-    $('#status').html('<div class="' + (classes[kind] || classes.info) + '">' + message + '</div>');
+    espUI.setStatus(kind, message);
 }
 
 function setProgress(percent) {

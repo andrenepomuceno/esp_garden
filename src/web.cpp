@@ -184,6 +184,8 @@ handleControl(AsyncWebServerRequest* request)
 {
     digitalWrite(LED_BUILTIN, 1);
 
+    bool restartRequested = false;
+
     // relay + relayTime address any relay; watering / wateringTime are the
     // legacy spelling for relay 0 and stay supported.
     if (request->hasParam("relay", true)) {
@@ -209,13 +211,22 @@ handleControl(AsyncWebServerRequest* request)
                 mqttEnable(false);
             }
         } else if ((param->name() == "reset") && (param->value() == "1")) {
-            ESP.restart();
+            restartRequested = true;
         }
     }
 
     request->send(200);
 
     digitalWrite(LED_BUILTIN, 0);
+
+    // Handed to loop() rather than done here: request->send() only queues the
+    // response, and rebooting (or blocking) on the async_tcp task kills the
+    // connection before it flushes, so the caller could never tell a reboot
+    // from a failure.
+    if (restartRequested) {
+        logger.warning("Restart requested over /control.");
+        requestRestart();
+    }
 }
 
 void
@@ -444,6 +455,21 @@ handleConfigPost(AsyncWebServerRequest* request)
         }
     }
 
+    // Refuse anything loadFile() would reject at boot. Persisting such a
+    // document is how the editor bricks the device: the write succeeds, the
+    // page reports success, and the next reboot falls back to compiled defaults
+    // that cannot join the network — leaving no way in except USB.
+    String problem;
+    if (!configDocumentIsUsable(incoming, problem)) {
+        logger.error("Refusing to save config: '" + problem + "' is shorter than " +
+                     String(g_configMinStringLength) + " characters.");
+        request->send(400,
+                      "text/plain",
+                      "'" + problem + "' must have at least " +
+                        String(g_configMinStringLength) + " characters");
+        return;
+    }
+
     if (!config.saveFile(JSON.stringify(incoming))) {
         request->send(500, "text/plain", "failed to write config");
         return;
@@ -542,6 +568,11 @@ webSetup()
     servePublicFile("/index.js", "/index.js", "application/javascript");
     servePublicFile("/login.html", "/login.html", "text/html");
     servePublicFile("/login.js", "/login.js", "application/javascript");
+    // Vendored so the pages work with the WAN down. The config page in
+    // particular exists to fix a device that cannot reach the internet, and
+    // with jQuery on a CDN it rendered blank in exactly that situation.
+    servePublicFile("/jquery.js", "/jquery.js", "application/javascript");
+    servePublicFile("/spark-md5.js", "/spark-md5.js", "application/javascript");
     servePublicFile("/sha256.js", "/sha256.js", "application/javascript");
     servePublicFile("/auth.js", "/auth.js", "application/javascript");
     servePublicFile("/config.html", "/config.html", "text/html");

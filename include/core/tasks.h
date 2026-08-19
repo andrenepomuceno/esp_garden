@@ -65,3 +65,11 @@ startWatering(unsigned int wateringTime = g_wateringDefaultTime);
 
 void
 mqttEnable(bool enable);
+
+// Schedules a reboot from loop(). A request handler must not call
+// ESP.restart() itself: request->send() only queues the response, and the
+// async_tcp task that would flush it is the same one the handler runs on — so
+// the caller always saw a connection reset and could not tell a reboot from a
+// failure.
+void
+requestRestart();

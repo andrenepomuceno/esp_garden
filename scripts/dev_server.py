@@ -302,6 +302,11 @@ class AuthSim:
             self.tokens.add(token)
         return token
 
+    def set_password(self, password: str) -> None:
+        with self.lock:
+            self.password_hash = _sha256(f"{self.salt}:{password}")
+            self.tokens.clear()  # existing sessions die with the old credential
+
     def logout(self, token: str) -> None:
         with self.lock:
             self.tokens.discard(token)
@@ -366,18 +371,62 @@ def config_masked() -> dict:
     return doc
 
 
-def config_apply(incoming: dict) -> tuple[bool, str]:
+# Mirrors ConfigFile::loadFile()'s tail. A document that violates this is
+# rejected by the device at boot, so the write path must refuse it too.
+CONFIG_MIN_STRING_LENGTH = 4
+CONFIG_REQUIRED = [
+    ("", "hostname"),
+    ("wifi", "ssid"),
+    ("wifi", "password"),
+    ("ota", "username"),
+    ("ota", "password"),
+    ("thingSpeak", "apiKey"),
+    ("talkBack", "apiKey"),
+]
+
+
+def config_apply(incoming: dict) -> tuple[int, str]:
+    """Returns (http_status, message). Mirrors handleConfigPost in src/web.cpp."""
     if not isinstance(incoming, dict):
-        return False, "config is not a JSON object"
+        return 400, "config is not a JSON object"
     if str(incoming.get("id", "")).lower() != str(SIM_CONFIG["id"]).lower():
-        return False, "config id does not match this device"
+        return 400, "config id does not match this device"
+
+    new_ota_password = None
+    for section, key in CONFIG_SECRET_PATHS:
+        sec = incoming.get(section)
+        if not isinstance(sec, dict) or key not in sec:
+            continue
+        if sec[key] == CONFIG_SECRET_MASK:
+            stored = SIM_CONFIG.get(section, {}).get(key)
+            if stored:
+                sec[key] = stored
+        elif (section, key) == ("ota", "password"):
+            new_ota_password = sec[key]
+
+    # A mask that survived the restore would be written over a real credential.
     for section, key in CONFIG_SECRET_PATHS:
         sec = incoming.get(section)
         if isinstance(sec, dict) and sec.get(key) == CONFIG_SECRET_MASK:
-            sec[key] = SIM_CONFIG.get(section, {}).get(key)
+            return 500, "secret restore failed"
+
+    for section, key in CONFIG_REQUIRED:
+        node = incoming if section == "" else incoming.get(section, {})
+        value = node.get(key) if isinstance(node, dict) else None
+        if not isinstance(value, str) or len(value) < CONFIG_MIN_STRING_LENGTH:
+            field = key if section == "" else f"{section}.{key}"
+            return 400, f"'{field}' must have at least {CONFIG_MIN_STRING_LENGTH} characters"
+
     SIM_CONFIG.clear()
     SIM_CONFIG.update(incoming)
-    return True, "saved"
+
+    # The login password lives outside the config on the device too, so a
+    # changed ota.password has to reach the auth store or the simulator's login
+    # stops matching the firmware's.
+    if new_ota_password:
+        AUTH.set_password(new_ota_password)
+
+    return 200, "saved"
 
 # Served without a token: the pages carry no data, and the login page has to
 # load before a token can exist. Mirrors servePublicFile() in src/web.cpp.
@@ -393,6 +442,8 @@ PUBLIC_PATHS = {
     "/update.js",
     "/config.html",
     "/config.js",
+    "/jquery.js",
+    "/spark-md5.js",
     "/favicon.ico",
 }
 
@@ -518,9 +569,10 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self._send(HTTPStatus.BAD_REQUEST, b"config is not a JSON object")
                 return
-            ok, message = config_apply(incoming)
-            if not ok:
-                self._send(HTTPStatus.BAD_REQUEST, message.encode())
+            status, message = config_apply(incoming)
+            if status != 200:
+                STATE.log("error", f"Refusing to save config: {message}")
+                self._send(status, message.encode())
                 return
             STATE.log("info", "Saved /config.json")
             self._send_json({"saved": True, "restartRequired": True})

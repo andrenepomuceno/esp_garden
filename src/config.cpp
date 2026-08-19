@@ -309,7 +309,7 @@ ConfigFile::loadFile(unsigned deviceID)
         }
     }
 
-    const int minChar = 4;
+    const unsigned minChar = g_configMinStringLength;
     if ((hostname.length() < minChar) || (ssid.length() < minChar) ||
         (wifiPassword.length() < minChar) || (otaUser.length() < minChar) ||
         (otaPassword.length() < minChar) ||
@@ -327,6 +327,39 @@ ConfigFile::loadFile(unsigned deviceID)
 }
 
 const char* const g_configSecretMask = "********";
+const unsigned g_configMinStringLength = 4;
+
+bool
+configDocumentIsUsable(const JSONVar& doc, String& problem)
+{
+    // Mirrors the tail of loadFile(). Every JSONVar is bound to a named local
+    // before being read: operator[] returns by value, and casting a chained
+    // subscript straight to const char* reads a freed buffer.
+    static const char* const required[][2] = {
+        { "", "hostname" },          { "wifi", "ssid" },
+        { "wifi", "password" },      { "ota", "username" },
+        { "ota", "password" },       { "thingSpeak", "apiKey" },
+        { "talkBack", "apiKey" },
+    };
+
+    JSONVar document = doc;
+    for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); ++i) {
+        const char* section = required[i][0];
+        const char* key = required[i][1];
+
+        JSONVar node = (section[0] == '\0') ? document[key]
+                                            : JSONVar(document[section])[key];
+        const String value = (const char*)node;
+
+        if (value.length() < g_configMinStringLength) {
+            problem = (section[0] == '\0') ? String(key)
+                                           : (String(section) + "." + key);
+            return false;
+        }
+    }
+
+    return true;
+}
 
 String
 ConfigFile::readFile()
