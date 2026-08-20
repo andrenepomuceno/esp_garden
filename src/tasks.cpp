@@ -90,7 +90,7 @@ static const unsigned g_bootTimeField = 8;
 #endif
 
 const unsigned int g_wateringDefaultTime = 5 * 1000;
-static const unsigned g_relayMaxTime = 20 * 1000;
+static const unsigned g_relayMaxTime = 30 * 1000;
 
 AccumulatorV2 g_pingTime(g_mqttTaskPeriod / g_checkInternetTaskPeriod);
 static String g_mqttMessage = "";
