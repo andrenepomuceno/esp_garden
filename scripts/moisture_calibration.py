@@ -20,10 +20,18 @@ not from history: the probe in air (its dry end) and submerged in water (its wet
 end). Each probe has its own gain and offset, which is exactly why they have to
 be calibrated individually.
 
+3. Can the ACTUATOR give the anchors?
+   Watering is a labelled transition — driest just before, wettest shortly
+   after — so --from-events reads the anchors off those events instead of
+   needing the probe pulled out of the soil. The span it returns is
+   operational (this soil, this pot) rather than the probe's physical range,
+   which is the more useful scale for deciding when to water.
+
 Usage:
     python scripts/moisture_calibration.py --days 30
     python scripts/moisture_calibration.py --field 4 --days 60
-    python scripts/moisture_calibration.py --dry 94.0 --wet 12.0   # emit bands
+    python scripts/moisture_calibration.py --days 2 --from-events   # anchors from watering
+    python scripts/moisture_calibration.py --dry 94.0 --wet 12.0    # emit bands
 """
 
 from __future__ import annotations
@@ -239,6 +247,116 @@ def analyse(points, rows, field, watering_field):
         print("  o intervalo entre regas, que e a decisao operacional real.")
 
 
+def calibrate_from_events(rows, field, watering_field, pre_min, post_min,
+                          floor, ceiling):
+    """Anchor dry/wet on watering events instead of air/water references.
+
+    Watering is a labelled transition: the soil is at its driest just before one
+    and at its wettest shortly after. That gives an OPERATIONAL span — this soil
+    in this pot — rather than the probe's physical one, which is the more useful
+    scale for deciding when to water.
+
+    Events arrive in bursts, and consecutive activations share one wetting
+    response. They are grouped into sessions first; counting each activation
+    separately would report the same peak several times and pretend it is
+    independent evidence.
+    """
+    stamps = []
+    for row in rows:
+        raw = row.get(f"field{field}")
+        if raw in (None, ""):
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        moment = datetime.datetime.strptime(
+            row["created_at"], "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=datetime.timezone.utc)
+        stamps.append((moment, value, row.get(f"field{watering_field}") or ""))
+
+    stamps.sort(key=lambda s: s[0])
+    events = [m for m, _, w in stamps if w]
+    if not events:
+        print("nenhum evento de rega na janela.")
+        return None
+
+    sessions = [[events[0]]]
+    for moment in events[1:]:
+        if (moment - sessions[-1][-1]).total_seconds() <= post_min * 60:
+            sessions[-1].append(moment)
+        else:
+            sessions.append([moment])
+
+    print(f"eventos: {len(events)}  ->  sessoes de rega: {len(sessions)}")
+    print(f"janelas: base = {pre_min} min antes, pico = {post_min} min depois\n")
+
+    usable = []
+    for session in sessions:
+        start, last = session[0], session[-1]
+        pre = [v for m, v, _ in stamps
+               if -pre_min * 60 <= (m - start).total_seconds() < 0]
+        post = [v for m, v, _ in stamps
+                if 0 < (m - last).total_seconds() <= post_min * 60]
+        if not pre or not post:
+            verdict = "sem amostras suficientes"
+            base = peak = None
+        else:
+            base = statistics.median(pre)
+            peak = max(post)
+            if not (floor < base < ceiling) or not (floor < peak < ceiling):
+                verdict = "sonda no batente (desconectada)"
+            elif peak <= base:
+                verdict = "sem subida — descartada"
+            else:
+                verdict = "OK"
+                usable.append((base, peak, statistics.pstdev(pre) if len(pre) > 1 else 0.0))
+        shown = f"base={base:6.2f} pico={peak:6.2f} delta={peak - base:+5.2f}" \
+            if base is not None else "—"
+        print(f"  {start:%m-%d %H:%M} ({len(session):2d} acionamentos)  {shown}  {verdict}")
+
+    if not usable:
+        print("\nnenhuma sessao utilizavel: sem par base/pico valido.")
+        return None
+
+    # Anchors are EXTREMES, not central values. A median is dragged to the
+    # middle by sessions that watered already-saturated soil, and most sessions
+    # are exactly that: the driest the soil ever reached is the only honest dry
+    # anchor, and the wettest it ever reached the only honest wet one.
+    dry = min(b for b, _, _ in usable)
+    wet = max(p for _, p, _ in usable)
+    deltas = [p - b for b, p, _ in usable]
+
+    print(f"\nsessoes utilizaveis  : {len(usable)}")
+    print(f"resposta a rega      : mediana {statistics.median(deltas):+.2f}"
+          f"  (min {min(deltas):+.2f}, max {max(deltas):+.2f})")
+    if statistics.median(deltas) < 0.5 * max(deltas):
+        print("  a mediana e bem menor que o maximo: a maioria das regas caiu em")
+        print("  solo ja saturado, e so a maior sessao mede a faixa real")
+    print(f"ancoras (extremos)   : dry={dry:.2f}  wet={wet:.2f}"
+          f"  (span {wet - dry:.2f})")
+
+    # Within-state noise, not the spread of the whole series: the latter counts
+    # the wetting steps themselves as noise and overstates it several-fold.
+    noise = statistics.median([sd for _, _, sd in usable])
+    band = abs(wet - dry) / 3.0
+    print(f"ruido intra-estado   : {noise:.2f}   largura de cada faixa: {band:.2f}")
+    if band < noise:
+        print("  AVISO: cada faixa e mais estreita que o ruido da propria serie."
+              " A classificacao")
+        print("  vai oscilar entre estados sem o solo mudar. Amplie a janela ou"
+              " use ancoras")
+        print("  fisicas (--dry/--wet) para uma escala maior.")
+
+    if len(usable) < 3:
+        print(f"  AVISO: apenas {len(usable)} sessao(oes) utilizavel(is)."
+              " Trate as ancoras como provisorias.")
+
+    print("\n  para config.json (\"moisture\"):")
+    print(json.dumps({"dry": round(dry, 2), "wet": round(wet, 2)}, indent=4))
+    return dry, wet
+
+
 def emit_bands(dry: float, wet: float) -> None:
     """Two-point calibration: reading in air and submerged, per probe."""
     print("\n--- calibracao de dois pontos ---")
@@ -277,6 +395,17 @@ def main() -> None:
         default=1.0,
         help="drop readings at or below this (disconnected probe rail)",
     )
+    parser.add_argument(
+        "--from-events",
+        action="store_true",
+        help="derive dry/wet from watering events instead of air/water references",
+    )
+    parser.add_argument("--pre-min", type=int, default=15,
+                        help="minutos antes da rega para a base (padrao 15)")
+    parser.add_argument("--post-min", type=int, default=45,
+                        help="minutos apos a rega para o pico (padrao 45)")
+    parser.add_argument("--ceiling", type=float, default=90.0,
+                        help="descarta leituras acima disto (sonda no batente)")
     parser.add_argument("--dry", type=float, help="reading with the probe in air")
     parser.add_argument("--wet", type=float, help="reading with the probe in water")
     args = parser.parse_args()
@@ -295,6 +424,11 @@ def main() -> None:
         f" {args.end or 'agora'}"
     )
     rows = fetch(args.channel, args.days, args.api_key, end)
+
+    if args.from_events:
+        calibrate_from_events(rows, args.field, args.watering_field,
+                              args.pre_min, args.post_min, args.floor, args.ceiling)
+        return
     print(f"registros baixados   : {len(rows)}")
     points = series(rows, args.field, args.floor)
     if len(points) < 100:
