@@ -57,12 +57,17 @@
         "dht": 23,
         "soilMoisture": [
             36,
-            34
+            35,
+            32
         ],
         "luminosity": 39,
         "waterLevel": 34
     },
     "moisture": [
+        {
+            "dry": 0,
+            "wet": 0
+        },
         {
             "dry": 0,
             "wet": 0

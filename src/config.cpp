@@ -31,9 +31,16 @@ String& g_mqttCACert = config.mqttCACert;
 // Relay 0 keeps GPIO 15 so boards already in the field are unaffected. It is a
 // strapping pin (MTDO) — new hardware should override it in config.json.
 static const uint8_t g_defaultRelayPin[] = { 15, 16, 17, 18 };
-// A0 and A6 are both ADC1. ADC2 cannot be read while WiFi is associated, so
-// every analog channel has to come from GPIO 32-39.
-static const uint8_t g_defaultSoilMoisturePin[] = { A0, A6 };
+// All ADC1: ADC2 cannot be read while WiFi is associated, so every analog
+// channel has to come from GPIO 32-39. These three are also mutually distinct
+// and clear of the luminosity (39) and water level (34) defaults — the previous
+// second entry was A6 (34) and collided with the water level on any board
+// carrying both.
+//
+// GPIO 32/33 double as XTAL_32K_P/N. The ESP32-WROOM-32 on a NodeMCU-32S ships
+// without that crystal, so they are ordinary ADC1 inputs; a module that does
+// have one fitted cannot use them.
+static const uint8_t g_defaultSoilMoisturePin[] = { 36, 35, 32 };
 
 ConfigFile::ConfigFile()
 {

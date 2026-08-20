@@ -21,7 +21,7 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
 
 | Environment | Board | Sensors | Relays |
 |---|---|---|---|
-| `espgarden1` | NodeMCU-32S | Soil moisture, luminosity, DHT11 (temp + humidity), water level | 4 |
+| `espgarden1` | NodeMCU-32S | 3× soil moisture, luminosity, DHT11 (temp + humidity), water level | 4 |
 | `espgarden2` | ESP32 DOIT DevKit v1 | Luminosity | 1 |
 | `espgarden3` | ESP32 DOIT DevKit v1 | Soil moisture, luminosity | 1 |
 | `espgarden4` | ESP32 DOIT DevKit v1 | — (base config) | 1 |
@@ -50,7 +50,9 @@ Two hardware rules constrain these choices:
 Older boards keep the historical watering relay on GPIO 15; that is a strapping pin (MTDO) and new hardware should not reuse it.
 
 `espgarden1` (NodeMCU-32S) uses: button 0 · relays **15, 16, 17, 18** ·
-DHT11 23 · soil moisture **36 and 35** · luminosity 39 · water level 34.
+DHT11 23 · soil moisture **36, 35 and 32** · luminosity 39 · water level 34.
+That spends five of the six ADC1 channels a WROOM-32 exposes (32–36, 39; 37 and
+38 are not bonded out), leaving GPIO 33 for a fourth probe.
 Its second probe is dashboard-only — field 4 is the water level there, so
 publishing it needs an explicit `-D MOISTURE2_FIELD=<n>`. GPIO 16 and 17 are
 free there because the ESP32-WROOM-32 has no PSRAM — on a WROVER module they are
