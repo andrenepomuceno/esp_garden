@@ -385,6 +385,27 @@ handleConfigGet(AsyncWebServerRequest* request)
         return;
     }
 
+    // ?secrets=1 exports the document verbatim, for a backup that can actually
+    // be restored. Masked fields cannot: they come back as asterisks, so a
+    // "backup" taken through the normal path silently loses every credential —
+    // which is how a filesystem deploy costs you the broker token.
+    //
+    // This is deliberately an explicit, single-purpose action rather than a
+    // browsable path: /spiffs/config* stays 403 and the default GET stays
+    // masked. It is ADMIN-only and it says who asked, in the log.
+    if (request->hasParam("secrets") &&
+        request->getParam("secrets")->value() == "1") {
+        logger.warning("Config exported WITH secrets to " +
+                       request->client()->remoteIP().toString());
+        AsyncWebServerResponse* response =
+          request->beginResponse(200, "application/json", raw);
+        response->addHeader("Cache-Control", "no-store");
+        response->addHeader("Content-Disposition",
+                            "attachment; filename=\"config-backup.json\"");
+        request->send(response);
+        return;
+    }
+
     JSONVar doc = JSON.parse(raw);
     if (JSON.typeof(doc) == "undefined") {
         request->send(500, "text/plain", "config unparseable");
@@ -882,6 +903,8 @@ webSetup()
     servePublicFile("/history.js", "/history.js", "application/javascript");
     servePublicFile("/devices.html", "/devices.html", "text/html");
     servePublicFile("/devices.js", "/devices.js", "application/javascript");
+    servePublicFile("/schedules.html", "/schedules.html", "text/html");
+    servePublicFile("/schedules.js", "/schedules.js", "application/javascript");
     servePublicFile("/update.html", "/update.html", "text/html");
     servePublicFile("/update.js", "/update.js", "application/javascript");
     servePublicFile("/favicon.ico", "/favicon.ico", "image/x-icon");

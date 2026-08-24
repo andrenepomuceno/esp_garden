@@ -520,6 +520,8 @@ PUBLIC_PATHS = {
     "/history.js",
     "/devices.html",
     "/devices.js",
+    "/schedules.html",
+    "/schedules.js",
     "/jquery.js",
     "/spark-md5.js",
     "/favicon.ico",
@@ -679,7 +681,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/data.json":
             self._send_json(STATE.snapshot())
         elif path == "/config.json":
-            self._send_json(config_masked())
+            # ?secrets=1 mirrors the device's explicit backup export.
+            if parse_qs(url.query).get("secrets", [""])[0] == "1":
+                STATE.log("warning", "Config exported WITH secrets")
+                self._send_json(SIM_CONFIG)
+            else:
+                self._send_json(config_masked())
         elif path == "/users.json":
             self._send_json(SIM_USERS)
         elif path == "/history.json":
