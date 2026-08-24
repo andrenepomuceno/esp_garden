@@ -70,6 +70,7 @@
       <h1 class="m-0 fs-4">&#x1F4C8; History</h1>
       <div class="small">
         <a href="/" class="link-primary">Dashboard</a>
+        <a href="/devices.html" class="link-primary ms-2">Devices</a>
         <a href="/config.html" class="link-primary ms-2">Config</a>
         <a href="/users.html" class="link-primary ms-2">Users</a>
         <a href="#" id="a-logout" class="link-primary ms-2">Logout</a>
@@ -82,22 +83,21 @@
     <div class="card">
       <div class="card-body d-flex flex-wrap gap-3 align-items-end">
         <div>
-          <label for="select-limit" class="form-label small mb-1">Records</label>
-          <select id="select-limit" class="form-select form-select-sm">
-            <option value="50">last 50</option>
-            <option value="100" selected>last 100</option>
-            <option value="200">last 200</option>
-          </select>
+          <label class="form-label small mb-1 d-block">Window</label>
+          <div class="btn-group btn-group-sm" id="window-buttons">
+            <button type="button" class="btn btn-outline-secondary" data-window="3600">1h</button>
+            <button type="button" class="btn btn-outline-secondary" data-window="21600">6h</button>
+            <button type="button" class="btn btn-outline-secondary" data-window="43200">12h</button>
+            <button type="button" class="btn btn-outline-secondary active" data-window="86400">1d</button>
+            <button type="button" class="btn btn-outline-secondary" data-window="604800">7d</button>
+            <button type="button" class="btn btn-outline-secondary" data-window="2592000">30d</button>
+          </div>
         </div>
         <div class="form-check form-switch">
           <input id="input-table" class="form-check-input" type="checkbox">
           <label class="form-check-label small" for="input-table">Table view</label>
         </div>
-        <div class="btn-group">
-          <button id="button-older" type="button" class="btn btn-outline-secondary btn-sm">&larr; Older</button>
-          <button id="button-newer" type="button" class="btn btn-outline-secondary btn-sm">Newer &rarr;</button>
-        </div>
-        <button id="button-refresh" type="button" class="btn btn-outline-secondary btn-sm">Latest</button>
+        <button id="button-refresh" type="button" class="btn btn-outline-secondary btn-sm">Refresh</button>
         <div id="range-note" class="hint ms-auto"></div>
       </div>
     </div>

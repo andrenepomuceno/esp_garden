@@ -117,6 +117,26 @@ ConfigFile::ConfigFile()
     luminosityPin = A3;
     waterLevelPin = A6;
 
+    // Both need an internal pull-up, which GPIO 34-39 do not have, and both
+    // avoid the strapping pins and the flash pins.
+    flowPin = 27;
+    flowName = "Flow";
+    flowPulsesPerLitre = 450.0; // YF-S201 nominal
+    floatPin = 26;
+    floatName = "Float Switch";
+    floatActiveLevel = 0; // normally-open to ground, with the pull-up
+
+    scheduleCount = 0;
+    for (unsigned i = 0; i < SCHEDULE_COUNT; ++i) {
+        schedules[i].enabled = false;
+        schedules[i].relay = 0;
+        schedules[i].hour = 0;
+        schedules[i].minute = 0;
+        schedules[i].days = 0;
+        schedules[i].durationMs = 0;
+        schedules[i].name = "";
+    }
+
     // log
     logLevel = LOG_INFO;
 
@@ -143,8 +163,18 @@ loadRelays(ConfigFile& cfg, JSONVar& io)
 
         for (unsigned i = 0; i < RELAY_COUNT && i < count; ++i) {
             JSONVar relay = relays[i];
-            cfg.relayPin[i] = (int)relay["pin"];
-            cfg.relayPinOn[i] = (int)relay["on"];
+
+            // An absent key must keep the compiled default, not become 0.
+            // Without these checks a relay entry written without "pin" — which
+            // a config editor can produce for a row the user left blank — parks
+            // the relay on GPIO 0, the boot strapping pin, and "on" silently
+            // becomes active-high on a board wired active-low.
+            if (relay.hasOwnProperty("pin")) {
+                cfg.relayPin[i] = (int)relay["pin"];
+            }
+            if (relay.hasOwnProperty("on")) {
+                cfg.relayPinOn[i] = (int)relay["on"];
+            }
 
             // An absent name keeps the compiled default rather than blanking
             // the label the dashboard renders.
@@ -229,7 +259,7 @@ ConfigFile::validatePins() const
         const char* owner;
     };
 
-    PinUse used[2 + RELAY_COUNT + MOISTURE_SENSOR_COUNT + 2];
+    PinUse used[4 + RELAY_COUNT + MOISTURE_SENSOR_COUNT + 2];
     size_t count = 0;
     static char relayLabel[RELAY_COUNT][12];
     static char probeLabel[MOISTURE_SENSOR_COUNT][12];
@@ -255,6 +285,12 @@ ConfigFile::validatePins() const
 #endif
 #ifdef HAS_WATER_LEVEL_SENSOR
     used[count++] = { waterLevelPin, "waterLevel" };
+#endif
+#ifdef HAS_FLOW_SENSOR
+    used[count++] = { flowPin, "flow" };
+#endif
+#ifdef HAS_FLOAT_SWITCH
+    used[count++] = { floatPin, "floatSwitch" };
 #endif
 
     for (size_t i = 0; i < count; ++i) {
@@ -386,6 +422,83 @@ ConfigFile::loadFile(unsigned deviceID)
 #if defined(HAS_WATER_LEVEL_SENSOR)
     loadSensor(io["waterLevel"], waterLevelPin, waterLevelName);
 #endif
+#if defined(HAS_FLOW_SENSOR)
+    loadSensor(io["flow"], flowPin, flowName);
+    if (JSON.typeof(io["flow"]) == "object") {
+        JSONVar flow = io["flow"];
+        if (flow.hasOwnProperty("pulsesPerLitre")) {
+            const double k = (double)flow["pulsesPerLitre"];
+            if (k > 0.0) {
+                flowPulsesPerLitre = (float)k;
+            } else {
+                logger.warning("Ignoring non-positive flow.pulsesPerLitre");
+            }
+        }
+    }
+#endif
+#if defined(HAS_FLOAT_SWITCH)
+    loadSensor(io["floatSwitch"], floatPin, floatName);
+    if (JSON.typeof(io["floatSwitch"]) == "object") {
+        JSONVar sw = io["floatSwitch"];
+        if (sw.hasOwnProperty("activeLevel")) {
+            floatActiveLevel = ((int)sw["activeLevel"] != 0) ? 1 : 0;
+        }
+    }
+#endif
+
+    // "schedules": [ {enabled, relay, hour, minute, days, durationMs, name} ]
+    scheduleCount = 0;
+    if (JSON.typeof(configJson["schedules"]) == "array") {
+        JSONVar list = configJson["schedules"];
+        const unsigned count = list.length();
+        if (count > SCHEDULE_COUNT) {
+            logger.warning("Config declares " + String(count) +
+                           " schedules, " + String(SCHEDULE_COUNT) +
+                           " compiled in. The rest are ignored.");
+        }
+
+        for (unsigned i = 0; i < SCHEDULE_COUNT && i < count; ++i) {
+            JSONVar entry = list[i];
+            if (JSON.typeof(entry) != "object") {
+                continue;
+            }
+
+            Schedule& sch = schedules[scheduleCount];
+            sch.enabled = entry.hasOwnProperty("enabled")
+                            ? (bool)entry["enabled"]
+                            : true;
+            sch.relay = entry.hasOwnProperty("relay") ? (int)entry["relay"] : 0;
+            sch.hour = entry.hasOwnProperty("hour") ? (int)entry["hour"] : 0;
+            sch.minute = entry.hasOwnProperty("minute") ? (int)entry["minute"] : 0;
+            sch.days = entry.hasOwnProperty("days") ? (int)entry["days"] : 127;
+            sch.durationMs =
+              entry.hasOwnProperty("durationMs") ? (int)entry["durationMs"] : 0;
+            if (JSON.typeof(entry["name"]) == "string") {
+                sch.name = (const char*)JSONVar(entry["name"]);
+            } else {
+                sch.name = "Schedule " + String(scheduleCount + 1);
+            }
+
+            // A schedule pointing at a relay this board does not have, or at
+            // an impossible time, would never fire and never say why.
+            if (sch.relay >= RELAY_COUNT) {
+                logger.warning(sch.name + ": relay " + String(sch.relay) +
+                               " does not exist; ignored.");
+                continue;
+            }
+            if (sch.hour > 23 || sch.minute > 59) {
+                logger.warning(sch.name + ": invalid time; ignored.");
+                continue;
+            }
+            if (sch.durationMs == 0) {
+                logger.warning(sch.name + ": zero duration; ignored.");
+                continue;
+            }
+
+            ++scheduleCount;
+        }
+        logger.info("Loaded " + String(scheduleCount) + " schedule(s).");
+    }
 
     // An out-of-range log level would silence the device entirely, so it is
     // clamped rather than trusted.
