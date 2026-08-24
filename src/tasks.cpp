@@ -339,8 +339,6 @@ historyTaskHandler()
     ioHistory.append(record);
 }
 
-// Minute-of-epoch of the last firing, per schedule. The task ticks three times
-// a minute, so without this a schedule would fire three times.
 // Day-of-epoch each schedule last fired on. 0 is 1970-01-01, which no synced
 // clock ever reports, so a fresh boot cannot look like "already fired today".
 static uint32_t g_scheduleLastFired[SCHEDULE_COUNT] = { 0 };

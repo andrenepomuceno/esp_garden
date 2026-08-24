@@ -1,6 +1,10 @@
 #pragma once
 
-#define FW_VERSION "2.0.0"
+// Surfaced in /data.json's Status and published to ThingsBoard as
+// current_fw_version, which is how the broker decides an update landed. It is
+// also what fwVersionDiffers() compares an offered package against, so bumping
+// it is what makes a FOTA a no-op instead of a reflash loop.
+#define FW_VERSION "2.1.0"
 
 // Feature flags
 #define USE_WEBSERVER 1
