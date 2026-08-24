@@ -78,6 +78,16 @@
         "waterLevel": {
             "pin": 34,
             "name": "Water Level"
+        },
+        "flow": {
+            "pin": 27,
+            "name": "Fluxo",
+            "pulsesPerLitre": 450
+        },
+        "floatSwitch": {
+            "pin": 26,
+            "name": "Boia do Reservatorio",
+            "activeLevel": 0
         }
     },
     "moisture": [
@@ -97,5 +107,16 @@
     "history": {
         "records": 1440,
         "periodSec": 60
-    }
+    },
+    "schedules": [
+        {
+            "name": "Example",
+            "relay": 0,
+            "hour": 6,
+            "minute": 30,
+            "days": 127,
+            "durationMs": 10000,
+            "enabled": false
+        }
+    ]
 }

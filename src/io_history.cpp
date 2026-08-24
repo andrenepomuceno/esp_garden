@@ -183,6 +183,113 @@ IoHistory::append(const IoRecord& record)
     return ok;
 }
 
+// Reads one record by logical index. Caller holds the mutex.
+bool
+IoHistory::readAt(File& file, uint32_t index, IoRecord& out) const
+{
+    const uint32_t slot =
+      ring::slotOf(index, header.head, header.stored, header.capacity);
+    if (!file.seek(IO_HISTORY_HEADER_SIZE + slot * (uint32_t)sizeof(IoRecord))) {
+        return false;
+    }
+    return file.read((uint8_t*)&out, sizeof(IoRecord)) == (int)sizeof(IoRecord);
+}
+
+uint32_t
+IoHistory::lowerBound(uint32_t sinceEpoch)
+{
+    if (!initialised || header.stored == 0) {
+        return 0;
+    }
+
+    if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
+        return 0;
+    }
+
+    File file = fs->open(IO_HISTORY_FILE, FILE_READ);
+    if (file == false) {
+        xSemaphoreGive(mutex);
+        return 0;
+    }
+
+    uint32_t lo = 0, hi = header.stored; // answer lives in [lo, hi]
+    IoRecord record;
+    while (lo < hi) {
+        const uint32_t mid = lo + (hi - lo) / 2;
+        if (!readAt(file, mid, record)) {
+            break;
+        }
+        if (record.timestamp < sinceEpoch) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+
+    file.close();
+    xSemaphoreGive(mutex);
+    return lo;
+}
+
+size_t
+IoHistory::readDecimated(IoRecord* out, size_t maxPoints, uint32_t fromIndex,
+                         uint32_t* strideOut)
+{
+    if (strideOut) {
+        *strideOut = 1;
+    }
+    if (!initialised || out == nullptr || maxPoints == 0) {
+        return 0;
+    }
+
+    if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
+        return 0;
+    }
+
+    if (fromIndex >= header.stored) {
+        xSemaphoreGive(mutex);
+        return 0;
+    }
+
+    const uint32_t span = header.stored - fromIndex;
+    // Ceiling division: with 1440 records and 200 points the stride is 8, and
+    // the newest record must still be the last one returned.
+    uint32_t stride = (span + (uint32_t)maxPoints - 1) / (uint32_t)maxPoints;
+    if (stride == 0) {
+        stride = 1;
+    }
+    if (strideOut) {
+        *strideOut = stride;
+    }
+
+    File file = fs->open(IO_HISTORY_FILE, FILE_READ);
+    if (file == false) {
+        xSemaphoreGive(mutex);
+        return 0;
+    }
+
+    size_t got = 0;
+    // Walk backwards from the newest so the last sample is always present —
+    // striding forwards would drop it whenever span is not a multiple.
+    for (uint32_t back = 0; back < span && got < maxPoints; back += stride) {
+        const uint32_t index = header.stored - 1 - back;
+        if (!readAt(file, index, out[got])) {
+            break;
+        }
+        ++got;
+    }
+    file.close();
+    xSemaphoreGive(mutex);
+
+    // Collected newest-first; the callers all want oldest-first.
+    for (size_t i = 0; i < got / 2; ++i) {
+        IoRecord tmp = out[i];
+        out[i] = out[got - 1 - i];
+        out[got - 1 - i] = tmp;
+    }
+    return got;
+}
+
 size_t
 IoHistory::read(IoRecord* out, size_t limit, uint32_t offset)
 {
@@ -219,14 +326,7 @@ IoHistory::read(IoRecord* out, size_t limit, uint32_t offset)
 
     size_t got = 0;
     for (size_t i = 0; i < wanted; ++i) {
-        const uint32_t slot = ring::slotOf(
-          skip + (uint32_t)i, header.head, header.stored, header.capacity);
-        if (!file.seek(IO_HISTORY_HEADER_SIZE +
-                       slot * (uint32_t)sizeof(IoRecord))) {
-            break;
-        }
-        if (file.read((uint8_t*)&out[got], sizeof(IoRecord)) !=
-            (int)sizeof(IoRecord)) {
+        if (!readAt(file, skip + (uint32_t)i, out[got])) {
             break;
         }
         ++got;

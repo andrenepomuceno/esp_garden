@@ -66,6 +66,17 @@ class IoHistory
     static const uint32_t kNewest = 0xFFFFFFFFUL;
     size_t read(IoRecord* out, size_t limit, uint32_t offset = kNewest);
 
+    // Logical index of the oldest record stamped at or after `sinceEpoch`, or
+    // stored() when every record is older. Binary search: records are written
+    // in time order, so logical index is monotonic in timestamp.
+    uint32_t lowerBound(uint32_t sinceEpoch);
+
+    // Copies at most `maxPoints` records from `fromIndex` to the newest,
+    // striding evenly so a 24 h window fits a 200-point response. Returns how
+    // many, oldest first, and reports the stride used.
+    size_t readDecimated(IoRecord* out, size_t maxPoints, uint32_t fromIndex,
+                         uint32_t* strideOut);
+
     uint16_t capacity() const { return header.capacity; }
     uint32_t stored() const { return header.stored; }
     bool ready() const { return initialised; }
@@ -76,6 +87,7 @@ class IoHistory
     bool initialised = false;
 
     bool format(uint16_t capacity);
+    bool readAt(File& file, uint32_t index, IoRecord& out) const;
 
     // append() runs on loop(); read() runs on the async_tcp task. Both touch
     // the same header and the same file, so without this a request landing

@@ -32,6 +32,15 @@ extern unsigned g_dhtTotalReads;
 extern AccumulatorV2 g_waterLevel;
 #endif
 
+#ifdef HAS_FLOW_SENSOR
+extern AccumulatorV2 g_flowRate;   // litres per minute
+double flowTotalLitres();          // cumulative since boot
+#endif
+
+#ifdef HAS_FLOAT_SWITCH
+bool floatRaised();
+#endif
+
 extern time_t g_bootTime;
 extern bool g_hasInternet;
 extern unsigned g_packagesSent;

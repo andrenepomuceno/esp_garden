@@ -12,6 +12,7 @@
   var records = [];
   var offset = null;      // null = newest page
   var stored = 0;
+  var windowSec = 86400;  // 1d
   // Relay labels come from /data.json's Relays array — the payload CLAUDE.md
   // names as the addressing contract. Hardcoding them mislabels a renamed
   // relay and invents rows on a one-relay board.
@@ -309,9 +310,10 @@
   }
 
   function load() {
-    var limit = parseInt($('#select-limit').val(), 10);
-    var url = '/history.json?limit=' + limit;
-    if (offset !== null) url += '&offset=' + offset;
+    // The device selects by time and decimates to fit the response cap, so the
+    // page asks for a window and gets an evenly-spaced sample of it rather than
+    // the newest N records of a much longer period.
+    var url = '/history.json?limit=200&window=' + windowSec;
 
     espUI.setStatus('info', 'Loading…');
     $.getJSON(url)
@@ -323,14 +325,21 @@
         for (var i = 0; i < records.length; i++) {
           probeCount = Math.max(probeCount, (records[i].moisture || []).length);
         }
-        $('#range-note').text(
-          'records ' + (offset + 1) + '–' + (offset + data.returned) +
-          ' of ' + stored + ' (capacity ' + data.capacity + ')');
-        // Without paging the newest `limit` were the only records reachable,
-        // so a 1440-record buffer showed its final 14 % and wrote the rest for
-        // nobody.
-        $('#button-older').prop('disabled', offset <= 0);
-        $('#button-newer').prop('disabled', offset + data.returned >= stored);
+        var note = data.returned + ' points of ' + stored + ' stored';
+        if (data.stride > 1) {
+          note += ' (1 in ' + data.stride + ')';
+        }
+        // Say so when the window is longer than anything kept: asking for 30 d
+        // and silently getting 24 h would read as "nothing happened".
+        if (records.length) {
+          var spanSec = records[records.length - 1].t - records[0].t;
+          if (windowSec > spanSec + 120) {
+            note += ' — only ' + Math.round(spanSec / 3600) +
+                    ' h are stored; the buffer holds ' + data.capacity +
+                    ' records';
+          }
+        }
+        $('#range-note').text(note);
         $('#status').empty();
         render();
       })
@@ -350,18 +359,13 @@
       if (records.length) render();
     });
 
-    $('#select-limit').on('change', function () { offset = null; load(); });
-    $('#button-refresh').on('click', function () { offset = null; load(); });
-    $('#button-older').on('click', function () {
-      var limit = parseInt($('#select-limit').val(), 10);
-      offset = Math.max(0, (offset === null ? stored - limit : offset) - limit);
+    $('#window-buttons').on('click', 'button', function () {
+      windowSec = parseInt($(this).data('window'), 10);
+      $('#window-buttons button').removeClass('active');
+      $(this).addClass('active');
       load();
     });
-    $('#button-newer').on('click', function () {
-      var limit = parseInt($('#select-limit').val(), 10);
-      offset = Math.min(Math.max(0, stored - limit), (offset || 0) + limit);
-      load();
-    });
+    $('#button-refresh').on('click', function () { load(); });
     $('#input-table').on('change', function () {
       $('#card-table').toggle(this.checked);
     });

@@ -27,6 +27,12 @@
 #define MOISTURE_SENSOR_COUNT 1
 #endif
 
+// Scheduled waterings held in config.json. Compile-time because they live in a
+// fixed array — no allocation in steady state.
+#ifndef SCHEDULE_COUNT
+#define SCHEDULE_COUNT 8
+#endif
+
 // Relay timing runs on a dedicated FreeRTOS task so a blocking background
 // handler (ping, TalkBack, an MQTT drain) cannot delay switching a pump off.
 #define CRITICAL_TASKS_PERIOD_MS 50

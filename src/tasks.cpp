@@ -44,6 +44,9 @@ DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
 // Period comes from config.historyPeriodSec; this is only the fallback used
 // until tasksSetup() calls setPeriod().
 DECLARE_TASK(history, 60 * 1000);               // 1 min
+// Runs at 20 s so a schedule cannot be missed inside its minute, and fires at
+// most once per minute per schedule.
+DECLARE_TASK(schedules, 20 * 1000);             // 20 s
 DECLARE_TASK(mqtt, 1 * 60 * 1000);              // 1 min
 DECLARE_TASK(talkBack, 1 * 60 * 1000);          // 1 min
 #ifdef HAS_MOISTURE_SENSOR
@@ -141,6 +144,32 @@ AccumulatorV2 g_luminosity(g_mqttTaskPeriod / g_ioTaskPeriod);
 #ifdef HAS_WATER_LEVEL_SENSOR
 #define ADC_TO_WATER_LEVEL(v) (9.0 - 12.0 * sin(4.04 - 1.61 * (3.3 * v / 4095.0)))
 AccumulatorV2 g_waterLevel(g_mqttTaskPeriod / g_ioTaskPeriod);
+#endif
+
+#ifdef HAS_FLOW_SENSOR
+// The ISR does nothing but count. Everything else — rate, totals, logging —
+// happens in the io task, because an ISR that allocates or takes a lock is how
+// an ESP32 ends up in a reset loop.
+static volatile uint32_t g_flowPulses = 0;
+static portMUX_TYPE g_flowMux = portMUX_INITIALIZER_UNLOCKED;
+
+static void IRAM_ATTR
+flowPulseISR()
+{
+    portENTER_CRITICAL_ISR(&g_flowMux);
+    ++g_flowPulses;
+    portEXIT_CRITICAL_ISR(&g_flowMux);
+}
+
+AccumulatorV2 g_flowRate(g_mqttTaskPeriod / g_ioTaskPeriod);
+// Cumulative volume since boot, in litres. Not an accumulator: a running total
+// has no window.
+static double g_flowTotalLitres = 0.0;
+#endif
+
+#ifdef HAS_FLOAT_SWITCH
+// A contact, not a level: one bit, debounced by requiring two agreeing reads.
+static bool g_floatRaised = false;
 #endif
 
 void
@@ -354,6 +383,22 @@ moistureState(unsigned index)
 }
 #endif
 
+#ifdef HAS_FLOW_SENSOR
+double
+flowTotalLitres()
+{
+    return g_flowTotalLitres;
+}
+#endif
+
+#ifdef HAS_FLOAT_SWITCH
+bool
+floatRaised()
+{
+    return g_floatRaised;
+}
+#endif
+
 static void
 ioTaskHandler()
 {
@@ -370,6 +415,34 @@ ioTaskHandler()
 
 #ifdef HAS_WATER_LEVEL_SENSOR
     g_waterLevel.add(ADC_TO_WATER_LEVEL(analogRead(config.waterLevelPin)));
+#endif
+
+#ifdef HAS_FLOW_SENSOR
+    {
+        portENTER_CRITICAL(&g_flowMux);
+        const uint32_t pulses = g_flowPulses;
+        g_flowPulses = 0;
+        portEXIT_CRITICAL(&g_flowMux);
+
+        // The io task runs at a known period, so pulses per tick converts
+        // directly. Litres per minute is the unit a flow meter is specified in.
+        const double litres = (double)pulses / (double)config.flowPulsesPerLitre;
+        g_flowTotalLitres += litres;
+        g_flowRate.add((float)(litres * 60000.0 / (double)g_ioTaskPeriod));
+    }
+#endif
+
+#ifdef HAS_FLOAT_SWITCH
+    {
+        // Two agreeing reads a tick apart: a float bobbing on the surface
+        // chatters, and a single read would report it as level changes.
+        static bool lastRead = false;
+        const bool raised = (digitalRead(config.floatPin) == config.floatActiveLevel);
+        if (raised == lastRead) {
+            g_floatRaised = raised;
+        }
+        lastRead = raised;
+    }
 #endif
 
     // Same task, same thread as the accumulator writes above — the request
@@ -781,6 +854,56 @@ historyTaskHandler()
     ioHistory.append(record);
 }
 
+// Minute-of-epoch of the last firing, per schedule. The task ticks three times
+// a minute, so without this a schedule would fire three times.
+static uint32_t g_scheduleLastFired[SCHEDULE_COUNT] = { 0 };
+
+static void
+schedulesTaskHandler()
+{
+    if (config.scheduleCount == 0) {
+        return;
+    }
+
+    // Local time, and only once NTP has answered: firing on a 1970 clock would
+    // water at an arbitrary moment and then never again.
+    const time_t now = time(NULL);
+    if (now < g_safeTimestamp) {
+        return;
+    }
+
+    struct tm local;
+    if (!localtime_r(&now, &local)) {
+        return;
+    }
+
+    const uint32_t minuteOfEpoch = (uint32_t)(now / 60);
+
+    for (unsigned i = 0; i < config.scheduleCount; ++i) {
+        const Schedule& sch = config.schedules[i];
+        if (!sch.enabled) {
+            continue;
+        }
+        if ((sch.days & (uint8_t)(1u << local.tm_wday)) == 0) {
+            continue;
+        }
+        if (sch.hour != local.tm_hour || sch.minute != local.tm_min) {
+            continue;
+        }
+        if (g_scheduleLastFired[i] == minuteOfEpoch) {
+            continue;
+        }
+
+        g_scheduleLastFired[i] = minuteOfEpoch;
+        logger.info("Schedule '" + sch.name + "' firing " +
+                    config.relayName[sch.relay] + " for " +
+                    String(sch.durationMs) + " ms");
+        // startRelay() applies the same ceiling and the already-running guard
+        // as a manual activation; a schedule gets no privileges.
+        startRelay(sch.relay, sch.durationMs);
+    }
+}
+
 static void
 logBackupTaskHandler()
 {
@@ -799,6 +922,7 @@ tasksSetup()
     g_taskScheduler.addTask(&g_checkInternetTask);
     g_taskScheduler.addTask(&g_logBackupTask);
     g_taskScheduler.addTask(&g_historyTask);
+    g_taskScheduler.addTask(&g_schedulesTask);
     g_taskScheduler.addTask(&g_mqttTask);
     g_taskScheduler.addTask(&g_talkBackTask);
 #ifdef HAS_MOISTURE_SENSOR
@@ -820,6 +944,18 @@ tasksSetup()
 #endif
 
     pinMode(config.buttonPin, INPUT);
+
+#ifdef HAS_FLOW_SENSOR
+    pinMode(config.flowPin, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(config.flowPin), flowPulseISR, FALLING);
+    logger.info("Flow sensor on GPIO " + String(config.flowPin) + ", " +
+                String(config.flowPulsesPerLitre, 1) + " pulses/litre");
+#endif
+#ifdef HAS_FLOAT_SWITCH
+    pinMode(config.floatPin, INPUT_PULLUP);
+    logger.info("Float switch on GPIO " + String(config.floatPin) +
+                ", active " + String(config.floatActiveLevel));
+#endif
 
     // Relay pins were already parked by relayPinsSafeInit() before and after
     // the config load; this only covers the PWM variant's channel setup.
@@ -888,6 +1024,19 @@ tasksSetup()
     g_mqttTask.enableDelayed(g_mqttTaskPeriod);
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
     g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
+
+    if (config.scheduleCount > 0) {
+        g_schedulesTask.enableDelayed(g_schedulesTaskPeriod);
+        for (unsigned i = 0; i < config.scheduleCount; ++i) {
+            const Schedule& sch = config.schedules[i];
+            char when[8];
+            snprintf(when, sizeof(when), "%02u:%02u", sch.hour, sch.minute);
+            logger.info(String("  schedule '") + sch.name + "' " + when + " -> " +
+                        config.relayName[sch.relay] + " " +
+                        String(sch.durationMs) + " ms, days 0b" +
+                        String(sch.days, BIN));
+        }
+    }
 
     // Enabled only when the buffer actually opened: an append into a file that
     // failed to format would log an error every period, forever.

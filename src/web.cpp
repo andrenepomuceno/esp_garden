@@ -140,6 +140,32 @@ webUpdateDataCache()
     addAccumulator(inputsJson, config.waterLevelName.c_str(), g_waterLevel);
 #endif
 
+#ifdef HAS_FLOW_SENSOR
+    addAccumulator(inputsJson, config.flowName.c_str(), g_flowRate);
+    {
+        // A running total has no window, so it does not fit the val/avg/var
+        // shape the other inputs use; it gets its own entry.
+        JSONVar total;
+        total["val"] = String(flowTotalLitres(), 3);
+        total["avg"] = String(flowTotalLitres(), 3);
+        total["var"] = String(0);
+        const String totalName = config.flowName + " Total";
+        inputsJson[totalName.c_str()] = total;
+    }
+#endif
+
+#ifdef HAS_FLOAT_SWITCH
+    {
+        // Binary: reporting a number here would invite a chart of 0s and 1s.
+        JSONVar entry;
+        entry["val"] = String(floatRaised() ? 1 : 0);
+        entry["avg"] = String(floatRaised() ? 1 : 0);
+        entry["var"] = String(0);
+        entry["state"] = floatRaised() ? "Raised" : "Lowered";
+        inputsJson[config.floatName.c_str()] = entry;
+    }
+#endif
+
     JSONVar outputsJson;
     for (unsigned i = 0; i < RELAY_COUNT; ++i) {
         outputsJson[config.relayName[i].c_str()] =
@@ -341,6 +367,11 @@ static const char* const g_secretPaths[][2] = {
     { "wifi", "password" },     { "ota", "password" },
     { "thingSpeak", "apiKey" }, { "talkBack", "apiKey" },
     { "mqtt", "password" },
+    // The ThingsBoard access token is the whole credential and it lives in
+    // mqtt.username, so that field is as sensitive as a password there. It is
+    // also a credential on ThingSpeak. Masking it costs nothing and leaving it
+    // out served the token in plaintext to any admin session.
+    { "mqtt", "username" },
 };
 static const size_t g_secretCount =
   sizeof(g_secretPaths) / sizeof(g_secretPaths[0]);
@@ -558,19 +589,38 @@ handleHistoryJson(AsyncWebServerRequest* request)
         limit = g_historyMaxResponse;
     }
 
-    // Absent, the newest records are returned. Present, it skips that many of
-    // the oldest, which is the only way the rest of a 1440-record buffer is
-    // reachable at all through a 200-record cap.
+    // ?window=<seconds> selects by time and DECIMATES to fit. Without it a 24 h
+    // window is 1440 records against a 200-record cap, so the page could only
+    // ever show the newest 3 h — asking for a day and getting three hours,
+    // silently.
+    static IoRecord buffer[g_historyMaxResponse];
+    size_t count = 0;
+    uint32_t stride = 1;
     uint32_t offset = IoHistory::kNewest;
-    if (request->hasParam("offset")) {
-        const long asked = request->getParam("offset")->value().toInt();
-        if (asked >= 0) {
-            offset = (uint32_t)asked;
-        }
+    long window = 0;
+
+    if (request->hasParam("window")) {
+        window = request->getParam("window")->value().toInt();
     }
 
-    static IoRecord buffer[g_historyMaxResponse];
-    const size_t count = ioHistory.read(buffer, limit, offset);
+    if (window > 0) {
+        const time_t now = time(NULL);
+        // A clock that has not synced would make every record look in-window;
+        // fall back to "everything stored" rather than inventing a range.
+        const uint32_t since =
+          (now > (time_t)window) ? (uint32_t)(now - window) : 0;
+        const uint32_t from = ioHistory.lowerBound(since);
+        count = ioHistory.readDecimated(buffer, limit, from, &stride);
+        offset = from;
+    } else {
+        if (request->hasParam("offset")) {
+            const long asked = request->getParam("offset")->value().toInt();
+            if (asked >= 0) {
+                offset = (uint32_t)asked;
+            }
+        }
+        count = ioHistory.read(buffer, limit, offset);
+    }
 
     String out;
     out.reserve(count * 140 + 128);
@@ -584,6 +634,12 @@ handleHistoryJson(AsyncWebServerRequest* request)
     out += String(offset == IoHistory::kNewest
                     ? (ioHistory.stored() > count ? ioHistory.stored() - count : 0)
                     : offset);
+    // The page needs the stride to say "1 point per 8 minutes" rather than
+    // implying every sample is shown.
+    out += ",\"stride\":";
+    out += String(stride);
+    out += ",\"window\":";
+    out += String(window);
     out += ",\"records\":[";
 
     for (size_t i = 0; i < count; ++i) {

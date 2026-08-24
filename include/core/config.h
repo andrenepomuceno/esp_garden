@@ -4,6 +4,21 @@
 #include <Arduino.h>
 #include <Arduino_JSON.h>
 
+// One scheduled relay activation. `days` is a bitmask with bit 0 = Sunday
+// through bit 6 = Saturday, so 127 is every day and 62 is weekdays. Times are
+// LOCAL, which is why the timezone matters and why a schedule is skipped
+// entirely until NTP has answered.
+struct Schedule
+{
+    bool enabled;
+    uint8_t relay;
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t days;
+    unsigned durationMs;
+    String name;
+};
+
 class ConfigFile
 {
   public:
@@ -77,6 +92,24 @@ class ConfigFile
     float moistureWet[MOISTURE_SENSOR_COUNT];
     uint8_t luminosityPin;
     uint8_t waterLevelPin;
+
+    // Pulse-output flow meter (YF-S201 and friends). pulsesPerLitre is the K
+    // factor from the datasheet; it is per-model and per-plumbing, so it is
+    // configuration rather than a constant.
+    uint8_t flowPin;
+    String flowName;
+    float flowPulsesPerLitre;
+
+    // Float switch: a bare contact, not an analog level. floatActiveLevel is
+    // the logic level that means "float raised"; the input is driven with an
+    // internal pull-up, so a normally-open switch to ground reads 0 when
+    // raised.
+    uint8_t floatPin;
+    String floatName;
+    uint8_t floatActiveLevel;
+
+    Schedule schedules[SCHEDULE_COUNT];
+    unsigned scheduleCount;
 
     // log
     int logLevel;
