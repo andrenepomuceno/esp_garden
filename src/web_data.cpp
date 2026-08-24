@@ -2,6 +2,7 @@
 #include "BuildConfig.h"
 #include "core/accumulator_v2.h"
 #include "core/config.h"
+#include <esp_heap_caps.h>
 #include "core/tasks.h"
 #include "network/thingsboard.h"
 #include "network/web.h"
@@ -101,6 +102,21 @@ webUpdateDataCache()
     }
     statusJson["Packages Sent"] = String(g_packagesSent);
     statusJson["Watering Cycles"] = String(g_wateringCycles);
+    // Heap, because it is the resource that runs out without a trace. This
+    // board has 320 KB of DRAM and no PSRAM; a TLS handshake holds 30-45 KB,
+    // /history.json peaks around 56 KB building its response, and every
+    // Arduino_JSON payload allocates freely. Until these two numbers existed,
+    // a device that stopped responding while someone browsed left nothing to
+    // reason from.
+    //
+    // Free is now; Min Free is the low-water mark since boot — which is the one
+    // that matters, because the spike that kills the device is over by the time
+    // anyone asks.
+    statusJson["Free Heap"] = String(ESP.getFreeHeap() / 1024) + " KB";
+    statusJson["Min Free Heap"] = String(ESP.getMinFreeHeap() / 1024) + " KB";
+    statusJson["Largest Block"] =
+      String(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024) + " KB";
+
     // Surfaced because the filesystem is the resource that silently runs out:
     // the history buffer, the log backups and every web asset share it.
     statusJson["Filesystem"] = String(SPIFFS.usedBytes() / 1024) + " / " +

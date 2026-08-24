@@ -8,6 +8,27 @@
 #include "core/user_store.h"
 #include "network/web.h"
 #include <Arduino.h>
+#include <esp_system.h>
+
+// esp_reset_reason() returns an enum; the names are worth spelling out because
+// the number alone sends the reader to a header.
+static const char*
+resetReasonName()
+{
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:  return "power-on";
+        case ESP_RST_EXT:      return "external reset pin";
+        case ESP_RST_SW:       return "software (ESP.restart)";
+        case ESP_RST_PANIC:    return "PANIC or exception";
+        case ESP_RST_INT_WDT:  return "interrupt watchdog";
+        case ESP_RST_TASK_WDT: return "task watchdog";
+        case ESP_RST_WDT:      return "other watchdog";
+        case ESP_RST_DEEPSLEEP:return "deep sleep wake";
+        case ESP_RST_BROWNOUT: return "BROWNOUT (supply dipped)";
+        case ESP_RST_SDIO:     return "SDIO";
+        default:               return "unknown";
+    }
+}
 
 void
 setup(void)
@@ -28,6 +49,12 @@ setup(void)
     logger.info("Initializing ESP Garden " FW_VERSION "...");
 
     digitalWrite(LED_BUILTIN, 1);
+
+    // Why the last boot happened. A panic, a watchdog and a power cut are
+    // three completely different investigations, and without this line all
+    // three look identical: "it restarted".
+    logger.info(String("Reset reason: ") + resetReasonName());
+    logger.info("Free heap at boot: " + String(ESP.getFreeHeap() / 1024) + " KB");
 
     unsigned id = ESP.getEfuseMac() % 0x10000;
     logger.info("ID: " + String(id, 16));
