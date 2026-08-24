@@ -101,6 +101,21 @@ that has been formatted to look like a fact.
   relay expired.
 - **The vendored `bootstrap.css.gz`** — served from the device at 29 899 bytes.
   No page reaches a CDN any more.
+- **The moisture classifier's TRAINING pass, on real data** (2026-08-24
+  08:22). One watering of Zona 2 — a relay run by hand to test the OTA guard —
+  was detected as a single rising edge, and the 33 readings inside the 60-minute
+  window before it were labelled DRY:
+
+  ```
+  [moisture] probe 1: +1 events (1 total), J=0.0, dry/humid/wet = 57.1/0.0/0.0
+  [moisture] trained on 56 records, 33 samples, 0 outliers dropped
+  ```
+
+  Humid and wet stayed empty, which is the consumption window working: the
+  cycle that event opened is not complete until the NEXT watering bounds it, so
+  everything after it waits. The gates then refused the probe at 1 of 6 events.
+  What is verified is the labelling, the window and the refusal. What is still
+  not is a **complete** cycle, and with it the first non-empty WET class.
 - **The `IoRecord` layout change** — the 40 → 48 byte growth was detected by
   the header check and the buffer reformatted rather than being misread:
   `io_history: incompatible or corrupt file, recreating` →
@@ -114,12 +129,7 @@ that has been formatted to look like a fact.
 - **ThingsBoard FOTA.** No package has ever been assigned. The chunk stream,
   the MD5 verification, the relay-idle deferral and the 409 interlock against
   the browser path are all unexercised.
-- **The moisture classifier's TRAINING pass on real data.** The maths has 12
-  host tests and the endpoint answers on the device, but `moistureModelTrain()`
-  has never run against a real history buffer — the buffer was reformatted
-  empty at 2026-08-24 07:05 and no probe has yet accumulated the 6 watering
-  events its first model needs. Expect nothing before roughly a week of
-  watering.
+
 - **The reservoir interlock.** `floatInterlock` is off, and the float switch is
   not wired.
 - **The flow meter.** Not wired. `flowPulsesPerLitre` is a datasheet number, not
@@ -339,6 +349,16 @@ Facts worth knowing before touching it:
 **There is no default password compiled into the firmware.** `UserStore::load()` seeds the first account by migrating `config.json`'s `ota.username` / `ota.password` into `/users.json` as ADMIN (salted SHA-256). A device whose config never loaded has no users, logs a FATAL, and the web UI is unreachable by design.
 
 **Registration order is load-bearing.** ESPAsyncWebServer matches handlers in the order added, and `AsyncURIMatcher::prefix` is a prefix match — the 403 shadows for `/spiffs/users`, `/spiffs/sessions` and `/spiffs/config` must stay *above* the `serveStatic("/spiffs", …)` line, or the credential store, the live bearer tokens and the plaintext WiFi/MQTT passwords are served to any admin session.
+
+**TRAP — an OTA client that times out has NOT necessarily failed.** A 1.2 MB
+upload takes minutes; the device writes, verifies the MD5 and reboots, and by
+then the HTTP connection the client was waiting on is long gone. Reading the
+version 30 seconds after arming reports the OLD firmware because the old
+firmware is still the one running. Both happened here and the second was
+misdiagnosed as a failed flash. **Confirm by polling until the version changes
+or the uptime resets, not by the upload's return value** — and run the upload
+in the background, because a 10-minute tool timeout landing mid-write is how
+this session already corrupted a filesystem once.
 
 OTA details: `/updateEnable` arms a module-level `g_otaEnabled` which `handleUpdateRequest` clears again, so one arm buys one upload. `handleUpdateUpload` picks `U_SPIFFS` when the uploaded *filename* is exactly `filesystem`, else `U_FLASH`; `data/update.js` renames the file to the selected radio value (`firmware` | `filesystem`) and sends an `MD5` form field computed client-side with SparkMD5. On success the device `delay(500)` then `ESP.restart()`.
 
