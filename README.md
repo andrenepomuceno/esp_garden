@@ -474,13 +474,16 @@ python scripts/moisture_calibration.py --dry 94.0 --wet 12.0        # emit bands
 
 | Page | Role | What it does |
 |---|---|---|
-| `/` | any signed-in user | Sensors, relay buttons, logs |
+| `/` (`index.html`) | any signed-in user | Sensors, relay buttons, logs |
 | `/config.html` | ADMIN | Edit the configuration in tabs; secrets stay masked |
 | `/users.html` | ADMIN | Add, edit and remove accounts and roles |
 | `/update.html` | ADMIN | Firmware and filesystem OTA |
 | `/history.html` | any signed-in user | Charts over 1 h / 6 h / 12 h / 1 d / 7 d / 30 d |
 | `/devices.html` | ADMIN | Add, remove, name and re-pin the relays, the moisture probes and their calibration, and the single-instance sensors |
 | `/schedules.html` | ADMIN | Timed relay activations |
+| `/moisture.html` | any signed-in user | The classifier's inference and its fitted parameters |
+
+![Local web UI](docs/ui.png)
 | `/moisture.html` | any signed-in user | The moisture model per probe: class means, weights, separation, live classification, and which gate blocks a probe that reports nothing |
 
 Two endpoint behaviours worth knowing, because neither has a button:
@@ -491,6 +494,18 @@ Two endpoint behaviours worth knowing, because neither has a button:
   restored — every credential comes back as eight asterisks and the loss only
   surfaces at the next boot, as a device that cannot join the network. The
   export is logged with the caller's IP.
+- **`POST /spiffs/upload`** (ADMIN) replaces **one file** instead of rewriting
+  the partition. Use it whenever only files under `data/` changed: a filesystem
+  deploy wipes `/config.json`, the history ring and the moisture model along
+  with the web assets, so a one-line CSS change costs the device its
+  credentials, its 24 h of history and its watering-event count. Send the file
+  as a multipart upload whose **filename is the destination path**, with an
+  `MD5` form field; the bytes land in a temp file and are moved into place only
+  once the checksum matches, so a dropped connection cannot leave half a file
+  in production. `/users*`, `/sessions*` and `/config*` are refused.
+- **`POST /spiffs/delete`** (ADMIN) removes one file, refusing exactly what the
+  upload refuses — nothing there may delete the file that lets you undo a
+  mistake made there.
 - **`GET /history.json?window=<seconds>`** selects by time and decimates to fit
   `limit`, returning the `stride` it used. Without it a 24 h window is 1440
   records against a 200-record cap, so the page would silently show only the
@@ -638,16 +653,6 @@ TalkBack, an MQTT drain) stalls every other background task for its duration.
 ## Live Data
 
 [ThingSpeak Live Data](https://thingspeak.com/channels/1348790)
-
-## Photos
-
-### Third Generation Prototype
-
-![Third Generation Prototype](docs/prototype3.jpeg)
-
-### Local Web Interface
-
-![Local web UI](docs/ui.png)
 
 ## Useful Links
 

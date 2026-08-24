@@ -14,21 +14,21 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 
 | Layer | Path | Role |
 |---|---|---|
-| Entry point | `src/main.cpp` (79 lines) | Relay safe-init, device id, SPIFFS, config, logger backup, `webSetup()`, `tasksSetup()` |
-| Orchestration | `src/tasks.cpp` (621) | **The single task-registration site.** Every `DECLARE_TASK`, every handler body, `tasksSetup()`, `tasksLoop()`, schedules, connectivity |
-| Relays | `src/relays.cpp` (214) | Relay state under `g_relayMux`, `startRelay`/`stopRelay`/`startWatering`, the 50 ms critical tick |
-| Sensors | `src/sensors.cpp` (238) | Every ADC read, the flow ISR, the float switch, the DHT, `moistureState()` |
-| Telemetry | `src/telemetry.cpp` (201) | ThingSpeak field constants, `mqttAddField`, the ThingsBoard payload, the publish queue |
+| Entry point | `src/main.cpp` (108 lines) | Relay safe-init, device id, SPIFFS, config, logger backup, `webSetup()`, `tasksSetup()` |
+| Orchestration | `src/tasks.cpp` (707) | **The single task-registration site.** Every `DECLARE_TASK`, every handler body, `tasksSetup()`, `tasksLoop()`, schedules, connectivity |
+| Relays | `src/relays.cpp` (259) | Relay state under `g_relayMux`, `startRelay`/`stopRelay`/`startWatering`, the 50 ms critical tick |
+| Sensors | `src/sensors.cpp` (285) | Every ADC read, the flow ISR, the float switch, the DHT, `moistureState()` |
+| Telemetry | `src/telemetry.cpp` (224) | ThingSpeak field constants, `mqttAddField`, the ThingsBoard payload, the publish queue |
 | Config | `src/config.cpp` (676), `include/core/config.h` | `ConfigFile` singleton + `g_*` reference aliases for the non-pin fields |
 | Config — pins | `src/config_pins.cpp` | What a WROOM-32 GPIO can do, and the boot-time audit that applies it. One place, three consumers |
 | Config — `io` | `src/config_io.cpp` | Parsers for the `io` block, where every entry accepts several shapes so a field device keeps loading after a firmware update |
 | Config — save | `src/config_document.cpp` | Whole-document validation before a write: the save-time counterpart of `loadFile()` |
 | Logging | `src/logger.cpp` | Level-filtered singleton, 8 KB rolling RAM buffer, SPIFFS backup rotating over 4 files |
-| Web | `src/web.cpp` (430) | WiFi events, mDNS, `AsyncWebServer`, **the route table**, `/control`, `/logs`, `/history.json` |
+| Web | `src/web.cpp` (455) | WiFi events, mDNS, `AsyncWebServer`, **the route table**, `/control`, `/logs`, `/history.json` |
 | Web handlers | `src/web_data.cpp`, `web_config.cpp`, `web_ota.cpp`, `web_users.cpp` | `/data.json` cache · masked `GET`/`POST /config.json` · browser OTA · `/users.json` |
 | Auth | `src/custom_login.cpp`, `src/user_store.cpp` | Nonce + SHA-256 login, role middleware, per-IP lockout, `/users.json`, `/sessions.json` — ported from fullbot |
 | MQTT | `src/mqtt.cpp` | Transport only: `PubSubClient` over TLS or plain, reconnect backoff, buffer sizing. `mqtt.backend` picks ThingSpeak `channels/<id>/publish` or ThingsBoard `v1/devices/me/telemetry` |
-| ThingsBoard | `src/thingsboard.cpp` (698) | The downlink half: client/shared attributes, two-way RPC, the chunked `v2/fw` firmware stream |
+| ThingsBoard | `src/thingsboard.cpp` (729) | The downlink half: client/shared attributes, two-way RPC, the chunked `v2/fw` firmware stream |
 | Versions | `src/fw_version.cpp` | Semantic-version compare — the check deciding whether a cloud image is flashed. Host-tested |
 | TalkBack | `src/talkback.cpp` | Hand-rolled HTTP/1.1 POST to `api.thingspeak.com` (**plain HTTP, port 80**) |
 | History | `src/io_history.cpp`, `include/core/ring_index.h` | Fixed-size ring buffer of I/O snapshots on SPIFFS, served by `/history.json` |
