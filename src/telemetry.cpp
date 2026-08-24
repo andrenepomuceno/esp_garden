@@ -9,19 +9,15 @@
 #include <Arduino_JSON.h>
 #include <list>
 
-// Second soil probe. Field 4 is free only on a board without a water level
-// sensor; where both exist the slot has to be chosen deliberately, because
-// reusing a number rewrites the meaning of everything already stored under it.
-// Set -D MOISTURE2_FIELD=<n> in platformio.ini to pick one; leaving it unset
-// keeps the probe on the dashboard and out of the cloud.
-#if (MOISTURE_SENSOR_COUNT > 1) && !defined(MOISTURE2_FIELD) &&                \
-  !defined(HAS_WATER_LEVEL_SENSOR)
-#define MOISTURE2_FIELD 4
-#endif
-
-#if (MOISTURE_SENSOR_COUNT > 1) && !defined(MOISTURE2_FIELD)
-#warning "Second soil probe is dashboard-only: no ThingSpeak field assigned (set -D MOISTURE2_FIELD=<n>)."
-#endif
+// Second soil probe on ThingSpeak: config.thingSpeakMoisture2Field, 0 to keep
+// it off. This is configuration and not a build flag because the answer is
+// per-device -- field 4 is free on a board without a water level sensor and
+// taken on a board with one -- and because reusing a number rewrites the
+// meaning of everything already stored under it, which is a decision for
+// whoever owns the channel, not for whoever runs the compiler.
+//
+// Probes 3 and beyond have no ThingSpeak field at all. Eight fields is the
+// ceiling, and it is the reason this firmware also speaks ThingsBoard.
 
 static String g_mqttMessage = "";
 
@@ -52,8 +48,7 @@ buildThingsBoardPayload()
 {
     JSONVar telemetry;
 
-#ifdef HAS_MOISTURE_SENSOR
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
         if (g_soilMoisture[i].getSamples() == 0) {
             continue; // never sampled: sending 0 would read as a real value
         }
@@ -66,13 +61,9 @@ buildThingsBoardPayload()
             telemetry[stateKey.c_str()] = state;
         }
     }
-#endif
-#ifdef HAS_LUMINOSITY_SENSOR
     if (g_luminosity.getSamples() > 0) {
         telemetry["luminosity"] = (double)g_luminosity.getAverage();
     }
-#endif
-#ifdef HAS_DHT_SENSOR
     if (g_temperature.getSamples() > 0) {
         telemetry["temperature"] = (double)g_temperature.getAverage();
     }
@@ -83,13 +74,9 @@ buildThingsBoardPayload()
         telemetry["dhtErrorRate"] =
           (double)g_dhtReadErrors * 100.0 / (double)g_dhtTotalReads;
     }
-#endif
-#ifdef HAS_WATER_LEVEL_SENSOR
     if (g_waterLevel.getSamples() > 0) {
         telemetry["waterLevel"] = (double)g_waterLevel.getAverage();
     }
-#endif
-#ifdef HAS_FLOW_SENSOR
     // The cumulative total only exists in RAM and resets on every reboot, so
     // without publishing it the questions a flow meter is installed to answer —
     // how much did last night's watering actually deliver, is the line dripping
@@ -100,13 +87,10 @@ buildThingsBoardPayload()
         telemetry["flowRate"] = (double)g_flowRate.getAverage();
     }
     telemetry["flowTotalLitres"] = (double)flowTotalLitres();
-#endif
-#ifdef HAS_FLOAT_SWITCH
     telemetry["reservoirRaised"] = floatRaised();
-#endif
 
     uint16_t mask = 0;
-    for (unsigned i = 0; i < RELAY_COUNT && i < 16; ++i) {
+    for (unsigned i = 0; i < config.relayCount && i < 16; ++i) {
         const String key = "relay" + String(i + 1);
         const bool on = relayIsOn(i);
         telemetry[key.c_str()] = on;
@@ -146,29 +130,35 @@ telemetryPublish()
         g_mqttMessage = ""; // the ThingSpeak accumulator is unused here
     } else {
 
-#ifdef HAS_MOISTURE_SENSOR
-        mqttAddField(g_soilMoistureField,
-                     FLOAT_TO_STRING(g_soilMoisture[0].getAverage()));
-#if (MOISTURE_SENSOR_COUNT > 1) && defined(MOISTURE2_FIELD)
-        mqttAddField(MOISTURE2_FIELD,
-                     FLOAT_TO_STRING(g_soilMoisture[1].getAverage()));
-#endif
-#endif
+        // A field is only sent when the sensor behind it is fitted. Sending a
+        // never-fed accumulator would publish 0.00 as though it were a
+        // reading, and on ThingSpeak an absent field and a zero are stored very
+        // differently: the first leaves a gap, the second becomes history.
+        if (config.moistureCount > 0) {
+            mqttAddField(g_soilMoistureField,
+                         FLOAT_TO_STRING(g_soilMoisture[0].getAverage()));
+        }
+        if (config.moistureCount > 1 && config.thingSpeakMoisture2Field > 0) {
+            mqttAddField(config.thingSpeakMoisture2Field,
+                         FLOAT_TO_STRING(g_soilMoisture[1].getAverage()));
+        }
 
-#ifdef HAS_LUMINOSITY_SENSOR
-        mqttAddField(g_luminosityField, FLOAT_TO_STRING(g_luminosity.getAverage()));
-#endif
+        if (config.luminosityFitted) {
+            mqttAddField(g_luminosityField,
+                         FLOAT_TO_STRING(g_luminosity.getAverage()));
+        }
 
-#ifdef HAS_DHT_SENSOR
-        mqttAddField(g_temperatureField,
-                     FLOAT_TO_STRING(g_temperature.getAverage()));
-        mqttAddField(g_airHumidityField,
-                     FLOAT_TO_STRING(g_airHumidity.getAverage()));
-#endif
+        if (config.dhtFitted) {
+            mqttAddField(g_temperatureField,
+                         FLOAT_TO_STRING(g_temperature.getAverage()));
+            mqttAddField(g_airHumidityField,
+                         FLOAT_TO_STRING(g_airHumidity.getAverage()));
+        }
 
-#ifdef HAS_WATER_LEVEL_SENSOR
-        mqttAddField(g_waterLevelField, FLOAT_TO_STRING(g_waterLevel.getAverage()));
-#endif
+        if (config.waterLevelFitted) {
+            mqttAddField(g_waterLevelField,
+                         FLOAT_TO_STRING(g_waterLevel.getAverage()));
+        }
 
         mqttAddField(g_pingField, String(g_pingTime.getAverage()));
 

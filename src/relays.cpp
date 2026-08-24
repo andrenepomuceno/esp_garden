@@ -13,7 +13,7 @@ static const unsigned g_wateringPWMChannel = 0;
 static const unsigned g_wateringPWMTime = 2 * 1000;
 #endif
 
-static RelayState g_relay[RELAY_COUNT] = {};
+static RelayState g_relay[RELAY_MAX] = {};
 
 portMUX_TYPE g_relayMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -24,6 +24,14 @@ unsigned g_wateringCycles = 0;
 static void
 relayWrite(unsigned index, bool on)
 {
+    // A declared relay with no "pin" key keeps the sentinel, and the config
+    // editor produces exactly that for a row left blank. Without this check
+    // the index bound passes, startRelay() reports success and the dashboard
+    // counts down a relay while digitalWrite(255, ...) does nothing.
+    if (config.relayPin[index] == ConfigFile::kNoPin) {
+        return;
+    }
+
     const uint8_t level = on ? config.relayPinOn[index] : !config.relayPinOn[index];
 
 #if USE_WATERING_PWM
@@ -51,7 +59,7 @@ relaysSetup()
 void
 relaysTick()
 {
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+    for (unsigned i = 0; i < config.relayCount; ++i) {
         bool expired = false;
 
         portENTER_CRITICAL(&g_relayMux);
@@ -77,7 +85,7 @@ relaysTick()
 bool
 relayIsOn(unsigned index)
 {
-    if (index >= RELAY_COUNT) {
+    if (index >= config.relayCount) {
         return false;
     }
 
@@ -91,7 +99,7 @@ relayIsOn(unsigned index)
 unsigned long
 relayRemaining(unsigned index)
 {
-    if (index >= RELAY_COUNT) {
+    if (index >= config.relayCount) {
         return 0;
     }
 
@@ -110,8 +118,14 @@ relayRemaining(unsigned index)
 bool
 startRelay(unsigned index, unsigned int duration)
 {
-    if (index >= RELAY_COUNT) {
+    if (index >= config.relayCount) {
         logger.error("Invalid relay index: " + String(index));
+        return false;
+    }
+
+    if (config.relayPin[index] == ConfigFile::kNoPin) {
+        logger.error(config.relayName[index] +
+                     " has no pin assigned; refusing to start it.");
         return false;
     }
 
@@ -167,7 +181,7 @@ startRelay(unsigned index, unsigned int duration)
 bool
 stopRelay(unsigned index)
 {
-    if (index >= RELAY_COUNT) {
+    if (index >= config.relayCount) {
         logger.error("Invalid relay index: " + String(index));
         return false;
     }

@@ -7,9 +7,11 @@
 #include "core/tasks.h"
 #include "network/custom_login.h"
 #include "network/web.h"
+#include "network/web_capabilities.h"
 #include "network/web_config.h"
 #include "network/web_data.h"
 #include "network/web_files.h"
+#include "network/web_moisture.h"
 #include "network/web_ota.h"
 #include "network/web_users.h"
 #include <AsyncTCP.h>
@@ -310,6 +312,15 @@ webSetup()
     // Vendored so the pages work with the WAN down. The config page in
     // particular exists to fix a device that cannot reach the internet, and
     // with jQuery on a CDN it rendered blank in exactly that situation.
+    // Bootstrap, vendored. Every page used to pull it from jsdelivr, which
+    // made the dashboard degrade to unstyled HTML exactly when it matters — on
+    // a device whose whole purpose is surviving a connectivity loss. The
+    // bundle's JS went away entirely: nothing here uses a modal, a dropdown or
+    // any other component that needs it.
+    //
+    // Only the .gz exists on the filesystem; AsyncFileResponse finds it and
+    // sets Content-Encoding itself, which is the same trick jquery.js uses.
+    servePublicFile("/bootstrap.css", "/bootstrap.css", "text/css");
     servePublicFile("/jquery.js", "/jquery.js", "application/javascript");
     servePublicFile("/spark-md5.js", "/spark-md5.js", "application/javascript");
     servePublicFile("/sha256.js", "/sha256.js", "application/javascript");
@@ -321,9 +332,17 @@ webSetup()
     servePublicFile("/history.html", "/history.html", "text/html");
     servePublicFile("/history.js", "/history.js", "application/javascript");
     servePublicFile("/devices.html", "/devices.html", "text/html");
+    // Load order matters: devices.js calls into both modules from its ready
+    // handler, and the page loads them as plain <script> tags with no module
+    // system. Registering them is not optional — the allow-list is exhaustive,
+    // so a file that is not here 404s.
+    servePublicFile("/devices_model.js", "/devices_model.js", "application/javascript");
+    servePublicFile("/devices_render.js", "/devices_render.js", "application/javascript");
     servePublicFile("/devices.js", "/devices.js", "application/javascript");
     servePublicFile("/schedules.html", "/schedules.html", "text/html");
     servePublicFile("/schedules.js", "/schedules.js", "application/javascript");
+    servePublicFile("/moisture.html", "/moisture.html", "text/html");
+    servePublicFile("/moisture.js", "/moisture.js", "application/javascript");
     servePublicFile("/update.html", "/update.html", "text/html");
     servePublicFile("/update.js", "/update.js", "application/javascript");
     servePublicFile("/favicon.ico", "/favicon.ico", "image/x-icon");
@@ -348,6 +367,10 @@ webSetup()
     g_webServer.on("/data.json", HTTP_GET, handleDataJson)
       .addMiddleware(&authenticated);
     g_webServer.on("/history.json", HTTP_GET, handleHistoryJson)
+      .addMiddleware(&authenticated);
+    g_webServer.on("/capabilities.json", HTTP_GET, handleCapabilitiesJson)
+      .addMiddleware(&authenticated);
+    g_webServer.on("/moisture.json", HTTP_GET, handleMoistureJson)
       .addMiddleware(&authenticated);
     g_webServer.on("/control", HTTP_POST, handleControl)
       .addMiddleware(operatorOnly);
@@ -393,6 +416,8 @@ webSetup()
 #else
     g_webServer.on("/data.json", HTTP_GET, handleDataJson);
     g_webServer.on("/history.json", HTTP_GET, handleHistoryJson);
+    g_webServer.on("/capabilities.json", HTTP_GET, handleCapabilitiesJson);
+    g_webServer.on("/moisture.json", HTTP_GET, handleMoistureJson);
     g_webServer.on("/control", HTTP_POST, handleControl);
     g_webServer.on("/logs", HTTP_GET, handleLogs);
     g_webServer.on("/updateEnable", HTTP_POST, handleUpdateEnable);

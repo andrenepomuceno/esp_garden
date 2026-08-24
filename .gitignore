@@ -7,3 +7,5 @@ data/config.json
 include/config.backup.h
 backups/
 
+# dev_server.py imports its sim_* siblings now, so Python caches them here.
+__pycache__/

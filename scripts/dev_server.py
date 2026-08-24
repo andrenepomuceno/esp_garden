@@ -12,6 +12,10 @@ Usage:
     python scripts/dev_server.py --host 0.0.0.0
 
 No external dependencies — only the Python standard library.
+
+The simulated device, its login, its stored documents and the moisture model
+live in the sim_*.py modules beside this file; what stays here is the HTTP
+layer that dispatches to them.
 """
 
 from __future__ import annotations
@@ -19,19 +23,24 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import os
-import random
 import re
-import secrets
 import threading
 import time
-from collections import deque
-from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+# Plain sibling modules: this file is run as a script, so scripts/ is sys.path[0].
+# sim_moisture is imported as a module as well, because main() has to write back
+# into its MOISTURE_SCENARIO global.
+import sim_moisture
+from sim_auth import AUTH, AuthSim
+from sim_config import (SIM_CONFIG, SIM_USERS, config_apply, config_masked,
+                        users_apply)
+from sim_moisture import moisture_scenario_names, moisture_snapshot
+from sim_state import STATE, _ticker
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -47,528 +56,6 @@ CONTENT_TYPES = {
     ".pem": "text/plain; charset=utf-8",
 }
 
-
-class DeviceState:
-    """In-memory simulation of the ESP Garden device state."""
-
-    LOG_CAPACITY = 400
-
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.boot_time = time.time()
-        self.hostname = "espgarden-sim"
-        self.channel = "1348790"
-        self.mqtt_enabled = True
-        self.packages_sent = 0
-        self.watering_cycles = 0
-        self.connection_loss_count = 0
-        self.dht_total_reads = 0
-        self.dht_read_errors = 0
-        self.logs: deque[str] = deque(maxlen=self.LOG_CAPACITY)
-
-        # Mirrors the on-device ring buffer in src/io_history.cpp. A deque with
-        # maxlen IS a ring buffer, so the simulator gets the same drop-oldest
-        # behaviour without the file. Capacity and period come from the same
-        # config block the device reads — hardcoding them let the simulator
-        # report a capacity the device would never return.
-        history_cfg = SIM_CONFIG.get("history", {})
-        self.history_capacity = int(history_cfg.get("records", 1440))
-        # records = 0 means disabled on the device, where /history.json answers
-        # 503. Coercing it to 1 here made that branch unreachable in the UI.
-        self.history_enabled = self.history_capacity > 0
-        self.history: deque[dict] = deque(
-            maxlen=self.history_capacity if self.history_enabled else 1)
-        self.history_period_s = int(history_cfg.get("periodSec", 60))
-        self._history_next = 0.0
-
-        # Mirrors config.io.relays. Index 0 is the watering relay, as in the
-        # firmware — TalkBack and the legacy `watering` control target it.
-        self.relay_names = ["Watering", "Relay 2", "Relay 3", "Relay 4"]
-        self.relays = [{"on": 0, "until": 0.0} for _ in self.relay_names]
-
-        # Sensor accumulators: rolling state to fake sensible averages/variance.
-        self._sensors = {
-            "Soil Moisture 1": _Sensor(45.0, amplitude=8.0, period=900, noise=1.5),
-            "Soil Moisture 2": _Sensor(38.0, amplitude=6.0, period=1100, noise=1.5),
-            "Soil Moisture 3": _Sensor(52.0, amplitude=7.0, period=1300, noise=1.5),
-            "Luminosity":      _Sensor(55.0, amplitude=35.0, period=120, noise=4.0),
-            "Temperature":     _Sensor(25.5, amplitude=3.0, period=1800, noise=0.4),
-            "Air Humidity":    _Sensor(70.0, amplitude=8.0, period=2400, noise=1.5),
-            "Water Level":     _Sensor(6.0, amplitude=2.0, period=3600, noise=0.2),
-            "Flow":            _Sensor(0.0, amplitude=0.0, period=60, noise=0.0),
-        }
-        # Cumulative litres and the reservoir float. Neither fits the
-        # val/avg/var accumulator shape, so both are built by hand in
-        # snapshot() exactly as src/web_data.cpp builds them.
-        self.flow_total_litres = 0.0
-        self.float_raised = True
-
-        self._seed_history()
-        self.log("info", "Simulator booted")
-
-    def _seed_history(self) -> None:
-        """Backdated records so the charts are testable immediately.
-
-        Without this the deque starts empty and gains one record per period:
-        every path the history page adds — gap breaking, the crosshair index
-        map, the relay run-length strip — is unreachable for hours.
-        """
-        if not self.history_enabled:
-            return
-        import math as _math
-        now = time.time()
-        # Fill the whole buffer. 400 records is 6.7 h at the default period, so
-        # the 12 h / 1 d / 7 d / 30 d window buttons all collapsed onto the same
-        # data and decimation never engaged — the one behaviour the window
-        # selector exists to exercise.
-        count = self.history_capacity
-        # The live counter continues from where the seed left off. Restarting
-        # it at zero made the cumulative total jump backwards at the seam, so
-        # the "Water Delivered" chart showed a drop no meter can produce.
-        seeded_total = 0.0
-        for i in range(count, 0, -1):
-            t = now - i * self.history_period_s
-            phase = i / 30.0
-            self.history.append({
-                "t": int(t),
-                "relays": (1 if i % 37 == 0 else 0) | (8 if i % 211 == 0 else 0),
-                "moisture": [
-                    round(45 + 6 * _math.sin(phase), 2),
-                    round(38 + 4 * _math.sin(phase + 1), 2),
-                    round(52 + 5 * _math.sin(phase + 2), 2),
-                    None,
-                ],
-                "lum": round(max(0.0, 55 + 40 * _math.sin(i / 60.0)), 2),
-                "temp": round(25 + 3 * _math.sin(phase / 2), 2),
-                "hum": round(70 + 8 * _math.sin(phase / 3), 2),
-                "water": round(6 + 1.5 * _math.sin(i / 90.0), 2),
-                # Flow only runs while a pump does, and the total only climbs —
-                # a flat line here would hide the one shape that matters.
-                "flow": 2.4 if i % 37 == 0 else 0.0,
-                "flowTotal": round(seeded_total, 3),
-                "float": 1,
-            })
-            if i % 37 == 0:
-                seeded_total += 0.4
-        self.flow_total_litres = seeded_total
-
-    # ----- logging -----
-    def log(self, level: str, message: str) -> None:
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        letter = level[0].upper() if level else "I"
-        line = f"[{ts}] [{letter}] {message}"
-        with self.lock:
-            self.logs.append(line)
-
-    def logs_text(self) -> str:
-        with self.lock:
-            return "\n".join(self.logs) + "\n"
-
-    # ----- control -----
-    def start_relay(self, index: int, duration_ms: int) -> None:
-        if not 0 <= index < len(self.relays):
-            self.log("error", f"Invalid relay index: {index}")
-            return
-        # The firmware caps a relay at 20 s (g_relayMaxTime) and rejects 0.
-        if duration_ms <= 0 or duration_ms > 20_000:
-            self.log("error", f"Invalid relay time: {duration_ms}")
-            return
-        # self.log() takes the same non-reentrant lock, so every log call has to
-        # stay outside the guarded block.
-        with self.lock:
-            busy = bool(self.relays[index]["on"])
-            if not busy:
-                self.relays[index]["on"] = 1
-                self.relays[index]["until"] = time.time() + duration_ms / 1000.0
-                if index == 0:
-                    self.watering_cycles += 1
-
-        if busy:
-            self.log("warning", f"{self.relay_names[index]} already active.")
-            return
-
-        self.log("info", f"Starting {self.relay_names[index]} for {duration_ms} ms")
-
-    def start_watering(self, duration_ms: int) -> None:
-        self.start_relay(0, duration_ms)
-
-    def set_mqtt(self, enabled: bool) -> None:
-        with self.lock:
-            self.mqtt_enabled = enabled
-        self.log("info", f"MQTT {'enabled' if enabled else 'disabled'}")
-
-    def reset(self) -> None:
-        self.log("warning", "Reset requested (simulator: re-seeding state)")
-        with self.lock:
-            self.boot_time = time.time()
-            self.packages_sent = 0
-            self.watering_cycles = 0
-            self.connection_loss_count = 0
-            for relay in self.relays:
-                relay["on"] = 0
-                relay["until"] = 0.0
-
-    # ----- snapshot -----
-    def tick(self) -> None:
-        """Advance simulated state once per second."""
-        now = time.time()
-        finished = []
-        with self.lock:
-            for index, relay in enumerate(self.relays):
-                if relay["on"] and now >= relay["until"]:
-                    relay["on"] = 0
-                    finished.append(self.relay_names[index])
-            for sensor in self._sensors.values():
-                sensor.update()
-
-            # A flow meter reads zero unless something is pumping. Faking a
-            # constant trickle would hide the one thing the sensor is for.
-            pumping = any(relay["on"] for relay in self.relays)
-            self._sensors["Flow"].baseline = 2.4 if pumping else 0.0
-            if pumping:
-                self.flow_total_litres += 2.4 / 60.0
-            # Mqtt publishes a "package" every 30s when enabled.
-            if self.mqtt_enabled and int(now - self.boot_time) % 30 == 0:
-                self.packages_sent += 1
-            # Random DHT reads
-            self.dht_total_reads += 1
-            if random.random() < 0.02:
-                self.dht_read_errors += 1
-
-            if now >= self._history_next:
-                self._history_next = now + self.history_period_s
-                mask = 0
-                for i, relay in enumerate(self.relays):
-                    if relay["on"]:
-                        mask |= 1 << i
-                # Absent channels are null, not 0 — the device writes NaN and
-                # the reader has to tell "not fitted" from "read zero".
-                self.history.append({
-                    "t": int(now),
-                    "relays": mask,
-                    "moisture": [
-                        round(self._sensors["Soil Moisture 1"].average, 2),
-                        round(self._sensors["Soil Moisture 2"].average, 2),
-                        round(self._sensors["Soil Moisture 3"].average, 2),
-                        None,
-                    ],
-                    "lum": round(self._sensors["Luminosity"].average, 2),
-                    "temp": round(self._sensors["Temperature"].average, 2),
-                    "hum": round(self._sensors["Air Humidity"].average, 2),
-                    "water": round(self._sensors["Water Level"].average, 2),
-                    "flow": round(self._sensors["Flow"].average, 2),
-                    "flowTotal": round(self.flow_total_litres, 3),
-                    # Three states: null is "no float switch fitted", which the
-                    # device distinguishes with IO_HISTORY_FLAG_FLOAT_VALID.
-                    "float": 1 if self.float_raised else 0,
-                })
-
-        # Logging takes the same lock, so it cannot happen inside the block.
-        for name in finished:
-            self.log("info", f"{name} finished")
-
-    def snapshot(self) -> dict:
-        with self.lock:
-            uptime = int(time.time() - self.boot_time)
-            days, rem = divmod(uptime, 86400)
-            hours, rem = divmod(rem, 3600)
-            minutes, seconds = divmod(rem, 60)
-
-            status = {
-                "Hostname": self.hostname,
-                "Firmware": "2.0.0",
-                "Date/Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "Uptime": f"{days}d {hours}h {minutes}m {seconds}s",
-                "Internet": "online",
-                "Signal Strength": f"{random.randint(70, 95)}%",
-                "Ping": f"{random.randint(15, 60)}ms",
-                "Connection Loss Count": str(self.connection_loss_count),
-                "MQTT": "enabled" if self.mqtt_enabled else "disabled",
-                "Packages Sent": str(self.packages_sent),
-                "Watering Cycles": str(self.watering_cycles),
-                "Filesystem": "139 / 463 KB",
-            }
-            if self.dht_total_reads:
-                rate = self.dht_read_errors / self.dht_total_reads * 100
-                status["DHT Error Rate"] = f"{rate:.2f}"
-
-            inputs = {
-                name: {
-                    "val": f"{s.value:.2f}",
-                    "avg": f"{s.average:.2f}",
-                    "var": f"{s.variance:.4f}",
-                }
-                for name, s in self._sensors.items()
-            }
-            # A running total has no window, so it does not fit val/avg/var.
-            inputs["Flow Total"] = {
-                "val": f"{self.flow_total_litres:.3f}",
-                "avg": f"{self.flow_total_litres:.3f}",
-                "var": "0",
-            }
-            # Binary, and the only input outside moisture that carries a state
-            # badge — which is unreachable off-hardware without this entry.
-            inputs["Float Switch"] = {
-                "val": "1" if self.float_raised else "0",
-                "avg": "1" if self.float_raised else "0",
-                "var": "0",
-                "state": "Raised" if self.float_raised else "Lowered",
-            }
-
-            outputs = {
-                name: str(self.relays[i]["on"])
-                for i, name in enumerate(self.relay_names)
-            }
-            relays = [
-                {
-                    "index": i,
-                    "name": name,
-                    "on": self.relays[i]["on"],
-                    "remaining": max(
-                        0, int((self.relays[i]["until"] - time.time()) * 1000)
-                    )
-                    if self.relays[i]["on"]
-                    else 0,
-                }
-                for i, name in enumerate(self.relay_names)
-            ]
-
-            return {
-                "Status": status,
-                "Inputs": inputs,
-                "Outputs": outputs,
-                "Relays": relays,
-                "Channel": self.channel,
-            }
-
-
-class _Sensor:
-    """Sinusoid with noise + running average/variance."""
-
-    def __init__(self, baseline: float, amplitude: float, period: float, noise: float) -> None:
-        self.baseline = baseline
-        self.amplitude = amplitude
-        self.period = period
-        self.noise = noise
-        self.t0 = time.time()
-        self.value = baseline
-        self.samples: deque[float] = deque(maxlen=64)
-        self.average = baseline
-        self.variance = 0.0
-
-    def update(self) -> None:
-        t = time.time() - self.t0
-        wave = self.amplitude * math.sin(2 * math.pi * t / self.period)
-        self.value = self.baseline + wave + random.uniform(-self.noise, self.noise)
-        self.samples.append(self.value)
-        n = len(self.samples)
-        self.average = sum(self.samples) / n
-        if n > 1:
-            mean = self.average
-            self.variance = sum((s - mean) ** 2 for s in self.samples) / n
-
-
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-class AuthSim:
-    """Mirror of src/custom_login.cpp — nonce + SHA-256 challenge.
-
-    Credentials here are fixed and printed at startup: this simulator only ever
-    binds to a developer machine, and a surprise password would just make the
-    login page untestable.
-    """
-
-    NONCE_TTL_S = 30
-    USERNAME = "admin"
-    PASSWORD = "admin"
-    ROLE_ADMIN = 2
-
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.salt = "0123456789abcdef"
-        self.password_hash = _sha256(f"{self.salt}:{self.PASSWORD}")
-        self.nonces: dict[str, float] = {}
-        self.tokens: set[str] = set()
-
-    def issue_nonce(self, username: str) -> dict:
-        nonce = secrets.token_hex(16)  # 32 hex chars, as in the firmware
-        now = time.time()
-        with self.lock:
-            self.nonces = {
-                n: t for n, t in self.nonces.items() if now - t <= self.NONCE_TTL_S
-            }
-            self.nonces[nonce] = now
-        # An unknown user still gets a stable decoy salt, so the endpoint cannot
-        # be used to enumerate accounts.
-        salt = self.salt if username == self.USERNAME else _sha256(
-            f"sim:nosuchuser:{username}"
-        )[:16]
-        return {"nonce": nonce, "salt": salt, "ttlMs": self.NONCE_TTL_S * 1000}
-
-    def login(self, username: str, nonce: str, response: str) -> str | None:
-        now = time.time()
-        with self.lock:
-            issued = self.nonces.pop(nonce, None)  # one-shot
-        if issued is None or now - issued > self.NONCE_TTL_S:
-            return None
-        if username != self.USERNAME:
-            return None
-        if response != _sha256(f"{nonce}:{self.password_hash}"):
-            return None
-
-        token = secrets.token_hex(32)  # 64 hex chars
-        with self.lock:
-            self.tokens.add(token)
-        return token
-
-    def set_password(self, password: str) -> None:
-        with self.lock:
-            self.password_hash = _sha256(f"{self.salt}:{password}")
-            self.tokens.clear()  # existing sessions die with the old credential
-
-    def logout(self, token: str) -> None:
-        with self.lock:
-            self.tokens.discard(token)
-
-    def valid(self, token: str) -> bool:
-        with self.lock:
-            return token in self.tokens
-
-
-# Mirror of g_configSecretMask in src/web.cpp. Secrets are replaced by this on
-# GET and restored from the stored document when POSTed back unchanged.
-CONFIG_SECRET_MASK = "********"
-CONFIG_SECRET_PATHS = [
-    ("wifi", "password"),
-    ("ota", "password"),
-    ("thingSpeak", "apiKey"),
-    ("talkBack", "apiKey"),
-    ("mqtt", "password"),
-    # The ThingsBoard access token lives here; it is a credential on both
-    # backends.
-    ("mqtt", "username"),
-]
-
-SIM_CONFIG = {
-    "version": 2,
-    "id": "1a2b",
-    "hostname": "espgarden-sim",
-    "timezone": "<-03>3",
-    "wifi": {"ssid": "sim-wifi", "password": "sim-wifi-password"},
-    "ota": {"username": "admin", "password": "admin"},
-    "thingSpeak": {"apiKey": "SIMKEY0000000000", "channel": 1348790},
-    "talkBack": {"apiKey": "SIMTALK000000000", "channel": 42661},
-    "mqtt": {
-        "clientID": "sim-client",
-        "username": "sim-user",
-        "password": "sim-password",
-        "server": "mqtt3.thingspeak.com",
-        "port": 8883,
-        "cacert": "/thingspeak.pem",
-        "backend": "thingspeak",
-        "useTLS": True,
-        "rpc": True,
-        "fwUpdate": True,
-        "fwTitle": "esp-garden",
-    },
-    "log": {"level": 4},
-    "history": {"records": 1440, "periodSec": 60},
-    "io": {
-        "button": 0,
-        "relays": [
-            {"pin": 19, "on": 0, "name": "Watering"},
-            {"pin": 16, "on": 0, "name": "Relay 2"},
-            {"pin": 17, "on": 0, "name": "Relay 3"},
-            {"pin": 18, "on": 0, "name": "Relay 4"},
-        ],
-        "dht": 23,
-        "soilMoisture": [36, 34, 32],
-        "luminosity": 39,
-        "waterLevel": 35,
-        "flow": {"pin": 27, "name": "Flow", "pulsesPerLitre": 450},
-        "floatSwitch": {"pin": 26, "name": "Float Switch", "activeLevel": 0,
-                        "interlock": False, "fillRelay": 3},
-    },
-    # Both disabled, matching the fail-safe default the device now applies to a
-    # schedule whose "enabled" key is absent.
-    "schedules": [
-        {"name": "Morning zone 1", "relay": 0, "hour": 6, "minute": 30,
-         "days": 127, "durationMs": 10000, "enabled": False},
-        {"name": "Fill reservoir", "relay": 3, "hour": 6, "minute": 0,
-         "days": 127, "durationMs": 30000, "enabled": False},
-    ],
-}
-
-
-def config_masked() -> dict:
-    doc = json.loads(json.dumps(SIM_CONFIG))  # deep copy
-    for section, key in CONFIG_SECRET_PATHS:
-        # An empty field is not masked, mirroring handleConfigGet: there is
-        # nothing to hide, and a mask the POST handler cannot restore from an
-        # empty stored value would make every save fail.
-        if doc.get(section, {}).get(key):
-            doc[section][key] = CONFIG_SECRET_MASK
-    return doc
-
-
-# Mirrors ConfigFile::loadFile()'s tail. A document that violates this is
-# rejected by the device at boot, so the write path must refuse it too.
-CONFIG_MIN_STRING_LENGTH = 4
-CONFIG_REQUIRED = [
-    ("", "hostname"),
-    ("wifi", "ssid"),
-    ("wifi", "password"),
-    ("ota", "username"),
-    ("ota", "password"),
-    ("thingSpeak", "apiKey"),
-    ("talkBack", "apiKey"),
-]
-
-
-def config_apply(incoming: dict) -> tuple[int, str]:
-    """Returns (http_status, message). Mirrors handleConfigPost in src/web.cpp."""
-    if not isinstance(incoming, dict):
-        return 400, "config is not a JSON object"
-    if str(incoming.get("id", "")).lower() != str(SIM_CONFIG["id"]).lower():
-        return 400, "config id does not match this device"
-
-    new_ota_password = None
-    for section, key in CONFIG_SECRET_PATHS:
-        sec = incoming.get(section)
-        if not isinstance(sec, dict) or key not in sec:
-            continue
-        if sec[key] == CONFIG_SECRET_MASK:
-            stored = SIM_CONFIG.get(section, {}).get(key)
-            if stored:
-                sec[key] = stored
-        elif (section, key) == ("ota", "password"):
-            new_ota_password = sec[key]
-
-    # A mask that survived the restore would be written over a real credential.
-    for section, key in CONFIG_SECRET_PATHS:
-        sec = incoming.get(section)
-        if isinstance(sec, dict) and sec.get(key) == CONFIG_SECRET_MASK:
-            return 500, "secret restore failed"
-
-    for section, key in CONFIG_REQUIRED:
-        node = incoming if section == "" else incoming.get(section, {})
-        value = node.get(key) if isinstance(node, dict) else None
-        if not isinstance(value, str) or len(value) < CONFIG_MIN_STRING_LENGTH:
-            field = key if section == "" else f"{section}.{key}"
-            return 400, f"'{field}' must have at least {CONFIG_MIN_STRING_LENGTH} characters"
-
-    SIM_CONFIG.clear()
-    SIM_CONFIG.update(incoming)
-
-    # The login password lives outside the config on the device too, so a
-    # changed ota.password has to reach the auth store or the simulator's login
-    # stops matching the firmware's.
-    if new_ota_password:
-        AUTH.set_password(new_ota_password)
-
-    return 200, "saved"
 
 # Served without a token: the pages carry no data, and the login page has to
 # load before a token can exist. Mirrors servePublicFile() in src/web.cpp.
@@ -589,85 +76,22 @@ PUBLIC_PATHS = {
     "/history.html",
     "/history.js",
     "/devices.html",
+    "/devices_model.js",
+    "/devices_render.js",
     "/devices.js",
     "/schedules.html",
     "/schedules.js",
+    "/moisture.html",
+    "/moisture.js",
+    "/bootstrap.css",
     "/jquery.js",
     "/spark-md5.js",
     "/favicon.ico",
 }
 
-# Mirrors UserStore. Password hashes and salts are deliberately absent: the
-# device never serves them, so neither does the simulator.
-SIM_USERS = [{"username": "admin", "role": 2}]
-
 # Same cap as g_historyMaxResponse in src/web.cpp: the device cannot render a
 # larger reply without running out of DRAM, so the simulator must not either.
 HISTORY_MAX_RESPONSE = 200
-
-STATE = DeviceState()
-AUTH = AuthSim()
-
-
-
-def users_apply(params: dict) -> tuple[int, str, bool]:
-    """Mirrors handleUsersPost in src/web.cpp. Returns (status, message, reauth)."""
-    action = params.get("action", "")
-    username = params.get("username", "").strip()
-    password = params.get("password", "")
-    try:
-        role = int(params.get("role", 1))
-    except ValueError:
-        role = 0
-
-    if not username:
-        return 400, "Missing username", False
-    if role not in (1, 2):
-        return 400, "Invalid role", False
-
-    index = next((i for i, u in enumerate(SIM_USERS)
-                  if u["username"] == username), -1)
-    admins = sum(1 for u in SIM_USERS if u["role"] == 2)
-
-    if action == "delete":
-        if index < 0:
-            return 404, "User not found", False
-        if SIM_USERS[index]["role"] == 2 and admins <= 1:
-            return 400, "Cannot delete the last admin", False
-        SIM_USERS.pop(index)
-        # The device stores a user INDEX in each session, so removing an entry
-        # forces every session to be dropped. Mirrored here or the simulator
-        # would let a stale token keep working.
-        AUTH.tokens.clear()
-        return 200, f"User '{username}' deleted", True
-
-    if action == "upsert":
-        if index >= 0 and SIM_USERS[index]["role"] == 2 and role != 2 and admins <= 1:
-            return 400, "Cannot demote the last admin", False
-        if not password:
-            if index < 0:
-                return 400, "Password required for a new user", False
-            SIM_USERS[index]["role"] = role
-        else:
-            if len(password) < CONFIG_MIN_STRING_LENGTH:
-                return (400,
-                        f"Password must have at least {CONFIG_MIN_STRING_LENGTH} characters",
-                        False)
-            if index >= 0:
-                SIM_USERS[index]["role"] = role
-            else:
-                SIM_USERS.append({"username": username, "role": role})
-            if username == AUTH.USERNAME:
-                AUTH.set_password(password)
-        return 200, f"User '{username}' saved with role {role}", False
-
-    return 400, "Invalid action", False
-
-
-def _ticker() -> None:
-    while True:
-        STATE.tick()
-        time.sleep(1)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -759,6 +183,33 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(config_masked())
         elif path == "/users.json":
             self._send_json(SIM_USERS)
+        elif path == "/moisture.json":
+            # ?scenario= forces every probe onto one scenario for this request
+            # only. The device has no such parameter — it exists because the
+            # states worth checking (bands that overlap, a model short of
+            # watering events, a device that has never trained) take days to
+            # reach on real hardware and seconds here.
+            self._send_json(moisture_snapshot(
+                parse_qs(url.query).get("scenario", [""])[0]))
+        elif path == "/capabilities.json":
+            # Mirrors src/web_capabilities.cpp, derived from the same three
+            # predicates rather than a copied list, so the two cannot drift.
+            def is_flash(p): return 6 <= p <= 11
+            def is_adc1(p): return 32 <= p <= 39 and p not in (37, 38)
+            def is_input_only(p): return 34 <= p <= 39
+            def is_strapping(p): return p in (0, 2, 5, 12, 15)
+            pins = [p for p in range(40) if not is_flash(p)]
+            self._send_json({
+                "firmware": "2.1.0",
+                "relayMax": 8,
+                "moistureMax": 4,
+                "kinds": ["relays", "soilMoisture", "dht", "luminosity",
+                          "waterLevel", "flow", "floatSwitch"],
+                "analogPins": [p for p in pins if is_adc1(p)],
+                "outputPins": [p for p in pins if not is_input_only(p)],
+                "digitalPins": [p for p in pins if not is_input_only(p)],
+                "strappingPins": [p for p in pins if is_strapping(p)],
+            })
         elif path == "/history.json":
             if not STATE.history_enabled:
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE,
@@ -1028,7 +479,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument(
+        "--moisture-scenario", default="", metavar="NAME",
+        choices=[""] + moisture_scenario_names(),
+        help="force every probe in /moisture.json onto one scenario "
+             "(default: a different one per probe). One of: "
+             + ", ".join(moisture_scenario_names()))
     args = parser.parse_args()
+
+    # The flag lives in sim_moisture; `global` here would rebind a name in this
+    # module instead, and resolve_scenario() would never see it.
+    sim_moisture.MOISTURE_SCENARIO = args.moisture_scenario
 
     if not DATA_DIR.is_dir():
         raise SystemExit(f"data/ not found at {DATA_DIR}")
@@ -1040,7 +501,9 @@ def main() -> None:
     print(f"ESP Garden simulator serving {DATA_DIR} on {url}")
     print(f"Login: {AuthSim.USERNAME} / {AuthSim.PASSWORD}")
     print("Endpoints: /  /nonce  /login  /logout  /data.json  /logs"
-          "  /control  /updateEnable  /update")
+          "  /control  /updateEnable  /update  /moisture.json")
+    print("Moisture scenarios: " + ", ".join(moisture_scenario_names())
+          + "  (?scenario=NAME on /moisture.json, or --moisture-scenario)")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()

@@ -2,17 +2,15 @@
 #include "BuildConfig.h"
 #include "core/config.h"
 #include "core/logger.h"
+#include "core/moisture_model.h"
 #include "core/tasks.h"
 #include <new>
-#ifdef HAS_DHT_SENSOR
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
-#endif
 
 #define ADC_TO_PERCENT(x) ((x * 100.0) / 4095.0)
 
-#ifdef HAS_DHT_SENSOR
 // Constructed in tasksSetup(), not at static-init time: DHT_Unified copies the
 // pin in its constructor, and at static-init config.json has not been read yet,
 // so a file-scope instance permanently runs on the compiled default pin.
@@ -22,22 +20,14 @@ AccumulatorV2 g_temperature(g_mqttTaskPeriod / g_dhtTaskPeriod);
 AccumulatorV2 g_airHumidity(g_mqttTaskPeriod / g_dhtTaskPeriod);
 unsigned g_dhtReadErrors = 0;
 unsigned g_dhtTotalReads = 0;
-#endif
 
-#ifdef HAS_MOISTURE_SENSOR
-AccumulatorV2 g_soilMoisture[MOISTURE_SENSOR_COUNT];
-#endif
+AccumulatorV2 g_soilMoisture[MOISTURE_MAX];
 
-#ifdef HAS_LUMINOSITY_SENSOR
 AccumulatorV2 g_luminosity(g_mqttTaskPeriod / g_ioTaskPeriod);
-#endif
 
-#ifdef HAS_WATER_LEVEL_SENSOR
 #define ADC_TO_WATER_LEVEL(v) (9.0 - 12.0 * sin(4.04 - 1.61 * (3.3 * v / 4095.0)))
 AccumulatorV2 g_waterLevel(g_mqttTaskPeriod / g_ioTaskPeriod);
-#endif
 
-#ifdef HAS_FLOW_SENSOR
 // The ISR does nothing but count. Everything else — rate, totals, logging —
 // happens in the io task, because an ISR that allocates or takes a lock is how
 // an ESP32 ends up in a reset loop.
@@ -56,19 +46,30 @@ AccumulatorV2 g_flowRate(g_mqttTaskPeriod / g_ioTaskPeriod);
 // Cumulative volume since boot, in litres. Not an accumulator: a running total
 // has no window.
 static double g_flowTotalLitres = 0.0;
-#endif
 
-#ifdef HAS_FLOAT_SWITCH
 // A contact, not a level: one bit, debounced by requiring two agreeing reads.
 static bool g_floatRaised = false;
-#endif
 
-#ifdef HAS_MOISTURE_SENSOR
 String
 moistureState(unsigned index)
 {
-    if (index >= MOISTURE_SENSOR_COUNT) {
+    // Past the fitted count is a probe that does not exist, not one that is
+    // merely uncalibrated — both return "", but for different reasons.
+    if (index >= config.moistureCount) {
         return String();
+    }
+
+    // The trained model first, the two-point calibration second, nothing
+    // third. Deliberately in that order: the model is built from this probe's
+    // own watering history and knows the spread of each band, where the
+    // two-point anchors know only two readings and split the span in equal
+    // thirds. When the model has not earned its gates yet, the anchors are
+    // still better than a guess.
+    double confidence = 0.0;
+    const int inferred =
+      moistureModelClassify(index, g_soilMoisture[index].getAverage(), &confidence);
+    if (inferred != MOISTURE_UNKNOWN) {
+        return String(moistureClassName(inferred));
     }
 
     const float dry = config.moistureDry[index];
@@ -98,23 +99,18 @@ moistureState(unsigned index)
     }
     return String("Wet");
 }
-#endif
 
-#ifdef HAS_FLOW_SENSOR
 double
 flowTotalLitres()
 {
     return g_flowTotalLitres;
 }
-#endif
 
-#ifdef HAS_FLOAT_SWITCH
 bool
 floatRaised()
 {
     return g_floatRaised;
 }
-#endif
 
 void
 sensorsSetup()
@@ -124,47 +120,56 @@ sensorsSetup()
     // array cannot pass a constructor argument, so the probes are sized here
     // instead — otherwise they silently keep the 120-sample default and their
     // averages span a different interval from every other channel.
-#ifdef HAS_MOISTURE_SENSOR
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+    // Sized for every slot, not just the fitted ones: an unfitted probe is
+    // never fed, so the window costs nothing, and a probe added in the web UI
+    // is correctly sized on the next boot without a second code path.
+    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
         g_soilMoisture[i].setMaxLen(g_mqttTaskPeriod / g_ioTaskPeriod);
     }
-#endif
 
     pinMode(config.buttonPin, INPUT);
 
-#ifdef HAS_FLOW_SENSOR
-    pinMode(config.flowPin, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(config.flowPin), flowPulseISR, FALLING);
-    logger.info("Flow sensor on GPIO " + String(config.flowPin) + ", " +
-                String(config.flowPulsesPerLitre, 1) + " pulses/litre");
-#endif
-#ifdef HAS_FLOAT_SWITCH
-    pinMode(config.floatPin, INPUT_PULLUP);
-    logger.info("Float switch on GPIO " + String(config.floatPin) +
-                ", active " + String(config.floatActiveLevel));
-#endif
+    // Only peripherals config.json declares get their pins touched. Attaching
+    // an interrupt to a pin nothing is wired to would count noise as flow.
+    if (config.flowFitted) {
+        pinMode(config.flowPin, INPUT_PULLUP);
+        attachInterrupt(
+          digitalPinToInterrupt(config.flowPin), flowPulseISR, FALLING);
+        logger.info("Flow sensor on GPIO " + String(config.flowPin) + ", " +
+                    String(config.flowPulsesPerLitre, 1) + " pulses/litre");
+    }
+
+    if (config.floatFitted) {
+        pinMode(config.floatPin, INPUT_PULLUP);
+        logger.info("Float switch on GPIO " + String(config.floatPin) +
+                    ", active " + String(config.floatActiveLevel));
+    }
+
+    logger.info("Sensors: " + String(config.moistureCount) + " moisture" +
+                (config.luminosityFitted ? ", luminosity" : "") +
+                (config.dhtFitted ? ", DHT" : "") +
+                (config.waterLevelFitted ? ", water level" : "") +
+                (config.flowFitted ? ", flow" : "") +
+                (config.floatFitted ? ", float switch" : ""));
 }
 
 void
 sensorsReadIo()
 {
-#ifdef HAS_MOISTURE_SENSOR
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
         g_soilMoisture[i].add(
           100.0 - ADC_TO_PERCENT(analogRead(config.soilMoisturePin[i])));
     }
-#endif
 
-#ifdef HAS_LUMINOSITY_SENSOR
-    g_luminosity.add(ADC_TO_PERCENT(analogRead(config.luminosityPin)));
-#endif
+    if (config.luminosityFitted) {
+        g_luminosity.add(ADC_TO_PERCENT(analogRead(config.luminosityPin)));
+    }
 
-#ifdef HAS_WATER_LEVEL_SENSOR
-    g_waterLevel.add(ADC_TO_WATER_LEVEL(analogRead(config.waterLevelPin)));
-#endif
+    if (config.waterLevelFitted) {
+        g_waterLevel.add(ADC_TO_WATER_LEVEL(analogRead(config.waterLevelPin)));
+    }
 
-#ifdef HAS_FLOW_SENSOR
-    {
+    if (config.flowFitted) {
         portENTER_CRITICAL(&g_flowMux);
         const uint32_t pulses = g_flowPulses;
         g_flowPulses = 0;
@@ -176,28 +181,30 @@ sensorsReadIo()
         g_flowTotalLitres += litres;
         g_flowRate.add((float)(litres * 60000.0 / (double)g_ioTaskPeriod));
     }
-#endif
 
-#ifdef HAS_FLOAT_SWITCH
-    {
+    if (config.floatFitted) {
         // Two agreeing reads a tick apart: a float bobbing on the surface
         // chatters, and a single read would report it as level changes.
         static bool lastRead = false;
-        const bool raised = (digitalRead(config.floatPin) == config.floatActiveLevel);
+        const bool raised =
+          (digitalRead(config.floatPin) == config.floatActiveLevel);
         if (raised == lastRead) {
             g_floatRaised = raised;
         }
         lastRead = raised;
     }
-#endif
 }
 
-#ifdef HAS_DHT_SENSOR
 void
 sensorsSetupDht()
 {
+    if (!config.dhtFitted) {
+        return; // leaves g_dht null, which sensorsReadDht() already handles
+    }
+
     g_dht = new (g_dhtStorage) DHT_Unified(config.dhtPin, DHT11);
     g_dht->begin();
+    logger.info("DHT11 on GPIO " + String(config.dhtPin));
 }
 
 void
@@ -229,4 +236,3 @@ sensorsReadDht()
         ++g_dhtReadErrors;
     }
 }
-#endif

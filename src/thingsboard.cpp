@@ -262,7 +262,7 @@ tbCheckFirmwareAttributes(JSONVar& attributes)
 static bool
 tbRelaysIdle()
 {
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+    for (unsigned i = 0; i < config.relayCount; ++i) {
         if (relayIsOn(i)) {
             return false;
         }
@@ -398,6 +398,16 @@ tbRpcError(const String& requestId, const String& message)
 // Relay index from params. "relay" and "index" are both accepted because the
 // telemetry keys are relay1..relay4 while the addressing contract everywhere
 // else in this firmware is the 0-based index.
+static String
+tbRelayRangeHint(const char* method)
+{
+    if (config.relayCount == 0) {
+        return String(method) + ": this device has no relays configured";
+    }
+    return String(method) + " needs \"relay\": 0.." +
+           String(config.relayCount - 1);
+}
+
 static bool
 tbRpcRelayIndex(JSONVar& params, unsigned& out)
 {
@@ -409,7 +419,7 @@ tbRpcRelayIndex(JSONVar& params, unsigned& out)
         }
         JSONVar var = params[keys[k]];
         const int index = (int)var;
-        if (index < 0 || index >= (int)RELAY_COUNT) {
+        if (index < 0 || index >= (int)config.relayCount) {
             return false;
         }
         out = (unsigned)index;
@@ -444,7 +454,7 @@ tbRpcDuration(JSONVar& params, unsigned fallback)
 static void
 tbAppendRelays(JSONVar& parent, const char* key)
 {
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+    for (unsigned i = 0; i < config.relayCount; ++i) {
         parent[key][i]["index"] = (int)i;
         parent[key][i]["name"] = config.relayName[i];
         parent[key][i]["on"] = relayIsOn(i);
@@ -492,9 +502,7 @@ tbHandleRpc(const String& requestId, const String& body)
         // TalkBack and the legacy /control parameter already rely on.
         unsigned index = 0;
         if (method == "startRelay" && !tbRpcRelayIndex(params, index)) {
-            tbRpcError(requestId,
-                       "startRelay needs \"relay\": 0.." +
-                         String(RELAY_COUNT - 1));
+            tbRpcError(requestId, tbRelayRangeHint("startRelay"));
             return;
         }
 
@@ -521,9 +529,7 @@ tbHandleRpc(const String& requestId, const String& body)
     } else if (method == "stopRelay") {
         unsigned index = 0;
         if (!tbRpcRelayIndex(params, index)) {
-            tbRpcError(requestId,
-                       "stopRelay needs \"relay\": 0.." +
-                         String(RELAY_COUNT - 1));
+            tbRpcError(requestId, tbRelayRangeHint("stopRelay"));
             return;
         }
         response["ok"] = true;

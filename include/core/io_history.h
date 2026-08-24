@@ -61,6 +61,15 @@ struct IoHistoryHeader
 };
 #pragma pack(pop)
 
+// A probe with no slot in the record would be read, charted live and then
+// silently absent from history. MOISTURE_MAX is capacity for the config
+// loader; IO_HISTORY_MAX_MOISTURE is capacity for the on-disk record. They are
+// the same number, and this is what makes raising one without the other a
+// compile error instead of a gap in the data.
+static_assert(MOISTURE_MAX == IO_HISTORY_MAX_MOISTURE,
+              "MOISTURE_MAX and IO_HISTORY_MAX_MOISTURE must match: a probe "
+              "without a record slot vanishes from stored history.");
+
 class IoHistory
 {
   public:
@@ -94,6 +103,18 @@ class IoHistory
     // a window that plainly has data, with no error to explain it.
     size_t readWindow(uint32_t sinceEpoch, IoRecord* out, size_t maxPoints,
                       uint32_t* strideOut, uint32_t* fromOut);
+
+    // Streams every stored record, oldest first, under ONE lock and ONE file
+    // handle. Returns how many it visited; the visitor returning false stops
+    // the walk early.
+    //
+    // Exists for the moisture trainer, which needs three passes over the whole
+    // buffer and must not hold it in RAM: 1440 records is 69 KB, and the
+    // sufficient statistics it is building are twelve doubles. Reopening the
+    // file per record would be the obvious alternative and is thousands of
+    // SPIFFS opens.
+    using Visitor = bool (*)(const IoRecord& record, uint32_t index, void* ctx);
+    size_t forEach(Visitor visit, void* ctx);
 
     uint16_t capacity() const { return header.capacity; }
     uint32_t stored() const { return header.stored; }

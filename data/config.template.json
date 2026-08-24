@@ -13,7 +13,8 @@
   },
   "thingSpeak": {
     "apiKey": "0000",
-    "channel": 123456
+    "channel": 123456,
+    "moisture2Field": 0
   },
   "talkBack": {
     "apiKey": "0000",
@@ -98,15 +99,18 @@
   "moisture": [
     {
       "dry": 0,
-      "wet": 0
+      "wet": 0,
+      "relay": 0
     },
     {
       "dry": 0,
-      "wet": 0
+      "wet": 0,
+      "relay": 1
     },
     {
       "dry": 0,
-      "wet": 0
+      "wet": 0,
+      "relay": 2
     }
   ],
   "history": {

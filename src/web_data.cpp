@@ -75,18 +75,15 @@ webUpdateDataCache()
                  uptime % 60);
         statusJson["Uptime"] = String(buffer);
     }
-#ifdef HAS_DHT_SENSOR
     if (g_dhtTotalReads > 0) {
         statusJson["DHT Error Rate"] =
           String((float)g_dhtReadErrors / (float)g_dhtTotalReads * 100, 2);
     }
-#endif
     statusJson["Internet"] = String((g_hasInternet) ? "online" : "offline");
     statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
     statusJson["Ping"] = String(g_pingTime.getAverage()) + "ms";
     statusJson["Connection Loss Count"] = String(g_connectionLossCount);
     statusJson["MQTT"] = String((g_mqttEnabled) ? "enabled" : "disabled");
-#ifdef HAS_FLOAT_SWITCH
     // Only while it is actually blocking something. A refusal that leaves no
     // trace in the UI is indistinguishable from a relay button that does not
     // work, which is how a safety feature becomes a bug report.
@@ -94,7 +91,6 @@ webUpdateDataCache()
         statusJson["Interlock"] =
           "pumps blocked — " + config.floatName + " reads empty";
     }
-#endif
     {
         // Empty unless the broker has announced an image, so the row only
         // appears while there is something to say about it.
@@ -111,8 +107,7 @@ webUpdateDataCache()
                                String(SPIFFS.totalBytes() / 1024) + " KB";
 
     JSONVar inputsJson;
-#ifdef HAS_MOISTURE_SENSOR
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
         const String name = config.soilMoistureName[i];
         addAccumulator(inputsJson, name.c_str(), g_soilMoisture[i]);
 
@@ -122,16 +117,18 @@ webUpdateDataCache()
             inputsJson[name.c_str()]["state"] = state;
         }
     }
-#endif
 
-#ifdef HAS_LUMINOSITY_SENSOR
-    addAccumulator(inputsJson, config.luminosityName.c_str(), g_luminosity);
-#endif
+    // Every entry below is gated on the sensor being FITTED. addAccumulator
+    // does not check getSamples(), so an unfitted channel would report a
+    // confident "0.00" — and /devices.html builds its inventory from these
+    // keys, so it would list hardware nobody installed.
+    if (config.luminosityFitted) {
+        addAccumulator(inputsJson, config.luminosityName.c_str(), g_luminosity);
+    }
 
-#ifdef HAS_DHT_SENSOR
     // One pin, two channels: a name given to the DHT reads as a prefix so both
     // channels stay distinguishable.
-    {
+    if (config.dhtFitted) {
         const String prefix =
           config.dhtName.length() > 0 ? (config.dhtName + " ") : String("");
         const String tempName = prefix + "Temperature";
@@ -140,15 +137,14 @@ webUpdateDataCache()
         addAccumulator(inputsJson, tempName.c_str(), g_temperature);
         addAccumulator(inputsJson, humName.c_str(), g_airHumidity);
     }
-#endif
 
-#ifdef HAS_WATER_LEVEL_SENSOR
-    addAccumulator(inputsJson, config.waterLevelName.c_str(), g_waterLevel);
-#endif
+    if (config.waterLevelFitted) {
+        addAccumulator(inputsJson, config.waterLevelName.c_str(), g_waterLevel);
+    }
 
-#ifdef HAS_FLOW_SENSOR
-    addAccumulator(inputsJson, config.flowName.c_str(), g_flowRate);
-    {
+    if (config.flowFitted) {
+        addAccumulator(inputsJson, config.flowName.c_str(), g_flowRate);
+
         // A running total has no window, so it does not fit the val/avg/var
         // shape the other inputs use; it gets its own entry.
         JSONVar total;
@@ -158,10 +154,8 @@ webUpdateDataCache()
         const String totalName = config.flowName + " Total";
         inputsJson[totalName.c_str()] = total;
     }
-#endif
 
-#ifdef HAS_FLOAT_SWITCH
-    {
+    if (config.floatFitted) {
         // Binary: reporting a number here would invite a chart of 0s and 1s.
         JSONVar entry;
         entry["val"] = String(floatRaised() ? 1 : 0);
@@ -170,16 +164,15 @@ webUpdateDataCache()
         entry["state"] = floatRaised() ? "Raised" : "Lowered";
         inputsJson[config.floatName.c_str()] = entry;
     }
-#endif
 
     JSONVar outputsJson;
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+    for (unsigned i = 0; i < config.relayCount; ++i) {
         outputsJson[config.relayName[i].c_str()] =
           String(relayIsOn(i) ? 1 : 0);
     }
 
     JSONVar relaysJson;
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+    for (unsigned i = 0; i < config.relayCount; ++i) {
         JSONVar relay;
         relay["index"] = (int)i;
         relay["name"] = config.relayName[i];

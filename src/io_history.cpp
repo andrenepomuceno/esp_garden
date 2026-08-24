@@ -286,6 +286,40 @@ IoHistory::readDecimatedLocked(File& file, IoRecord* out, size_t maxPoints,
 
 
 size_t
+IoHistory::forEach(Visitor visit, void* ctx)
+{
+    if (!initialised || visit == nullptr || header.stored == 0) {
+        return 0;
+    }
+
+    if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
+        return 0;
+    }
+
+    File file = fs->open(IO_HISTORY_FILE, FILE_READ);
+    if (file == false) {
+        xSemaphoreGive(mutex);
+        return 0;
+    }
+
+    size_t visited = 0;
+    IoRecord record;
+    for (uint32_t i = 0; i < header.stored; ++i) {
+        if (!readAt(file, i, record)) {
+            break;
+        }
+        ++visited;
+        if (!visit(record, i, ctx)) {
+            break;
+        }
+    }
+
+    file.close();
+    xSemaphoreGive(mutex);
+    return visited;
+}
+
+size_t
 IoHistory::readWindow(uint32_t sinceEpoch, IoRecord* out, size_t maxPoints,
                       uint32_t* strideOut, uint32_t* fromOut)
 {

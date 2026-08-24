@@ -2,6 +2,7 @@
 #include "BuildConfig.h"
 #include "core/config.h"
 #include "core/io_history.h"
+#include "core/moisture_model.h"
 #include "core/logger.h"
 #include "core/tasks.h"
 #include "core/user_store.h"
@@ -58,6 +59,11 @@ setup(void)
     // After the config load so the capacity is the configured one, and before
     // webSetup() so /history.json never sees a half-open buffer.
     ioHistory.begin((uint16_t)config.historyRecords);
+
+    // After the config load, because it reports per configured probe, and
+    // before webSetup() so /moisture.json never answers from a zeroed model
+    // that has not been read off flash yet.
+    moistureModelSetup();
 
     logger.backupSetup();
     webSetup();

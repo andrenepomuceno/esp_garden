@@ -12,6 +12,7 @@
   var POLL_INTERVAL_MS = 1000;
   var REQUEST_TIMEOUT_MS = 1500;
   var pollTimer = null;
+  var polling = false;
   var pageVisible = true;
 
   // ---------- helpers ----------
@@ -134,14 +135,28 @@
   }
 
   // ---------- polling ----------
+  // Re-arms from BOTH callbacks rather than running on a setInterval. The
+  // device serves this from a single async_tcp task; with setInterval, a slow
+  // or rebooting board — the normal state of a garden node — stacks requests
+  // faster than they complete, exhausts the AsyncTCP buffers and drops
+  // connections, and the page then stays dead even after the device recovers.
+  // A self-rearming timeout can never have two requests in flight.
   function poll() {
+    // Both requests must land before the next tick is armed, so the page can
+    // never have more in flight than it started.
+    var pending = 2;
+    function finish() {
+      if (--pending > 0 || !polling) return;
+      pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+    }
+
     $.ajax({
       dataType: 'json',
       url: '/data.json',
       timeout: REQUEST_TIMEOUT_MS,
       success: updateUI,
       error: function () { setConnection(false); }
-    });
+    }).always(finish);
 
     $.ajax({
       url: '/logs',
@@ -153,19 +168,29 @@
           ta.scrollTop(ta[0].scrollHeight);
         }
       }
-    });
+    }).always(finish);
+  }
+
+  function tick() {
+    if (!polling) return;
+    if (pageVisible) {
+      poll();
+      return;
+    }
+    // Hidden tab: idle without issuing requests, but keep the loop armed so
+    // coming back does not wait for a fresh start.
+    pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
   }
 
   function startPolling() {
-    if (pollTimer) return;
+    if (polling) return;
+    polling = true;
     poll();
-    pollTimer = setInterval(function () {
-      if (pageVisible) poll();
-    }, POLL_INTERVAL_MS);
   }
 
   function stopPolling() {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    polling = false;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   }
 
   // ---------- handlers ----------

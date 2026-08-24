@@ -1,4 +1,6 @@
+#include "core/config.h"
 #include "core/logger.h"
+#include "core/relays.h"
 #include "network/thingsboard.h"
 #include "network/web_ota.h"
 #include <ESPAsyncWebServer.h>
@@ -19,6 +21,25 @@ handleUpdateEnable(AsyncWebServerRequest* request)
         request->send(
           409, "text/plain", "A firmware update from the broker is in progress");
         return;
+    }
+
+    // The same rule the cloud FOTA path already follows, and it belongs here
+    // for the same reason: this ends in delay(500) + ESP.restart(), and on an
+    // ESP32 reset every GPIO floats until relayPinsSafeInit() runs — which on
+    // these active-low boards switches the pump back ON for the length of the
+    // boot. Documenting the hazard for one of the two OTA paths and not the
+    // other left the browser upload as the way to hit it.
+    for (unsigned i = 0; i < config.relayCount; ++i) {
+        if (relayIsOn(i)) {
+            logger.warning("[OTA] refused: " + config.relayName[i] +
+                           " is running");
+            request->send(409,
+                          "text/plain",
+                          config.relayName[i] +
+                            " is running. Updating reboots the device, and a "
+                            "relay is energised across a reset.");
+            return;
+        }
     }
 
     g_otaEnabled = true;

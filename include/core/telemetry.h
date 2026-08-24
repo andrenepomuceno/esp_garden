@@ -11,9 +11,7 @@
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
 static const unsigned g_pingField = 3;
-#ifdef HAS_WATER_LEVEL_SENSOR
 static const unsigned g_waterLevelField = 4;
-#endif
 static const unsigned g_luminosityField = 5;
 static const unsigned g_temperatureField = 6;
 static const unsigned g_airHumidityField = 7;

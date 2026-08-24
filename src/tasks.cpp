@@ -1,6 +1,7 @@
 #include "core/tasks.h"
 #include "BuildConfig.h"
 #include "core/io_history.h"
+#include "core/moisture_model.h"
 #include "core/logger.h"
 #include "core/relays.h"
 #include "core/sensors.h"
@@ -36,6 +37,10 @@ DECLARE_TASK(io, 1000);                         // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
 DECLARE_TASK(checkInternet, 15 * 1000);         // 15 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
+// Once a day, as asked. The model accumulates across runs rather than being
+// refitted, so the period is how fast evidence ages, not how fresh the answer
+// is — classification itself happens on every reading.
+DECLARE_TASK(moistureModel, 24 * 60 * 60 * 1000); // 24 h
 // Period comes from config.historyPeriodSec; this is only the fallback used
 // until tasksSetup() calls setPeriod().
 DECLARE_TASK(history, 60 * 1000);               // 1 min
@@ -44,14 +49,10 @@ DECLARE_TASK(history, 60 * 1000);               // 1 min
 DECLARE_TASK(schedules, 20 * 1000);             // 20 s
 DECLARE_TASK(mqtt, 1 * 60 * 1000);              // 1 min
 DECLARE_TASK(talkBack, 1 * 60 * 1000);          // 1 min
-#ifdef HAS_MOISTURE_SENSOR
 DECLARE_TASK(checkMoisture, 4 * 60 * 60 * 1000); // 4 h
-#endif
-#ifdef HAS_DHT_SENSOR
 // At the DHT11's sampling floor: the Adafruit driver returns its cached
 // reading rather than an error when polled faster than once per second.
 DECLARE_TASK(dht, 1 * 1000); // 1 s
-#endif
 
 // Switching a pump off on time is the one deadline in this firmware that has a
 // physical cost when missed, so it does not share the cooperative pump with
@@ -71,9 +72,7 @@ static const unsigned long g_bootWaitMaxMs = 60UL * 1000UL;
 
 AccumulatorV2 g_pingTime(g_mqttTaskPeriod / g_checkInternetTaskPeriod);
 
-#ifdef HAS_MOISTURE_SENSOR
-static float g_moistureBeforeWatering[MOISTURE_SENSOR_COUNT] = { 0.0 };
-#endif
+static float g_moistureBeforeWatering[MOISTURE_MAX] = { 0.0 };
 
 static WiFiClient g_wifiClient;
 static TalkBack talkBack;
@@ -90,7 +89,9 @@ unsigned g_connectionLossCount = 0;
 bool
 relayStartAllowed(unsigned index, String& reason)
 {
-#ifdef HAS_FLOAT_SWITCH
+    // loadFile() clears floatInterlock when no float switch is declared, so a
+    // sensor removed in /devices.html cannot leave a veto behind that refuses
+    // every watering on a reading nothing produces.
     if (!config.floatInterlock) {
         return true;
     }
@@ -106,10 +107,6 @@ relayStartAllowed(unsigned index, String& reason)
         reason = config.floatName + " reads empty";
         return false;
     }
-#else
-    (void)index;
-    (void)reason;
-#endif
 
     return true;
 }
@@ -124,12 +121,10 @@ relayStartedHook(unsigned index, unsigned int duration)
         g_pendingWateringMs = duration;
         mqttAddField(g_wateringField, String(duration));
 
-#ifdef HAS_MOISTURE_SENSOR
-        for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+        for (unsigned i = 0; i < config.moistureCount; ++i) {
             g_moistureBeforeWatering[i] = g_soilMoisture[i].getAverage();
         }
         g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
-#endif
     }
 }
 
@@ -149,13 +144,11 @@ ioTaskHandler()
     webUpdateDataCache();
 }
 
-#ifdef HAS_DHT_SENSOR
 static void
 dhtTaskHandler()
 {
     sensorsReadDht();
 }
-#endif
 
 void
 mqttTaskHandler()
@@ -275,11 +268,10 @@ checkInternetTaskHandler()
     }
 }
 
-#ifdef HAS_MOISTURE_SENSOR
 static void
 checkMoistureTaskHandler()
 {
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
         float moistureDelta =
           g_soilMoisture[i].getAverage() - g_moistureBeforeWatering[i];
 
@@ -292,7 +284,6 @@ checkMoistureTaskHandler()
 
     g_checkMoistureTask.disable();
 }
-#endif
 
 static void
 ledBlinkTaskHandler()
@@ -329,7 +320,7 @@ historyTaskHandler()
     g_relaySticky = 0;
     portEXIT_CRITICAL(&g_relayMux);
 
-    for (unsigned i = 0; i < RELAY_COUNT && i < 16; ++i) {
+    for (unsigned i = 0; i < config.relayCount && i < 16; ++i) {
         if (relayIsOn(i)) {
             mask |= (uint16_t)(1u << i);
         }
@@ -346,8 +337,8 @@ historyTaskHandler()
     record.flowRate = NAN;
     record.flowTotal = NAN;
 
-#ifdef HAS_MOISTURE_SENSOR
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT && i < IO_HISTORY_MAX_MOISTURE;
+    for (unsigned i = 0; i < config.moistureCount &&
+         i < IO_HISTORY_MAX_MOISTURE;
          ++i) {
         // An empty accumulator averages to 0.0, which would be written as a
         // genuine zero reading and defeat the whole not-fitted-vs-read-zero
@@ -356,30 +347,32 @@ historyTaskHandler()
                                ? NAN
                                : g_soilMoisture[i].getAverage();
     }
-#endif
-#ifdef HAS_LUMINOSITY_SENSOR
     record.luminosity = (g_luminosity.getSamples() == 0) ? NAN : g_luminosity.getAverage();
-#endif
-#ifdef HAS_DHT_SENSOR
     record.temperature = (g_temperature.getSamples() == 0) ? NAN : g_temperature.getAverage();
     record.airHumidity = (g_airHumidity.getSamples() == 0) ? NAN : g_airHumidity.getAverage();
-#endif
-#ifdef HAS_WATER_LEVEL_SENSOR
     record.waterLevel = (g_waterLevel.getSamples() == 0) ? NAN : g_waterLevel.getAverage();
-#endif
-#ifdef HAS_FLOW_SENSOR
     record.flowRate = (g_flowRate.getSamples() == 0) ? NAN : g_flowRate.getAverage();
     // The running total is the point of storing flow at all: it answers how
     // much a watering actually delivered, and it only lives in RAM otherwise —
     // gone at every reboot, brownout and OTA.
-    record.flowTotal = (float)flowTotalLitres();
-#endif
-#ifdef HAS_FLOAT_SWITCH
-    record.flags |= IO_HISTORY_FLAG_FLOAT_VALID;
-    if (floatRaised()) {
-        record.flags |= IO_HISTORY_FLAG_FLOAT_RAISED;
+    // Guarded, unlike the accumulators above: a running total has no
+    // getSamples() to say "never fed", so an unfitted meter would write a
+    // perfectly real 0.0 litres and the chart would show a flat line instead
+    // of a gap.
+    if (config.flowFitted) {
+        record.flowTotal = (float)flowTotalLitres();
     }
-#endif
+
+    // Same reason, and it is the exact case IO_HISTORY_FLAG_FLOAT_VALID was
+    // added for: without the guard a board with no float switch records a
+    // valid reading of "lowered", indistinguishable from a genuinely empty
+    // reservoir, forever.
+    if (config.floatFitted) {
+        record.flags |= IO_HISTORY_FLAG_FLOAT_VALID;
+        if (floatRaised()) {
+            record.flags |= IO_HISTORY_FLAG_FLOAT_RAISED;
+        }
+    }
 
     ioHistory.append(record);
 }
@@ -465,6 +458,16 @@ logBackupTaskHandler()
     logger.backup();
 }
 
+// Three passes over the whole history buffer — seconds of SPIFFS reads, which
+// on the cooperative pump stalls every other BACKGROUND task for that long.
+// Acceptable once a day, and the reason relay timing is critical rather than
+// background: a pump switching off does not wait for this.
+static void
+moistureModelTaskHandler()
+{
+    moistureModelTrain();
+}
+
 void
 tasksSetup()
 {
@@ -476,16 +479,13 @@ tasksSetup()
     g_taskScheduler.addTask(&g_clockUpdateTask);
     g_taskScheduler.addTask(&g_checkInternetTask);
     g_taskScheduler.addTask(&g_logBackupTask);
+    g_taskScheduler.addTask(&g_moistureModelTask);
     g_taskScheduler.addTask(&g_historyTask);
     g_taskScheduler.addTask(&g_schedulesTask);
     g_taskScheduler.addTask(&g_mqttTask);
     g_taskScheduler.addTask(&g_talkBackTask);
-#ifdef HAS_MOISTURE_SENSOR
     g_taskScheduler.addTask(&g_checkMoistureTask);
-#endif
-#ifdef HAS_DHT_SENSOR
     g_taskScheduler.addTask(&g_dhtTask);
-#endif
 
     sensorsSetup();
 
@@ -540,15 +540,23 @@ tasksSetup()
     mqttAddField(g_bootTimeField, String(g_bootTime));
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
-#ifdef HAS_DHT_SENSOR
     sensorsSetupDht();
-    g_dhtTask.enableDelayed(g_dhtTaskPeriod);
-#endif
+    // Only when one is declared. Ticking at 1 Hz into a handler that returns
+    // at its null check wastes a scheduler slot, and the bucket caps at 16.
+    if (config.dhtFitted) {
+        g_dhtTask.enableDelayed(g_dhtTaskPeriod);
+    }
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
     g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
     g_mqttTask.enableDelayed(g_mqttTaskPeriod);
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
     g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
+    // Trains 5 minutes after boot as well as daily: a device that is power
+    // cycled every evening would otherwise never reach its 24 h tick, and the
+    // history it just reloaded is exactly the evidence it needs.
+    if (config.moistureCount > 0) {
+        g_moistureModelTask.enableDelayed(5 * 60 * 1000);
+    }
 
     if (config.scheduleCount > 0) {
         g_schedulesTask.enableDelayed(g_schedulesTaskPeriod);
