@@ -227,7 +227,12 @@ username that is not stored yet.
 | `/data.json`, `/history.json` | any signed-in user |
 | `/schedules.html` | ADMIN (the page reads and writes `/config.json`) |
 | `/control` | OPERATOR |
-| `/config.json`, `/logs`, `/updateEnable`, `/update`, `/spiffs/*` | ADMIN |
+| `/config.json`, `/logs`, `/updateEnable`, `/update`, `/users.json`, `/users`, `/spiffs/*` | ADMIN |
+
+`/logout` needs only a valid token. `/spiffs/users*`, `/spiffs/sessions*` and
+`/spiffs/config*` answer 403 even to an ADMIN — the browse handler would
+otherwise serve the salted password hashes, the live bearer tokens and the
+plaintext WiFi and MQTT credentials.
 
 ### Changing settings without reflashing
 
@@ -438,10 +443,12 @@ TalkBack, an MQTT drain) stalls every other background task for its duration.
 | `relays` | 50 ms — **critical** | Switch each relay off when its timer expires |
 | `ledBlink` | 1 s — **critical** | Blink built-in LED (enabled on config error) |
 | `io` | 1 s | Read ADC sensors and rebuild the `/data.json` payload |
-| `dht` | 10 s | Read temperature and humidity from DHT11 |
+| `dht` | 1 s | Read temperature and humidity from DHT11 |
 | `checkInternet` | 15 s | Ping DNS servers, update connectivity state |
-| `mqtt` | 2 min | Publish averaged sensor data to ThingSpeak |
-| `talkBack` | 5 min | Poll ThingSpeak TalkBack for remote commands |
+| `history` | `history.periodSec` | Append one I/O snapshot to the ring buffer |
+| `schedules` | 20 s | Fire any schedule that is due |
+| `mqtt` | 1 min | Publish averaged sensor data to the configured backend |
+| `talkBack` | 1 min | Poll ThingSpeak TalkBack for remote commands |
 | `clockUpdate` | 24 h | Re-sync NTP clock |
 | `logBackup` | 1 h | Flush serial log to SPIFFS |
 | `checkMoisture` | 4 h | Check soil moisture delta after watering |
