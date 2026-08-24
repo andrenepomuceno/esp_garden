@@ -1,4 +1,5 @@
 #include "core/accumulator_v2.h"
+#include <math.h>
 #include <cmath>
 #include <unity.h>
 
@@ -126,6 +127,95 @@ test_setMaxLen_grows_without_loss(void)
     TEST_ASSERT_EQUAL_FLOAT(2.5f, acc.getAverage());
 }
 
+
+// ---------------------------------------------------------------------------
+// Allocation accounting
+// ---------------------------------------------------------------------------
+//
+// CLAUDE.md carried "AccumulatorV2 allocates on every sample" as an open
+// contradiction for as long as nothing measured it. A note cannot fail; this
+// can. The counters are defined in runner.cpp, which overrides global new and
+// delete for the whole test binary.
+
+extern unsigned long g_allocCount;
+extern unsigned long g_freeCount;
+
+static void
+test_steady_state_does_not_allocate()
+{
+    AccumulatorV2 acc(16);
+    for (int i = 0; i < 64; ++i) {
+        acc.add((float)i); // fill and wrap several times
+    }
+
+    // Everything from here is the steady state the device lives in: a sample a
+    // second, forever.
+    const unsigned long allocsBefore = g_allocCount;
+    const unsigned long freesBefore = g_freeCount;
+
+    for (int i = 0; i < 5000; ++i) {
+        acc.add((float)(i % 97));
+        (void)acc.getAverage();
+        (void)acc.getSamples();
+        (void)acc.getLast();
+    }
+
+    TEST_ASSERT_EQUAL_UINT32(0, (unsigned)(g_allocCount - allocsBefore));
+    TEST_ASSERT_EQUAL_UINT32(0, (unsigned)(g_freeCount - freesBefore));
+}
+
+static void
+test_sizing_the_window_allocates_once_and_only_then()
+{
+    const unsigned long before = g_allocCount;
+
+    AccumulatorV2 acc(8);
+    const unsigned long afterConstruct = g_allocCount;
+    TEST_ASSERT_EQUAL_UINT32(1, (unsigned)(afterConstruct - before));
+
+    acc.setMaxLen(32);
+    TEST_ASSERT_EQUAL_UINT32(2, (unsigned)(g_allocCount - before));
+
+    // Setting the same length again must not churn the buffer.
+    acc.setMaxLen(32);
+    TEST_ASSERT_EQUAL_UINT32(2, (unsigned)(g_allocCount - before));
+}
+
+static void
+test_a_non_finite_sample_is_dropped_not_absorbed()
+{
+    // One NaN into a running sum poisons every later mean and variance, with
+    // no way back short of a reboot. The list version recomputed from scratch
+    // and so recovered; this one cannot, which is why it refuses the sample.
+    AccumulatorV2 acc(8);
+    for (int i = 0; i < 4; ++i) {
+        acc.add(10.0f);
+    }
+
+    acc.add(NAN);
+    acc.add(INFINITY);
+
+    TEST_ASSERT_EQUAL_UINT32(4, acc.getSamples());
+    TEST_ASSERT_FLOAT_WITHIN(1e-4, 10.0f, acc.getAverage());
+    TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.0f, acc.variance);
+}
+
+static void
+test_the_mean_does_not_drift_over_a_long_run()
+{
+    // The running sums are maintained incrementally, which accumulates rounding
+    // error; resync() bounds it at one recompute per window. A channel at 1 Hz
+    // sees three million samples a month, so this is the property that matters
+    // most and the one a naive incremental implementation quietly loses.
+    AccumulatorV2 acc(60);
+    for (int i = 0; i < 200000; ++i) {
+        acc.add(1000.0f + (float)(i % 3)); // mean of the window is 1001
+    }
+
+    TEST_ASSERT_FLOAT_WITHIN(1e-2, 1001.0f, acc.getAverage());
+    TEST_ASSERT_FLOAT_WITHIN(1e-2, 0.6666f, acc.variance);
+}
+
 void
 run_accumulator_tests(void)
 {
@@ -137,4 +227,8 @@ run_accumulator_tests(void)
     RUN_TEST(test_setMaxLen_trims_immediately);
     RUN_TEST(test_setMaxLen_zero_is_ignored);
     RUN_TEST(test_setMaxLen_grows_without_loss);
+    RUN_TEST(test_steady_state_does_not_allocate);
+    RUN_TEST(test_sizing_the_window_allocates_once_and_only_then);
+    RUN_TEST(test_a_non_finite_sample_is_dropped_not_absorbed);
+    RUN_TEST(test_the_mean_does_not_drift_over_a_long_run);
 }
