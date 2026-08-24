@@ -87,6 +87,12 @@ a board that was sitting in the ROM bootloader waiting for a flash.
 unpredictably, which made a healthy boot look like it stopped at three different
 places. Read the port directly and flush per line when the answer matters.
 
+**Keep the ELF of every image you flash.** `backups/elf/` holds one per
+version. A core dump only decodes against the exact binary that produced it —
+a rebuild from the same sources does not match, because the app image embeds
+its own hash — and without it `espcoredump` refuses and the backtrace is
+garbage. An hour went into learning that.
+
 **Verified on hardware (device `9e7c`, espgarden1):**
 
 - Nonce + SHA-256 login, roles, per-IP lockout, persistent sessions.
@@ -338,6 +344,7 @@ Consequences that bite:
 Facts worth knowing before touching it:
 
 - **`config.id` must equal `ESP.getEfuseMac() % 0x10000` in hex.** A config from another device is rejected wholesale. The id is printed on every boot as `ID: 1a2b`.
+- **A filesystem deploy also wipes the history ring and the moisture model.** `uploadfs` and the filesystem OTA rewrite the whole 512 KB partition, so `/io_history.bin` and `/moisture_model.bin` go with the web assets — the watering-event counter restarts from zero and the classifier waits another six waterings. That happened three times in one day here. **Changed only files under `data/`? Use `POST /spiffs/upload`.** The whole-image path is for when the firmware changed too, or when a struct grew and the stored file would be discarded anyway.
 - **A filesystem deploy overwrites `/config.json` with `data/config.json`, and a masked GET cannot be restored from.** Back up with `GET /config.json?secrets=1` (ADMIN, logged with the caller's IP) BEFORE any `uploadfs` or filesystem OTA, and write the result into `data/config.json`. Taking a "backup" through the normal masked GET loses every credential — eight asterisks each — and the loss only surfaces at the next boot.
 - **`GET`/`POST /config.json` exist (both ADMIN) and secrets are masked in transit.** `GET` replaces `wifi.password`, `ota.password`, `thingSpeak.apiKey`, `talkBack.apiKey` and `mqtt.password` with `********` (`g_configSecretMask`); `POST` restores any field still carrying the mask from the document on disk. This deliberately diverges from fullbot, which serves the raw config — including plaintext credentials — to any authenticated session.
 - **`POST /config.json` replaces the whole file**, exactly like fullbot's: `ConfigFile::saveFile()` opens with `FILE_WRITE` (truncate). The handler merges into the stored document first, so a caller only has to send a complete document, not a diff. **Nothing re-reads the file at runtime** — the response carries `restartRequired: true` and the change lands on the next boot.
