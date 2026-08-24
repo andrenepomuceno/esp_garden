@@ -4,8 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet"
-    integrity="sha384-GLhlTQ8iRABdZLl6O3oVMWSktQOp6b7In1Zl3/Jr59b6EGGoI1aFkw7cmDA6j6gD" crossorigin="anonymous">
+  <link href="bootstrap.css" rel="stylesheet">
   <title>ESP Garden</title>
   <style>
     body {
@@ -91,6 +90,9 @@
       <div class="small">
         <span><span id="conn-dot" class="conn-dot"></span><span id="conn-text">connecting…</span></span>
         <a id="a-thingspeak-link" href="#" class="link-primary ms-3" target="_blank" rel="noopener">ThingSpeak</a>
+        <a href="/history.html" class="link-primary ms-2">History</a>
+        <a href="/devices.html" class="link-primary ms-2">Devices</a>
+        <a href="/schedules.html" class="link-primary ms-2">Schedules</a>
         <a href="/config.html" class="link-primary ms-2">Config</a>
         <a href="/users.html" class="link-primary ms-2">Users</a>
         <a href="/update.html" class="link-primary ms-2">Update</a>
@@ -185,9 +187,6 @@
   </div>
 
   <script src="jquery.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"
-    integrity="sha384-w76AqPfDkMBDXo30jS1Sgez6pr3x5MlQ1ZAGC+nuZB+EYdgRZgiwxhTBTkF7CXvN"
-    crossorigin="anonymous"></script>
   <script src="auth.js"></script>
   <script src="index.js"></script>
 </body>

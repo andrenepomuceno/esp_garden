@@ -1,26 +1,25 @@
 #include "core/tasks.h"
 #include "BuildConfig.h"
+#include "core/io_history.h"
+#include "core/moisture_model.h"
+#include "network/thingsboard.h"
 #include "core/logger.h"
+#include "core/relays.h"
+#include "core/sensors.h"
+#include "core/telemetry.h"
 #include "network/mqtt.h"
 #include "network/talkback.h"
 #include "network/web.h"
 #include <CriticalTaskScheduler.h>
 #include <ESP32Ping.h>
 #include <WiFi.h>
-#include <list>
-#include <new>
-#ifdef HAS_DHT_SENSOR
-#include <Adafruit_Sensor.h>
-#include <DHT.h>
-#include <DHT_U.h>
-#endif
 
-#define FLOAT_TO_STRING(x) (String(x, 2))
-#define ADC_TO_PERCENT(x) ((x * 100.0) / 4095.0)
-
+// The period constants the macros mint are read by src/sensors.cpp and
+// src/telemetry.cpp, which size their accumulator windows and their publish
+// queue from them, so they carry external linkage.
 #define DECLARE_TASK(name, period)                                             \
     static void name##TaskHandler();                                           \
-    static const unsigned g_##name##TaskPeriod = period;                       \
+    extern const unsigned g_##name##TaskPeriod = period;                       \
     static TSTask g_##name##Task(#name, g_##name##TaskPeriod,                  \
                                  &name##TaskHandler)
 
@@ -28,7 +27,7 @@
 // loop() pump, so a blocking background handler cannot delay them.
 #define DECLARE_CRITICAL_TASK(name, period)                                    \
     static void name##TaskHandler();                                           \
-    static const unsigned g_##name##TaskPeriod = period;                       \
+    extern const unsigned g_##name##TaskPeriod = period;                       \
     static TSTask g_##name##Task(#name, g_##name##TaskPeriod,                  \
                                  &name##TaskHandler, true)
 
@@ -39,16 +38,22 @@ DECLARE_TASK(io, 1000);                         // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
 DECLARE_TASK(checkInternet, 15 * 1000);         // 15 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
+// Once a day, as asked. The model accumulates across runs rather than being
+// refitted, so the period is how fast evidence ages, not how fresh the answer
+// is — classification itself happens on every reading.
+DECLARE_TASK(moistureModel, 24 * 60 * 60 * 1000); // 24 h
+// Period comes from config.historyPeriodSec; this is only the fallback used
+// until tasksSetup() calls setPeriod().
+DECLARE_TASK(history, 60 * 1000);               // 1 min
+// Runs at 20 s so a schedule cannot be missed inside its minute, and fires at
+// most once per minute per schedule.
+DECLARE_TASK(schedules, 20 * 1000);             // 20 s
 DECLARE_TASK(mqtt, 1 * 60 * 1000);              // 1 min
 DECLARE_TASK(talkBack, 1 * 60 * 1000);          // 1 min
-#ifdef HAS_MOISTURE_SENSOR
 DECLARE_TASK(checkMoisture, 4 * 60 * 60 * 1000); // 4 h
-#endif
-#ifdef HAS_DHT_SENSOR
 // At the DHT11's sampling floor: the Adafruit driver returns its cached
 // reading rather than an error when polled faster than once per second.
 DECLARE_TASK(dht, 1 * 1000); // 1 s
-#endif
 
 // Switching a pump off on time is the one deadline in this firmware that has a
 // physical cost when missed, so it does not share the cooperative pump with
@@ -61,89 +66,14 @@ DECLARE_CRITICAL_TASK(relays, CRITICAL_TASKS_PERIOD_MS);
 // error blink would never run in precisely the case it exists to report.
 DECLARE_CRITICAL_TASK(ledBlink, 1000);
 
-// ThingSpeak channels have exactly 8 fields and the numbering is a permanent
-// contract with the data already stored. Relays 1..N have no field — they are
-// local-only.
-static const unsigned g_soilMoistureField = 1;
-static const unsigned g_wateringField = 2;
-static const unsigned g_pingField = 3;
-#ifdef HAS_WATER_LEVEL_SENSOR
-static const unsigned g_waterLevelField = 4;
-#endif
-static const unsigned g_luminosityField = 5;
-static const unsigned g_temperatureField = 6;
-static const unsigned g_airHumidityField = 7;
-static const unsigned g_bootTimeField = 8;
-
-// Second soil probe. Field 4 is free only on a board without a water level
-// sensor; where both exist the slot has to be chosen deliberately, because
-// reusing a number rewrites the meaning of everything already stored under it.
-// Set -D MOISTURE2_FIELD=<n> in platformio.ini to pick one; leaving it unset
-// keeps the probe on the dashboard and out of the cloud.
-#if (MOISTURE_SENSOR_COUNT > 1) && !defined(MOISTURE2_FIELD) &&                \
-  !defined(HAS_WATER_LEVEL_SENSOR)
-#define MOISTURE2_FIELD 4
-#endif
-
-#if (MOISTURE_SENSOR_COUNT > 1) && !defined(MOISTURE2_FIELD)
-#warning "Second soil probe is dashboard-only: no ThingSpeak field assigned (set -D MOISTURE2_FIELD=<n>)."
-#endif
-
-const unsigned int g_wateringDefaultTime = 5 * 1000;
-static const unsigned g_relayMaxTime = 20 * 1000;
+// Ceiling on each blocking wait in tasksSetup(). Long enough for a normal
+// association and NTP round trip, short enough that an outage costs a minute
+// rather than the whole session.
+static const unsigned long g_bootWaitMaxMs = 60UL * 1000UL;
 
 AccumulatorV2 g_pingTime(g_mqttTaskPeriod / g_checkInternetTaskPeriod);
-static String g_mqttMessage = "";
 
-#if USE_WATERING_PWM
-static const unsigned g_wateringPWMChannel = 0;
-static const unsigned g_wateringPWMTime = 2 * 1000;
-#endif
-
-#ifdef HAS_DHT_SENSOR
-// Constructed in tasksSetup(), not at static-init time: DHT_Unified copies the
-// pin in its constructor, and at static-init config.json has not been read yet,
-// so a file-scope instance permanently runs on the compiled default pin.
-alignas(DHT_Unified) static uint8_t g_dhtStorage[sizeof(DHT_Unified)];
-static DHT_Unified* g_dht = nullptr;
-AccumulatorV2 g_temperature(g_mqttTaskPeriod / g_dhtTaskPeriod);
-AccumulatorV2 g_airHumidity(g_mqttTaskPeriod / g_dhtTaskPeriod);
-unsigned g_dhtReadErrors = 0;
-unsigned g_dhtTotalReads = 0;
-#endif
-
-#ifdef HAS_MOISTURE_SENSOR
-AccumulatorV2 g_soilMoisture[MOISTURE_SENSOR_COUNT];
-static float g_moistureBeforeWatering[MOISTURE_SENSOR_COUNT] = { 0.0 };
-#endif
-
-#ifdef HAS_LUMINOSITY_SENSOR
-AccumulatorV2 g_luminosity(g_mqttTaskPeriod / g_ioTaskPeriod);
-#endif
-
-#ifdef HAS_WATER_LEVEL_SENSOR
-#define ADC_TO_WATER_LEVEL(v) (9.0 - 12.0 * sin(4.04 - 1.61 * (3.3 * v / 4095.0)))
-AccumulatorV2 g_waterLevel(g_mqttTaskPeriod / g_ioTaskPeriod);
-#endif
-
-void
-mqttAddField(int field, String val);
-void
-mqttAddStatus(String status);
-
-struct RelayState
-{
-    bool on;
-    unsigned long startTime;
-    unsigned long duration;
-};
-
-static RelayState g_relay[RELAY_COUNT] = {};
-
-// The relay task runs on its own FreeRTOS task while startRelay() is called
-// from loop() (TalkBack) and from async_tcp (the /control handler), so every
-// read-modify-write of g_relay goes through this spinlock.
-static portMUX_TYPE g_relayMux = portMUX_INITIALIZER_UNLOCKED;
+static float g_moistureBeforeWatering[MOISTURE_MAX] = { 0.0 };
 
 static WiFiClient g_wifiClient;
 static TalkBack talkBack;
@@ -151,305 +81,168 @@ static TalkBack talkBack;
 bool g_hasInternet = false;
 time_t g_bootTime = 0;
 bool g_mqttEnabled = true;
-unsigned g_packagesSent = 0;
-unsigned g_wateringCycles = 0;
 bool g_ledBlinkEnabled = false;
 unsigned g_connectionLossCount = 0;
 
-static void
-relayWrite(unsigned index, bool on)
+// Seam with src/relays.cpp: the reservoir interlock. Lives here rather than in
+// relays.cpp because it couples a relay to a SENSOR, and relays.cpp is the one
+// module that must stay about switching.
+bool
+relayStartAllowed(unsigned index, String& reason)
 {
-    const uint8_t level = on ? config.relayPinOn[index] : !config.relayPinOn[index];
+    // loadFile() clears floatInterlock when no float switch is declared, so a
+    // sensor removed in /devices.html cannot leave a veto behind that refuses
+    // every watering on a reading nothing produces.
+    if (!config.floatInterlock) {
+        return true;
+    }
 
-#if USE_WATERING_PWM
-    if (index == 0) {
-        ledcWrite(g_wateringPWMChannel, level ? 1023 : 0);
+    // The refill relay is the remedy for an empty reservoir. Blocking it would
+    // mean an empty tank could never be filled — the interlock deadlocking the
+    // system it exists to protect.
+    if ((int)index == config.floatFillRelay) {
+        return true;
+    }
+
+    if (!floatRaised()) {
+        reason = config.floatName + " reads empty";
+        return false;
+    }
+
+    return true;
+}
+
+// Turns the bits the switching code recorded into telemetry, once a second.
+//
+// The device used to report relays by SAMPLING them into the 1-minute payload,
+// so a five-second watering was invisible: the sample landed between the
+// events. The history record solved this with a sticky mask long ago and the
+// telemetry never got it. Now there are both — an immediate event for the
+// transition, and a sticky mask so the periodic payload says "this ran during
+// the period" rather than "it happens to be on right now".
+static void
+publishRelayEvents()
+{
+    RelayPendingEvent pending[RELAY_MAX];
+    relayTakePendingEvents(pending);
+
+    for (unsigned i = 0; i < config.relayCount; ++i) {
+        if (!pending[i].started && !pending[i].ended) {
+            continue;
+        }
+
+        JSONVar event;
+        const String key = "relay" + String(i + 1) + "Event";
+        // Both flags can be set in the same second — a 500 ms activation
+        // starts and finishes between two drains. Reporting "ended" then is
+        // right: what the operator needs to know is that it ran and is done.
+        event[key.c_str()] = pending[i].started
+                               ? (pending[i].ended ? "ran" : "started")
+                               : "stopped";
+        event["relay"] = (int)i;
+        event["relayName"] = config.relayName[i];
+        if (pending[i].started) {
+            event["durationMs"] = (int)pending[i].duration;
+        }
+        tbPublishEvent(JSON.stringify(event));
+    }
+}
+
+// The float switch has exactly the relay's problem and a worse consequence: a
+// reservoir that runs empty and is refilled between two publishes never
+// happened, as far as the cloud is concerned — and "the tank ran dry" is the
+// one event an operator most needs to see. So the TRANSITION is published, not
+// the level.
+static void
+publishFloatEvents()
+{
+    if (!config.floatFitted) {
         return;
     }
-#endif
 
-    digitalWrite(config.relayPin[index], level);
+    static bool known = false;
+    static bool lastRaised = false;
+
+    const bool raised = floatRaised();
+    if (known && raised == lastRaised) {
+        return;
+    }
+
+    // The first reading after boot is reported too: an operator coming back to
+    // a device needs to know the current state, not only the next change.
+    JSONVar event;
+    event["reservoirRaised"] = raised;
+    event["reservoirEvent"] = known ? (raised ? "refilled" : "emptied")
+                                    : "initial reading";
+    tbPublishEvent(JSON.stringify(event));
+
+    known = true;
+    lastRaised = raised;
+}
+
+void
+relayRefusedHook(unsigned index, const String& reason)
+{
+    if (index >= config.relayCount) {
+        return;
+    }
+
+    JSONVar event;
+    event["relayRefused"] = config.relayName[index];
+    event["relay"] = (int)index;
+    event["reason"] = reason;
+    tbPublishEvent(JSON.stringify(event));
+}
+
+// Seam with src/relays.cpp: startRelay() calls this once the relay is
+// energised, so relay switching itself stays free of the watering bookkeeping.
+void
+relayStartedHook(unsigned index, unsigned int duration)
+{
+    if (index == 0) {
+        ++g_wateringCycles;
+        g_pendingWateringMs = duration;
+        mqttAddField(g_wateringField, String(duration));
+
+        for (unsigned i = 0; i < config.moistureCount; ++i) {
+            g_moistureBeforeWatering[i] = g_soilMoisture[i].getAverage();
+        }
+        g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
+    }
 }
 
 static void
 relaysTaskHandler()
 {
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
-        bool expired = false;
-
-        portENTER_CRITICAL(&g_relayMux);
-        if (g_relay[i].on &&
-            (millis() - g_relay[i].startTime >= g_relay[i].duration)) {
-            g_relay[i].on = false;
-            expired = true;
-        }
-        portEXIT_CRITICAL(&g_relayMux);
-
-        if (expired) {
-            relayWrite(i, false);
-        }
-    }
+    relaysTick();
 }
-
-bool
-relayIsOn(unsigned index)
-{
-    if (index >= RELAY_COUNT) {
-        return false;
-    }
-
-    portENTER_CRITICAL(&g_relayMux);
-    const bool on = g_relay[index].on;
-    portEXIT_CRITICAL(&g_relayMux);
-
-    return on;
-}
-
-unsigned long
-relayRemaining(unsigned index)
-{
-    if (index >= RELAY_COUNT) {
-        return 0;
-    }
-
-    portENTER_CRITICAL(&g_relayMux);
-    const RelayState state = g_relay[index];
-    portEXIT_CRITICAL(&g_relayMux);
-
-    if (!state.on) {
-        return 0;
-    }
-
-    const unsigned long elapsed = millis() - state.startTime;
-    return (elapsed >= state.duration) ? 0 : (state.duration - elapsed);
-}
-
-void
-startRelay(unsigned index, unsigned int duration)
-{
-    if (index >= RELAY_COUNT) {
-        logger.error("Invalid relay index: " + String(index));
-        return;
-    }
-
-    if ((duration == 0) || (duration > g_relayMaxTime)) {
-        logger.error("Invalid relay time: " + String(duration));
-        return;
-    }
-
-    bool started = false;
-
-    portENTER_CRITICAL(&g_relayMux);
-    if (!g_relay[index].on) {
-        g_relay[index].on = true;
-        g_relay[index].startTime = millis();
-        g_relay[index].duration = duration;
-        started = true;
-    }
-    portEXIT_CRITICAL(&g_relayMux);
-
-    if (!started) {
-        logger.warning(config.relayName[index] + " already active.");
-        return;
-    }
-
-    logger.info("Starting " + config.relayName[index] + " for " +
-                String(duration) + " ms");
-    relayWrite(index, true);
-
-    if (index == 0) {
-        ++g_wateringCycles;
-        mqttAddField(g_wateringField, String(duration));
-
-#ifdef HAS_MOISTURE_SENSOR
-        for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
-            g_moistureBeforeWatering[i] = g_soilMoisture[i].getAverage();
-        }
-        g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
-#endif
-    }
-}
-
-void
-startWatering(unsigned int wateringTime)
-{
-    startRelay(0, wateringTime);
-}
-
-#ifdef HAS_MOISTURE_SENSOR
-String
-moistureState(unsigned index)
-{
-    if (index >= MOISTURE_SENSOR_COUNT) {
-        return String();
-    }
-
-    const float dry = config.moistureDry[index];
-    const float wet = config.moistureWet[index];
-    const float span = wet - dry;
-
-    // Uncalibrated. Reporting a band from an unknown scale would be a guess
-    // dressed as a measurement, so the probe reports no state at all.
-    if (fabsf(span) < 1e-3) {
-        return String();
-    }
-
-    // Ordering is not assumed: with the 100-ADC% conversion the air reading is
-    // the smaller number, but a different probe or conversion can invert that.
-    float fraction = (g_soilMoisture[index].getAverage() - dry) / span;
-    if (fraction < 0.0) {
-        fraction = 0.0;
-    } else if (fraction > 1.0) {
-        fraction = 1.0;
-    }
-
-    if (fraction < 1.0 / 3.0) {
-        return String("Dry");
-    }
-    if (fraction < 2.0 / 3.0) {
-        return String("Humid");
-    }
-    return String("Wet");
-}
-#endif
 
 static void
 ioTaskHandler()
 {
-#ifdef HAS_MOISTURE_SENSOR
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
-        g_soilMoisture[i].add(
-          100.0 - ADC_TO_PERCENT(analogRead(config.soilMoisturePin[i])));
-    }
-#endif
-
-#ifdef HAS_LUMINOSITY_SENSOR
-    g_luminosity.add(ADC_TO_PERCENT(analogRead(config.luminosityPin)));
-#endif
-
-#ifdef HAS_WATER_LEVEL_SENSOR
-    g_waterLevel.add(ADC_TO_WATER_LEVEL(analogRead(config.waterLevelPin)));
-#endif
+    sensorsReadIo();
 
     // Same task, same thread as the accumulator writes above — the request
     // handler must never walk these lists itself.
     webUpdateDataCache();
+
+    // Relay transitions, at 1 Hz rather than at the 1-minute publish. The
+    // critical runner and startRelay() only set bits; this is where they become
+    // messages, on a background task where building a String is allowed.
+    publishRelayEvents();
+    publishFloatEvents();
 }
 
-#ifdef HAS_DHT_SENSOR
 static void
 dhtTaskHandler()
 {
-    if (g_dht == nullptr) {
-        return;
-    }
-
-    sensors_event_t event;
-    bool error = false;
-
-    g_dht->temperature().getEvent(&event);
-    if (isnan(event.temperature) == false) {
-        g_temperature.add(event.temperature);
-    } else {
-        error = true;
-    }
-
-    g_dht->humidity().getEvent(&event);
-    if (isnan(event.relative_humidity) == false) {
-        g_airHumidity.add(event.relative_humidity);
-    } else {
-        error = true;
-    }
-
-    ++g_dhtTotalReads;
-    if (error) {
-        ++g_dhtReadErrors;
-    }
-}
-#endif
-
-void
-mqttAddField(int field, String val)
-{
-    g_mqttMessage += "field" + String(field) + "=" + val + "&";
-}
-
-void
-mqttAddStatus(String status)
-{
-    g_mqttMessage += "status='" + status + "'&";
+    sensorsReadDht();
 }
 
 void
 mqttTaskHandler()
 {
-    static std::list<String> msgQueue;
-
-    if (!g_mqttEnabled || !g_hasInternet) {
-        logger.info("MQTT skipped.");
-        logger.info("g_mqttEnabled = " + String(g_mqttEnabled) +
-                    " g_hasInternet = " + String(g_hasInternet));
-        return;
-    }
-
-#ifdef HAS_MOISTURE_SENSOR
-    mqttAddField(g_soilMoistureField,
-                 FLOAT_TO_STRING(g_soilMoisture[0].getAverage()));
-#if (MOISTURE_SENSOR_COUNT > 1) && defined(MOISTURE2_FIELD)
-    mqttAddField(MOISTURE2_FIELD,
-                 FLOAT_TO_STRING(g_soilMoisture[1].getAverage()));
-#endif
-#endif
-
-#ifdef HAS_LUMINOSITY_SENSOR
-    mqttAddField(g_luminosityField, FLOAT_TO_STRING(g_luminosity.getAverage()));
-#endif
-
-#ifdef HAS_DHT_SENSOR
-    mqttAddField(g_temperatureField,
-                 FLOAT_TO_STRING(g_temperature.getAverage()));
-    mqttAddField(g_airHumidityField,
-                 FLOAT_TO_STRING(g_airHumidity.getAverage()));
-#endif
-
-#ifdef HAS_WATER_LEVEL_SENSOR
-    mqttAddField(g_waterLevelField, FLOAT_TO_STRING(g_waterLevel.getAverage()));
-#endif
-
-    mqttAddField(g_pingField, String(g_pingTime.getAverage()));
-
-    char timestamp[64];
-    time_t now = time(nullptr);
-    strftime(timestamp, sizeof timestamp, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
-    g_mqttMessage += "created_at='" + String(timestamp) + "'";
-
-    msgQueue.push_back(g_mqttMessage);
-    g_mqttMessage = "";
-
-    digitalWrite(LED_BUILTIN, 1);
-    int errors = 0;
-    const unsigned maxMsgQueueSize = 60 * 60 * 1000 / g_mqttTaskPeriod;
-    while (msgQueue.size() > maxMsgQueueSize) {
-        logger.warning("msgQueue is full, discarding messages..");
-        msgQueue.pop_front();
-    }
-    while (msgQueue.size() > 0) {
-        bool success = mqttPublish(g_thingSpeakChannelNumber, msgQueue.front());
-
-        if (success) {
-            ++g_packagesSent;
-            msgQueue.pop_front();
-            errors = 0;
-        } else {
-            logger.error("mqttPublish failed.");
-            ++errors;
-            if (errors > 3) {
-                logger.warning("Giving up for now...");
-                break;
-            }
-        }
-    }
-    digitalWrite(LED_BUILTIN, 0);
+    telemetryPublish();
 }
 
 void
@@ -467,6 +260,15 @@ clockUpdateTaskHandler()
 
     setenv("TZ", g_timezone.c_str(), 1); // America/Sao Paulo
     tzset();
+
+    // While the clock is still unset, come back in a minute instead of a day —
+    // otherwise a boot that missed NTP stays undatable until tomorrow.
+    if (time(NULL) < g_safeTimestamp) {
+        g_clockUpdateTask.setPeriod(60UL * 1000UL);
+    } else {
+        g_bootTime = (g_bootTime < g_safeTimestamp) ? time(NULL) : g_bootTime;
+        g_clockUpdateTask.setPeriod(g_clockUpdateTaskPeriod);
+    }
 }
 
 static void
@@ -555,11 +357,10 @@ checkInternetTaskHandler()
     }
 }
 
-#ifdef HAS_MOISTURE_SENSOR
 static void
 checkMoistureTaskHandler()
 {
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
         float moistureDelta =
           g_soilMoisture[i].getAverage() - g_moistureBeforeWatering[i];
 
@@ -572,7 +373,6 @@ checkMoistureTaskHandler()
 
     g_checkMoistureTask.disable();
 }
-#endif
 
 static void
 ledBlinkTaskHandler()
@@ -586,10 +386,172 @@ ledBlinkTaskHandler()
     }
 }
 
+// One snapshot of every input and output, written to the ring buffer. Fields
+// the board does not have stay NaN, so a reader can tell "not fitted" from
+// "read zero".
+static void
+historyTaskHandler()
+{
+    // A record stamped before the clock synced is undatable, and it would sit
+    // in the ring pretending to be from 1970.
+    const time_t now = time(NULL);
+    if (now < g_safeTimestamp) {
+        return;
+    }
+
+    IoRecord record = {};
+    record.timestamp = (uint32_t)now;
+
+    // Everything that fired during the period, not just what happens to be on
+    // at this instant.
+    uint16_t mask = relayStickyTake(RELAY_STICKY_HISTORY);
+
+    for (unsigned i = 0; i < config.relayCount && i < 16; ++i) {
+        if (relayIsOn(i)) {
+            mask |= (uint16_t)(1u << i);
+        }
+    }
+    record.relayMask = mask;
+
+    for (unsigned i = 0; i < IO_HISTORY_MAX_MOISTURE; ++i) {
+        record.moisture[i] = NAN;
+    }
+    record.luminosity = NAN;
+    record.temperature = NAN;
+    record.airHumidity = NAN;
+    record.waterLevel = NAN;
+    record.flowRate = NAN;
+    record.flowTotal = NAN;
+
+    for (unsigned i = 0; i < config.moistureCount &&
+         i < IO_HISTORY_MAX_MOISTURE;
+         ++i) {
+        // An empty accumulator averages to 0.0, which would be written as a
+        // genuine zero reading and defeat the whole not-fitted-vs-read-zero
+        // contract the record layout exists for.
+        record.moisture[i] = (g_soilMoisture[i].getSamples() == 0)
+                               ? NAN
+                               : g_soilMoisture[i].getAverage();
+    }
+    record.luminosity = (g_luminosity.getSamples() == 0) ? NAN : g_luminosity.getAverage();
+    record.temperature = (g_temperature.getSamples() == 0) ? NAN : g_temperature.getAverage();
+    record.airHumidity = (g_airHumidity.getSamples() == 0) ? NAN : g_airHumidity.getAverage();
+    record.waterLevel = (g_waterLevel.getSamples() == 0) ? NAN : g_waterLevel.getAverage();
+    record.flowRate = (g_flowRate.getSamples() == 0) ? NAN : g_flowRate.getAverage();
+    // The running total is the point of storing flow at all: it answers how
+    // much a watering actually delivered, and it only lives in RAM otherwise —
+    // gone at every reboot, brownout and OTA.
+    // Guarded, unlike the accumulators above: a running total has no
+    // getSamples() to say "never fed", so an unfitted meter would write a
+    // perfectly real 0.0 litres and the chart would show a flat line instead
+    // of a gap.
+    if (config.flowFitted) {
+        record.flowTotal = (float)flowTotalLitres();
+    }
+
+    // Same reason, and it is the exact case IO_HISTORY_FLAG_FLOAT_VALID was
+    // added for: without the guard a board with no float switch records a
+    // valid reading of "lowered", indistinguishable from a genuinely empty
+    // reservoir, forever.
+    if (config.floatFitted) {
+        record.flags |= IO_HISTORY_FLAG_FLOAT_VALID;
+        if (floatRaised()) {
+            record.flags |= IO_HISTORY_FLAG_FLOAT_RAISED;
+        }
+    }
+
+    ioHistory.append(record);
+}
+
+// Day-of-epoch each schedule last fired on. 0 is 1970-01-01, which no synced
+// clock ever reports, so a fresh boot cannot look like "already fired today".
+static uint32_t g_scheduleLastFired[SCHEDULE_COUNT] = { 0 };
+
+// How late a schedule may fire and still count. Wide enough to survive a task
+// that blocked for a few minutes, narrow enough that a device booting at noon
+// does not immediately run the 06:30 watering it slept through.
+static const int g_scheduleCatchUpMinutes = 10;
+
+static void
+schedulesTaskHandler()
+{
+    if (config.scheduleCount == 0) {
+        return;
+    }
+
+    // Local time, and only once NTP has answered: firing on a 1970 clock would
+    // water at an arbitrary moment and then never again.
+    const time_t now = time(NULL);
+    if (now < g_safeTimestamp) {
+        return;
+    }
+
+    struct tm local;
+    if (!localtime_r(&now, &local)) {
+        return;
+    }
+
+    const uint32_t minuteOfEpoch = (uint32_t)(now / 60);
+    const int minuteOfDay = local.tm_hour * 60 + local.tm_min;
+
+    for (unsigned i = 0; i < config.scheduleCount; ++i) {
+        const Schedule& sch = config.schedules[i];
+        if (!sch.enabled) {
+            continue;
+        }
+        if ((sch.days & (uint8_t)(1u << local.tm_wday)) == 0) {
+            continue;
+        }
+
+        // A catch-up window, not an exact-minute match. This is a BACKGROUND
+        // task, and execute() runs at most one of those per loop(): a single
+        // ping round (three 2 s timeouts), a TalkBack socket (5 s) or an MQTT
+        // drain over TLS can easily push all three ticks of a 20 s task past
+        // the target minute. On an exact match that misses the watering for
+        // the whole day, silently and indistinguishably from a schedule that
+        // is switched off.
+        const int lateBy = minuteOfDay - (sch.hour * 60 + sch.minute);
+        if (lateBy < 0 || lateBy > g_scheduleCatchUpMinutes) {
+            continue;
+        }
+
+        // Fire once per calendar day per schedule. Keyed on the day rather
+        // than the minute, because with a catch-up window several ticks now
+        // qualify and a minute key would let every one of them fire.
+        const uint32_t dayOfEpoch = minuteOfEpoch / (24 * 60);
+        if (g_scheduleLastFired[i] == dayOfEpoch) {
+            continue;
+        }
+
+        if (lateBy > 0) {
+            logger.warning("Schedule '" + sch.name + "' is " + String(lateBy) +
+                           " min late; firing anyway.");
+        }
+
+        g_scheduleLastFired[i] = dayOfEpoch;
+        logger.info("Schedule '" + sch.name + "' firing " +
+                    config.relayName[sch.relay] + " for " +
+                    String(sch.durationMs) + " ms");
+        // startRelay() applies the same ceiling and the already-running guard
+        // as a manual activation; a schedule gets no privileges.
+        startRelay(sch.relay, sch.durationMs);
+    }
+}
+
 static void
 logBackupTaskHandler()
 {
     logger.backup();
+}
+
+// Three passes over the whole history buffer — seconds of SPIFFS reads, which
+// on the cooperative pump stalls every other BACKGROUND task for that long.
+// Acceptable once a day, and the reason relay timing is critical rather than
+// background: a pump switching off does not wait for this.
+static void
+moistureModelTaskHandler()
+{
+    moistureModelTrain();
 }
 
 void
@@ -603,35 +565,17 @@ tasksSetup()
     g_taskScheduler.addTask(&g_clockUpdateTask);
     g_taskScheduler.addTask(&g_checkInternetTask);
     g_taskScheduler.addTask(&g_logBackupTask);
+    g_taskScheduler.addTask(&g_moistureModelTask);
+    g_taskScheduler.addTask(&g_historyTask);
+    g_taskScheduler.addTask(&g_schedulesTask);
     g_taskScheduler.addTask(&g_mqttTask);
     g_taskScheduler.addTask(&g_talkBackTask);
-#ifdef HAS_MOISTURE_SENSOR
     g_taskScheduler.addTask(&g_checkMoistureTask);
-#endif
-#ifdef HAS_DHT_SENSOR
     g_taskScheduler.addTask(&g_dhtTask);
-#endif
 
-    // Every scalar accumulator sizes its window from the MQTT period at
-    // construction, so each average covers exactly one publish interval. An
-    // array cannot pass a constructor argument, so the probes are sized here
-    // instead — otherwise they silently keep the 120-sample default and their
-    // averages span a different interval from every other channel.
-#ifdef HAS_MOISTURE_SENSOR
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
-        g_soilMoisture[i].setMaxLen(g_mqttTaskPeriod / g_ioTaskPeriod);
-    }
-#endif
+    sensorsSetup();
 
-    pinMode(config.buttonPin, INPUT);
-
-    // Relay pins were already parked by relayPinsSafeInit() before and after
-    // the config load; this only covers the PWM variant's channel setup.
-#if USE_WATERING_PWM
-    ledcAttachPin(config.relayPin[0], g_wateringPWMChannel);
-    ledcSetup(g_wateringPWMChannel, 10e3, 10);
-    ledcWrite(g_wateringPWMChannel, 0);
-#endif
+    relaysSetup();
 
     talkBack.setTalkBackID(g_talkBackID);
     talkBack.setAPIKey(g_talkBackAPIKey);
@@ -646,31 +590,82 @@ tasksSetup()
         logger.fatal("Failed to start the critical task runner.");
     }
 
+    // Both waits are BOUNDED. They used to be unbounded, and that turned any
+    // outage into a dead device: with WiFi up and the web server answering, a
+    // DNS hiccup on the NTP pool kept setup() spinning "Syncing clock..." for
+    // ever, so no sensor was read, no relay timer was armed from the scheduler
+    // and no history was written — observed on the live board, stuck for
+    // minutes with a perfectly good network.
+    //
+    // Nothing here actually needs to finish before loop() starts:
+    // checkInternet and clockUpdate are periodic tasks that keep retrying.
     logger.info("Waiting for internet connection...");
-    while (!g_hasInternet) {
+    unsigned long waitStart = millis();
+    while (!g_hasInternet && (millis() - waitStart < g_bootWaitMaxMs)) {
         checkInternetTaskHandler();
         delay(1000);
     }
-    while (g_bootTime < g_safeTimestamp) {
+    if (!g_hasInternet) {
+        logger.warning("No internet after " + String(g_bootWaitMaxMs / 1000) +
+                       " s. Continuing offline; checkInternet keeps retrying.");
+    }
+
+    waitStart = millis();
+    while ((g_bootTime < g_safeTimestamp) &&
+           (millis() - waitStart < g_bootWaitMaxMs)) {
         clockUpdateTaskHandler();
         delay(2000);
         g_bootTime = time(NULL);
+    }
+    if (g_bootTime < g_safeTimestamp) {
+        logger.warning("Clock not synced. Timestamps stay invalid and history "
+                       "is skipped until NTP answers.");
     }
 
     mqttSetup();
     mqttAddField(g_bootTimeField, String(g_bootTime));
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
-#ifdef HAS_DHT_SENSOR
-    g_dht = new (g_dhtStorage) DHT_Unified(config.dhtPin, DHT11);
-    g_dht->begin();
-    g_dhtTask.enableDelayed(g_dhtTaskPeriod);
-#endif
+    sensorsSetupDht();
+    // Only when one is declared. Ticking at 1 Hz into a handler that returns
+    // at its null check wastes a scheduler slot, and the bucket caps at 16.
+    if (config.dhtFitted) {
+        g_dhtTask.enableDelayed(g_dhtTaskPeriod);
+    }
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
     g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
     g_mqttTask.enableDelayed(g_mqttTaskPeriod);
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
     g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
+    // Trains 5 minutes after boot as well as daily: a device that is power
+    // cycled every evening would otherwise never reach its 24 h tick, and the
+    // history it just reloaded is exactly the evidence it needs.
+    if (config.moistureCount > 0) {
+        g_moistureModelTask.enableDelayed(5 * 60 * 1000);
+    }
+
+    if (config.scheduleCount > 0) {
+        g_schedulesTask.enableDelayed(g_schedulesTaskPeriod);
+        for (unsigned i = 0; i < config.scheduleCount; ++i) {
+            const Schedule& sch = config.schedules[i];
+            char when[8];
+            snprintf(when, sizeof(when), "%02u:%02u", sch.hour, sch.minute);
+            logger.info(String("  schedule '") + sch.name + "' " + when + " -> " +
+                        config.relayName[sch.relay] + " " +
+                        String(sch.durationMs) + " ms, days 0b" +
+                        String(sch.days, BIN));
+        }
+    }
+
+    // Enabled only when the buffer actually opened: an append into a file that
+    // failed to format would log an error every period, forever.
+    if (ioHistory.ready()) {
+        const unsigned period = (unsigned)config.historyPeriodSec * 1000u;
+        g_historyTask.setPeriod(period);
+        g_historyTask.enableDelayed(period);
+        logger.info("io_history: logging every " +
+                    String(config.historyPeriodSec) + " s");
+    }
 
     logger.info("Tasks setup done!");
     logger.backup();

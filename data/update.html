@@ -4,8 +4,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet"
-        integrity="sha384-GLhlTQ8iRABdZLl6O3oVMWSktQOp6b7In1Zl3/Jr59b6EGGoI1aFkw7cmDA6j6gD" crossorigin="anonymous">
+    <link href="bootstrap.css" rel="stylesheet">
     <title>ESP Garden &mdash; Update</title>
 </head>
 
@@ -41,6 +40,30 @@
             </div>
         </div>
 
+        <div class="card mb-3">
+            <div class="card-header py-2 fw-semibold">Replace a single file</div>
+            <div class="card-body">
+                <p class="small text-secondary mb-3">
+                    A filesystem update rewrites the whole partition, including
+                    <code>/config.json</code> &mdash; which is how a device loses its
+                    Wi-Fi and broker credentials over a one-line change to a stylesheet.
+                    Use this to change one web asset instead. The configuration and the
+                    credential stores are refused here on purpose.
+                </p>
+
+                <label for="file-single" class="form-label fw-semibold small">Select file</label>
+                <input type="file" id="file-single" class="form-control mb-3">
+
+                <label for="path-single" class="form-label fw-semibold small">Destination path</label>
+                <input type="text" id="path-single" class="form-control mb-1" placeholder="/index.js.gz">
+                <div class="form-text mb-3">Max 31 characters, including the leading slash.</div>
+
+                <button type="button" id="button-single" class="btn btn-outline-primary w-100 fw-semibold py-2">
+                    &#x1F4C4; Upload file
+                </button>
+            </div>
+        </div>
+
         <div class="card" id="progress-card" style="display:none;">
             <div class="card-body">
                 <label class="form-label small fw-semibold mb-1">Upload Progress</label>
@@ -56,9 +79,6 @@
 
     <script src="jquery.js"></script>
     <script src="spark-md5.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"
-        integrity="sha384-w76AqPfDkMBDXo30jS1Sgez6pr3x5MlQ1ZAGC+nuZB+EYdgRZgiwxhTBTkF7CXvN"
-        crossorigin="anonymous"></script>
     <script src="auth.js"></script>
     <script src="update.js"></script>
 </body>

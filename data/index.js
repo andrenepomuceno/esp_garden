@@ -1,8 +1,19 @@
 // ESP Garden — dashboard UI
 (function () {
+  // Every label below comes from /data.json, and several of them are config
+  // strings an admin typed: the sensor and relay names, the hostname. Building
+  // a row by string concatenation means a name containing markup executes in
+  // every dashboard session, including another admin's. escapeHtml is the same
+  // helper auth.js uses for device response bodies.
+  function esc(value) {
+    return espUI.escapeHtml(value === undefined || value === null ? '' : value);
+  }
+
   var POLL_INTERVAL_MS = 1000;
   var REQUEST_TIMEOUT_MS = 1500;
   var pollTimer = null;
+  var polling = false;
+  var pollGeneration = 0;
   var pageVisible = true;
 
   // ---------- helpers ----------
@@ -11,7 +22,7 @@
     var cls = 'text-bg-secondary';
     if (v === 'online' || v === 'enabled') cls = 'text-bg-success';
     else if (v === 'offline' || v === 'disabled') cls = 'text-bg-danger';
-    return '<span class="badge ' + cls + '">' + value + '</span>';
+    return '<span class="badge ' + cls + '">' + esc(value) + '</span>';
   }
 
   function formatStatusValue(key, value) {
@@ -22,15 +33,15 @@
       if (isNaN(pct)) cls = 'text-bg-secondary';
       else if (pct < 30) cls = 'text-bg-danger';
       else if (pct < 60) cls = 'text-bg-warning';
-      return '<span class="badge num-badge ' + cls + '">' + value + '</span>';
+      return '<span class="badge num-badge ' + cls + '">' + esc(value) + '</span>';
     }
-    return '<span class="num-badge">' + value + '</span>';
+    return '<span class="num-badge">' + esc(value) + '</span>';
   }
 
   function fillStatus(data) {
     var rows = '';
     for (var key in data) {
-      rows += '<tr><th scope="row" class="fw-normal text-muted">' + key + '</th>' +
+      rows += '<tr><th scope="row" class="fw-normal text-muted">' + esc(key) + '</th>' +
               '<td class="text-end">' + formatStatusValue(key, data[key]) + '</td></tr>';
     }
     $('#tbody-status').html(rows);
@@ -41,12 +52,12 @@
     for (var key in data) {
       var d = data[key] || {};
       rows += '<tr>' +
-              '<th scope="row" class="fw-normal">' + key + '</th>' +
-              '<td class="text-end num-badge">' + (d.val || '') +
-              (d.state ? ' <span class="badge text-bg-secondary">' + d.state + '</span>' : '') +
+              '<th scope="row" class="fw-normal">' + esc(key) + '</th>' +
+              '<td class="text-end num-badge">' + esc(d.val || '') +
+              (d.state ? ' <span class="badge text-bg-secondary">' + esc(d.state) + '</span>' : '') +
               '</td>' +
-              '<td class="text-end num-badge text-muted">' + (d.avg || '') + '</td>' +
-              '<td class="text-end num-badge text-muted">' + (d.var || '') + '</td>' +
+              '<td class="text-end num-badge text-muted">' + esc(d.avg || '') + '</td>' +
+              '<td class="text-end num-badge text-muted">' + esc(d.var || '') + '</td>' +
               '</tr>';
     }
     $('#tbody-inputs').html(rows);
@@ -58,7 +69,7 @@
       var v = data[key];
       var label = (v == 1 || v === '1') ? '<span class="badge text-bg-info">ON</span>'
                                         : '<span class="badge text-bg-secondary">OFF</span>';
-      rows += '<tr><th scope="row" class="fw-normal">' + key + '</th>' +
+      rows += '<tr><th scope="row" class="fw-normal">' + esc(key) + '</th>' +
               '<td class="text-end">' + label + '</td></tr>';
     }
     $('#tbody-outputs').html(rows);
@@ -78,7 +89,7 @@
       for (var i = 0; i < relays.length; i++) {
         html += '<div><button type="button" class="btn btn-outline-primary btn-sm relay-btn"' +
                 ' data-index="' + relays[i].index + '"' +
-                ' data-name="' + relays[i].name + '">' + relays[i].name + '</button></div>';
+                ' data-name="' + esc(relays[i].name) + '">' + esc(relays[i].name) + '</button></div>';
       }
       $('#relay-buttons').html(html);
     }
@@ -125,14 +136,32 @@
   }
 
   // ---------- polling ----------
+  // Re-arms from BOTH callbacks rather than running on a setInterval. The
+  // device serves this from a single async_tcp task; with setInterval, a slow
+  // or rebooting board — the normal state of a garden node — stacks requests
+  // faster than they complete, exhausts the AsyncTCP buffers and drops
+  // connections, and the page then stays dead even after the device recovers.
+  // A self-rearming timeout can never have two requests in flight.
   function poll() {
+    // Both requests must land before the next tick is armed, so the page can
+    // never have more in flight than it started.
+    var pending = 2;
+    var generation = pollGeneration;
+    function finish() {
+      // `generation` is what stops a request that was still in flight across a
+      // stopPolling()/startPolling() from arming a tick for a chain that no
+      // longer owns the page.
+      if (--pending > 0 || !polling || generation !== pollGeneration) return;
+      pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+    }
+
     $.ajax({
       dataType: 'json',
       url: '/data.json',
       timeout: REQUEST_TIMEOUT_MS,
       success: updateUI,
       error: function () { setConnection(false); }
-    });
+    }).always(finish);
 
     $.ajax({
       url: '/logs',
@@ -144,19 +173,31 @@
           ta.scrollTop(ta[0].scrollHeight);
         }
       }
-    });
+    }).always(finish);
+  }
+
+  function tick() {
+    if (!polling) return;
+    if (pageVisible) {
+      poll();
+      return;
+    }
+    // Hidden tab: idle without issuing requests, but keep the loop armed so
+    // coming back does not wait for a fresh start.
+    pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
   }
 
   function startPolling() {
-    if (pollTimer) return;
+    if (polling) return;
+    polling = true;
+    ++pollGeneration;
     poll();
-    pollTimer = setInterval(function () {
-      if (pageVisible) poll();
-    }, POLL_INTERVAL_MS);
   }
 
   function stopPolling() {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    polling = false;
+    ++pollGeneration;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   }
 
   // ---------- handlers ----------
@@ -175,7 +216,15 @@
 
     document.addEventListener('visibilitychange', function () {
       pageVisible = !document.hidden;
-      if (pageVisible) poll();
+      // Cancel the armed tick and start ONE new chain, rather than calling
+      // poll() alongside a timer that is still pending. Calling it directly
+      // forked a second chain on every hide/show, doubling the request rate
+      // each time — the exact stacking the setTimeout rewrite exists to
+      // prevent, reintroduced three lines away from the comment explaining it.
+      if (pageVisible && polling) {
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        poll();
+      }
     });
 
     // Delegated: the buttons are generated from /data.json after this runs.

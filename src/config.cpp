@@ -1,4 +1,6 @@
 #include "core/config.h"
+#include "core/config_io.h"
+#include "core/tasks.h"
 #include "core/logger.h"
 #include <Arduino_JSON.h>
 #include <SPIFFS.h>
@@ -31,9 +33,20 @@ String& g_mqttCACert = config.mqttCACert;
 // Relay 0 keeps GPIO 15 so boards already in the field are unaffected. It is a
 // strapping pin (MTDO) — new hardware should override it in config.json.
 static const uint8_t g_defaultRelayPin[] = { 15, 16, 17, 18 };
-// A0 and A6 are both ADC1. ADC2 cannot be read while WiFi is associated, so
-// every analog channel has to come from GPIO 32-39.
-static const uint8_t g_defaultSoilMoisturePin[] = { A0, A6 };
+// All ADC1: ADC2 cannot be read while WiFi is associated, so every analog
+// channel has to come from GPIO 32-39.
+//
+// Index 1 is 34 because that is where espgarden5 — the only board that takes a
+// second probe on compiled defaults — has it wired, and that board has no water
+// level sensor to contend with. A board carrying BOTH a water level sensor and
+// a second probe must assign pins in config.json; validatePins() logs the
+// collision if it does not. (Briefly changed to 35 to dodge that collision,
+// which silently moved espgarden5's probe onto a floating pin.)
+//
+// GPIO 32/33 double as XTAL_32K_P/N. The ESP32-WROOM-32 on a NodeMCU-32S ships
+// without that crystal, so they are ordinary ADC1 inputs; a module that does
+// have one fitted cannot use them.
+static const uint8_t g_defaultSoilMoisturePin[] = { 36, 34, 32 };
 
 ConfigFile::ConfigFile()
 {
@@ -53,6 +66,9 @@ ConfigFile::ConfigFile()
     // ThingSpeak
     thingSpeakAPIKey = "undefined";
     thingSpeakChannelNumber = 0;
+    // 0 keeps the second probe off ThingSpeak. See telemetry.cpp for why this
+    // is per-device configuration and not a build flag.
+    thingSpeakMoisture2Field = 0;
 
     // TalkBack
     talkBackAPIKey = "undefined";
@@ -65,21 +81,53 @@ ConfigFile::ConfigFile()
     mqttServer = "mqtt3.thingspeak.com";
     mqttPort = 8883;
     mqttCACert = "/thingspeak.pem";
+    mqttBackend = "thingspeak";
+    mqttUseTLS = true;
+    mqttRpc = true;
+    mqttFwUpdate = true;
+    mqttFwTitle = "esp-garden";
 
     // pins
     buttonPin = 0;
 
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+    // Nothing is fitted until config.json says so. This has to be explicit:
+    // the singleton is only zero here by accident of static initialisation,
+    // and a ConfigFile on the stack would start with an indeterminate
+    // moistureCount and loop analogRead over garbage pins.
+    //
+    // relayCount is the deliberate exception below — a device whose config
+    // failed to load still has to park its relays, and parking a pin that is
+    // not a relay is harmless while leaving one floating is not.
+    moistureCount = 0;
+    dhtFitted = false;
+    luminosityFitted = false;
+    waterLevelFitted = false;
+    flowFitted = false;
+    floatFitted = false;
+
+    // The pre-config defaults. relayPinsSafeInit() runs on these as the FIRST
+    // statement of setup(), long before config.json is read, and a floating
+    // pin on an active-low board reads as "energise" — so every slot that has
+    // a known pin has to be parked then, not after the load.
+    //
+    // A relay on a pin outside this table is only parked once the config is
+    // read, roughly a second and a half later. That window is the price of
+    // making the count configurable; keeping the common pins in this table is
+    // what keeps it from mattering in practice.
+    {
         const unsigned defaults =
           sizeof(g_defaultRelayPin) / sizeof(g_defaultRelayPin[0]);
-        relayPin[i] = (i < defaults) ? g_defaultRelayPin[i] : 0;
-        relayPinOn[i] = 0; // active low
-        relayName[i] = (i == 0) ? "Watering" : ("Relay " + String(i + 1));
+        relayCount = defaults;
+        for (unsigned i = 0; i < RELAY_MAX; ++i) {
+            relayPin[i] = (i < defaults) ? g_defaultRelayPin[i] : kNoPin;
+            relayPinOn[i] = 0; // active low
+            relayName[i] = (i == 0) ? "Watering" : ("Relay " + String(i + 1));
+        }
     }
 
     dhtPin = 23;
 
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
         const unsigned defaults = sizeof(g_defaultSoilMoisturePin) /
                                   sizeof(g_defaultSoilMoisturePin[0]);
         soilMoisturePin[i] =
@@ -89,134 +137,99 @@ ConfigFile::ConfigFile()
         // which is honest rather than inventing a band from nothing.
         moistureDry[i] = 0.0;
         moistureWet[i] = 0.0;
+        // One pump per zone is the common layout, so probe i defaults to
+        // relay i. validated against relayCount at load.
+        moistureRelay[i] = (int8_t)i;
+
+        // Suffixed by default. The unsuffixed single-probe label is applied
+        // in loadSoilMoisture(), once the fitted count is known — MOISTURE_MAX
+        // is capacity and is always 4, so testing it here named every probe
+        // "Soil Moisture 1".."Soil Moisture 4" on a one-probe board and broke
+        // the /data.json key that dashboards had been reading for years.
+        soilMoistureName[i] = "Soil Moisture " + String(i + 1);
     }
+
+    dhtName = "";
+    luminosityName = "Luminosity";
+    waterLevelName = "Water Level";
 
     luminosityPin = A3;
     waterLevelPin = A6;
 
+    // Both need an internal pull-up, which GPIO 34-39 do not have, and both
+    // avoid the strapping pins and the flash pins.
+    flowPin = 27;
+    flowName = "Flow";
+    flowPulsesPerLitre = 450.0; // YF-S201 nominal
+    floatPin = 26;
+    floatName = "Float Switch";
+    floatActiveLevel = 0; // normally-open to ground, with the pull-up
+    floatInterlock = false;
+    floatFillRelay = -1;
+
+    scheduleCount = 0;
+    for (unsigned i = 0; i < SCHEDULE_COUNT; ++i) {
+        schedules[i].enabled = false;
+        schedules[i].relay = 0;
+        schedules[i].hour = 0;
+        schedules[i].minute = 0;
+        schedules[i].days = 0;
+        schedules[i].durationMs = 0;
+        schedules[i].name = "";
+    }
+
     // log
     logLevel = LOG_INFO;
+
+    // ~24 h at one record per minute, 57.6 KB of the 512 KB SPIFFS.
+    historyRecords = 1440;
+    historyPeriodSec = 60;
 }
 
-// Reads `io.relays` (array of {pin, on, name}) when present, otherwise falls
-// back to the legacy scalar `io.watering` / `io.wateringOn` pair so a config
-// written for a single-relay device still loads unchanged.
-static void
-loadRelays(ConfigFile& cfg, JSONVar& io)
-{
-    JSONVar relays = io["relays"];
-
-    if (JSON.typeof(relays) == "array") {
-        const unsigned count = relays.length();
-        if (count < RELAY_COUNT) {
-            logger.warning("Config declares " + String(count) + " relays, " +
-                           String(RELAY_COUNT) +
-                           " compiled in. Missing entries keep defaults.");
-        }
-
-        for (unsigned i = 0; i < RELAY_COUNT && i < count; ++i) {
-            JSONVar relay = relays[i];
-            cfg.relayPin[i] = (int)relay["pin"];
-            cfg.relayPinOn[i] = (int)relay["on"];
-
-            // An absent name keeps the compiled default rather than blanking
-            // the label the dashboard renders.
-            if (JSON.typeof(relay["name"]) == "string") {
-                cfg.relayName[i] = (const char*)relay["name"];
-            }
-        }
-        return;
-    }
-
-    if (JSON.typeof(io["watering"]) != "undefined") {
-        cfg.relayPin[0] = (int)io["watering"];
-        cfg.relayPinOn[0] = (int)io["wateringOn"];
-    }
-}
-
-// `io.soilMoisture` is either a bare pin number (legacy, one probe) or an
-// array of pins.
-static void
-loadSoilMoisture(ConfigFile& cfg, JSONVar& io)
-{
-    JSONVar pins = io["soilMoisture"];
-
-    if (JSON.typeof(pins) == "array") {
-        const unsigned count = pins.length();
-        if (count < MOISTURE_SENSOR_COUNT) {
-            logger.warning("Config declares " + String(count) +
-                           " moisture probes, " +
-                           String(MOISTURE_SENSOR_COUNT) + " compiled in.");
-        }
-
-        for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT && i < count; ++i) {
-            cfg.soilMoisturePin[i] = (int)pins[i];
-        }
-        return;
-    }
-
-    if (JSON.typeof(pins) != "undefined") {
-        cfg.soilMoisturePin[0] = (int)pins;
-    }
-}
-
-// Two peripherals on one GPIO is not a compile error and not a runtime fault —
-// it just makes one of them read or drive garbage, which looks like a dead
-// sensor. Reported at boot so it is visible in the log instead of being
-// diagnosed from odd readings weeks later.
+// The eight ThingSpeak fields are a permanent contract with the data already
+// stored in the channel. thingSpeak.moisture2Field exists so a device can put
+// probe 2 in a free slot — but nothing stopped it naming a slot another fitted
+// sensor publishes, and the payload would then carry the field twice: one wins
+// silently and the loser's history is overwritten with the winner's units.
 void
-ConfigFile::validatePins() const
+ConfigFile::validateThingSpeakFields()
 {
-    struct PinUse
+    if (thingSpeakMoisture2Field == 0) {
+        return; // probe 2 stays off the channel
+    }
+
+    struct Claim
     {
-        uint8_t pin;
+        int field;
+        bool fitted;
         const char* owner;
     };
 
-    PinUse used[2 + RELAY_COUNT + MOISTURE_SENSOR_COUNT + 2];
-    size_t count = 0;
-    static char relayLabel[RELAY_COUNT][12];
-    static char probeLabel[MOISTURE_SENSOR_COUNT][12];
+    const Claim claims[] = {
+        { 1, moistureCount > 0, "moisture1" },
+        { 2, relayCount > 0, "watering duration" },
+        { 3, true, "ping" },
+        { 4, waterLevelFitted, "water level" },
+        { 5, luminosityFitted, "luminosity" },
+        { 6, dhtFitted, "temperature" },
+        { 7, dhtFitted, "air humidity" },
+        { 8, true, "boot time" },
+    };
 
-    used[count++] = { buttonPin, "button" };
-
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
-        snprintf(relayLabel[i], sizeof(relayLabel[i]), "relay%u", i);
-        used[count++] = { relayPin[i], relayLabel[i] };
-    }
-
-#ifdef HAS_DHT_SENSOR
-    used[count++] = { dhtPin, "dht" };
-#endif
-#ifdef HAS_MOISTURE_SENSOR
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
-        snprintf(probeLabel[i], sizeof(probeLabel[i]), "moisture%u", i);
-        used[count++] = { soilMoisturePin[i], probeLabel[i] };
-    }
-#endif
-#ifdef HAS_LUMINOSITY_SENSOR
-    used[count++] = { luminosityPin, "luminosity" };
-#endif
-#ifdef HAS_WATER_LEVEL_SENSOR
-    used[count++] = { waterLevelPin, "waterLevel" };
-#endif
-
-    for (size_t i = 0; i < count; ++i) {
-        for (size_t j = i + 1; j < count; ++j) {
-            if (used[i].pin == used[j].pin) {
-                logger.error("Pin conflict: GPIO " + String(used[i].pin) +
-                             " assigned to both " + used[i].owner + " and " +
-                             used[j].owner + ".");
-            }
-        }
-
-        // GPIO 34-39 are input-only on the ESP32 and cannot drive a relay.
-        if ((strncmp(used[i].owner, "relay", 5) == 0) && (used[i].pin >= 34) &&
-            (used[i].pin <= 39)) {
-            logger.error("GPIO " + String(used[i].pin) + " (" + used[i].owner +
-                         ") is input-only and cannot drive a relay.");
+    for (const Claim& claim : claims) {
+        if (claim.field == thingSpeakMoisture2Field && claim.fitted) {
+            logger.error("thingSpeak.moisture2Field " +
+                         String(thingSpeakMoisture2Field) + " is already " +
+                         String(claim.owner) +
+                         " on this device. Probe 2 stays off the channel "
+                         "rather than overwriting it.");
+            thingSpeakMoisture2Field = 0;
+            return;
         }
     }
+
+    logger.info("Probe 2 publishes to ThingSpeak field " +
+                String(thingSpeakMoisture2Field));
 }
 
 bool
@@ -269,6 +282,18 @@ ConfigFile::loadFile(unsigned deviceID)
     JSONVar thingSpeak = configJson["thingSpeak"];
     thingSpeakAPIKey = (const char*)thingSpeak["apiKey"];
     thingSpeakChannelNumber = (long)thingSpeak["channel"];
+    if (thingSpeak.hasOwnProperty("moisture2Field")) {
+        const int field = (int)thingSpeak["moisture2Field"];
+        // Field 1..8 or 0 for "do not publish". A number outside that range
+        // would be silently dropped by ThingSpeak, which looks exactly like a
+        // probe that stopped reporting.
+        if (field < 0 || field > 8) {
+            logger.warning("Ignoring out-of-range thingSpeak.moisture2Field " +
+                           String(field));
+        } else {
+            thingSpeakMoisture2Field = field;
+        }
+    }
 
     JSONVar talkBack = configJson["talkBack"];
     talkBackAPIKey = (const char*)talkBack["apiKey"];
@@ -282,21 +307,55 @@ ConfigFile::loadFile(unsigned deviceID)
     mqttPort = (int)mqtt["port"];
     mqttCACert = (const char*)mqtt["cacert"];
 
+    if (mqtt.hasOwnProperty("backend")) {
+        const String backend = (const char*)JSONVar(mqtt["backend"]);
+        if (backend == "thingspeak" || backend == "thingsboard") {
+            mqttBackend = backend;
+        } else {
+            logger.warning("Unknown mqtt.backend '" + backend +
+                           "'; keeping " + mqttBackend);
+        }
+    }
+    if (mqtt.hasOwnProperty("useTLS")) {
+        mqttUseTLS = (bool)mqtt["useTLS"];
+    }
+
+    if (mqtt.hasOwnProperty("rpc")) {
+        mqttRpc = (bool)mqtt["rpc"];
+    }
+    if (mqtt.hasOwnProperty("fwUpdate")) {
+        mqttFwUpdate = (bool)mqtt["fwUpdate"];
+    }
+    if (mqtt.hasOwnProperty("fwTitle")) {
+        const String title = (const char*)JSONVar(mqtt["fwTitle"]);
+        if (title.length() > 0) {
+            mqttFwTitle = title;
+        } else {
+            // An empty title would match nothing, so every update would be
+            // ignored with only a warning per announcement to say why.
+            logger.warning("Empty mqtt.fwTitle; keeping " + mqttFwTitle);
+        }
+    }
+
+    // A sensor is FITTED if and only if its key exists in `io`. There is no
+    // separate enabled flag to drift out of step with the pin it names, and
+    // "delete this sensor" in /devices.html is exactly "remove this key".
     JSONVar io = configJson["io"];
     buttonPin = (int)io["button"];
     loadRelays(*this, io);
 
-#if defined(HAS_DHT_SENSOR)
-    dhtPin = (int)io["dht"];
-#endif
-#if defined(HAS_MOISTURE_SENSOR)
+    dhtFitted = io.hasOwnProperty("dht");
+    if (dhtFitted) {
+        loadSensor(io["dht"], dhtPin, dhtName);
+    }
+
     loadSoilMoisture(*this, io);
 
     // "moisture": [ {"dry": <air reading>, "wet": <submerged reading>}, ... ]
     JSONVar moisture = configJson["moisture"];
     if (JSON.typeof(moisture) == "array") {
         for (unsigned i = 0;
-             i < MOISTURE_SENSOR_COUNT && i < (unsigned)moisture.length();
+             i < moistureCount && i < (unsigned)moisture.length();
              ++i) {
             JSONVar entry = moisture[i];
             if (JSON.typeof(entry) != "object") {
@@ -308,15 +367,158 @@ ConfigFile::loadFile(unsigned deviceID)
             if (entry.hasOwnProperty("wet")) {
                 moistureWet[i] = (double)entry["wet"];
             }
+            if (entry.hasOwnProperty("relay")) {
+                const int relay = (int)entry["relay"];
+                if (relay >= -1 && relay < (int)relayCount) {
+                    moistureRelay[i] = (int8_t)relay;
+                } else {
+                    logger.warning("moisture[" + String(i) + "].relay " +
+                                   String(relay) + " out of range; ignored.");
+                }
+            }
         }
     }
-#endif
-#if defined(HAS_LUMINOSITY_SENSOR)
-    luminosityPin = (int)io["luminosity"];
-#endif
-#if defined(HAS_WATER_LEVEL_SENSOR)
-    waterLevelPin = (int)io["waterLevel"];
-#endif
+
+    for (unsigned i = 0; i < moistureCount; ++i) {
+        if (moistureRelay[i] >= (int8_t)relayCount) {
+            // The default (probe i -> relay i) does not hold on a board with
+            // fewer relays than probes. Claiming a relay that does not exist
+            // would label every reading against an event that never fires.
+            moistureRelay[i] = -1;
+        }
+    }
+
+    luminosityFitted = io.hasOwnProperty("luminosity");
+    if (luminosityFitted) {
+        loadSensor(io["luminosity"], luminosityPin, luminosityName);
+    }
+
+    waterLevelFitted = io.hasOwnProperty("waterLevel");
+    if (waterLevelFitted) {
+        loadSensor(io["waterLevel"], waterLevelPin, waterLevelName);
+    }
+
+    flowFitted = io.hasOwnProperty("flow");
+    if (flowFitted) {
+        loadSensor(io["flow"], flowPin, flowName);
+        if (JSON.typeof(io["flow"]) == "object") {
+            JSONVar flow = io["flow"];
+            if (flow.hasOwnProperty("pulsesPerLitre")) {
+                const double k = (double)flow["pulsesPerLitre"];
+                if (k > 0.0) {
+                    flowPulsesPerLitre = (float)k;
+                } else {
+                    logger.warning("Ignoring non-positive flow.pulsesPerLitre");
+                }
+            }
+        }
+    }
+
+    floatFitted = io.hasOwnProperty("floatSwitch");
+    if (floatFitted) {
+        loadSensor(io["floatSwitch"], floatPin, floatName);
+        if (JSON.typeof(io["floatSwitch"]) == "object") {
+            JSONVar sw = io["floatSwitch"];
+            if (sw.hasOwnProperty("activeLevel")) {
+                floatActiveLevel = ((int)sw["activeLevel"] != 0) ? 1 : 0;
+            }
+            if (sw.hasOwnProperty("interlock")) {
+                floatInterlock = (bool)sw["interlock"];
+            }
+            if (sw.hasOwnProperty("fillRelay")) {
+                const int relay = (int)sw["fillRelay"];
+                // Out of range would exempt nothing, so the refill relay would
+                // be blocked by the interlock along with the pumps it is meant
+                // to supply — an empty reservoir that can never be filled.
+                if (relay >= -1 && relay < (int)relayCount) {
+                    floatFillRelay = relay;
+                } else {
+                    logger.warning("floatSwitch.fillRelay " + String(relay) +
+                                   " out of range; keeping " +
+                                   String(floatFillRelay));
+                }
+            }
+        }
+        if (floatInterlock) {
+            logger.info("Reservoir interlock ON" +
+                        (floatFillRelay >= 0
+                           ? (" (relay " + String(floatFillRelay) + " exempt)")
+                           : String(" (no refill relay exempt)")));
+        }
+    } else if (floatInterlock) {
+        // Refusing to run pumps on a reading no sensor produces would stop
+        // every watering, so the interlock cannot survive its sensor.
+        logger.warning("Reservoir interlock disabled: no io.floatSwitch.");
+        floatInterlock = false;
+    }
+
+    // "schedules": [ {enabled, relay, hour, minute, days, durationMs, name} ]
+    scheduleCount = 0;
+    if (JSON.typeof(configJson["schedules"]) == "array") {
+        JSONVar list = configJson["schedules"];
+        const unsigned count = list.length();
+        if (count > SCHEDULE_COUNT) {
+            logger.warning("Config declares " + String(count) +
+                           " schedules, " + String(SCHEDULE_COUNT) +
+                           " compiled in. The rest are ignored.");
+        }
+
+        for (unsigned i = 0; i < SCHEDULE_COUNT && i < count; ++i) {
+            JSONVar entry = list[i];
+            if (JSON.typeof(entry) != "object") {
+                continue;
+            }
+
+            Schedule& sch = schedules[scheduleCount];
+            // Absent means off. A schedule is a thing that starts a pump on
+            // its own, so the fail-safe default is the one that does nothing —
+            // and it is the default data/schedules.js gives a new row, which
+            // this used to contradict on the very same document.
+            sch.enabled = entry.hasOwnProperty("enabled")
+                            ? (bool)entry["enabled"]
+                            : false;
+            sch.relay = entry.hasOwnProperty("relay") ? (int)entry["relay"] : 0;
+            sch.hour = entry.hasOwnProperty("hour") ? (int)entry["hour"] : 0;
+            sch.minute = entry.hasOwnProperty("minute") ? (int)entry["minute"] : 0;
+            sch.days = entry.hasOwnProperty("days") ? (int)entry["days"] : 127;
+            sch.durationMs =
+              entry.hasOwnProperty("durationMs") ? (int)entry["durationMs"] : 0;
+            if (JSON.typeof(entry["name"]) == "string") {
+                sch.name = (const char*)JSONVar(entry["name"]);
+            } else {
+                sch.name = "Schedule " + String(scheduleCount + 1);
+            }
+
+            // A schedule pointing at a relay this board does not have, or at
+            // an impossible time, would never fire and never say why.
+            if (sch.relay >= relayCount) {
+                logger.warning(sch.name + ": relay " + String(sch.relay) +
+                               " does not exist; ignored.");
+                continue;
+            }
+            if (sch.hour > 23 || sch.minute > 59) {
+                logger.warning(sch.name + ": invalid time; ignored.");
+                continue;
+            }
+            if (sch.durationMs == 0) {
+                logger.warning(sch.name + ": zero duration; ignored.");
+                continue;
+            }
+            // startRelay() refuses anything above g_relayMaxTime, so a longer
+            // schedule would load as valid, count as loaded, and then fail at
+            // every single firing with a log line that names no schedule.
+            if (sch.durationMs > g_relayMaxTime) {
+                logger.warning(sch.name + ": duration " +
+                               String(sch.durationMs) + " ms exceeds the " +
+                               String(g_relayMaxTime) +
+                               " ms relay ceiling; ignored.");
+                continue;
+            }
+
+            ++scheduleCount;
+        }
+        logger.info("Loaded " + String(scheduleCount) + " schedule(s).");
+    }
 
     // An out-of-range log level would silence the device entirely, so it is
     // clamped rather than trusted.
@@ -333,6 +535,41 @@ ConfigFile::loadFile(unsigned deviceID)
         }
     }
 
+    if (JSON.typeof(configJson["history"]) != "undefined") {
+        JSONVar history = configJson["history"];
+        if (history.hasOwnProperty("records")) {
+            const int records = (int)history["records"];
+            // 5000 records is 240 KB at the current 48-byte record, which
+            // fits beside the ~190 KB of web assets in the 463 KB usable
+            // SPIFFS. The ceiling is in RECORDS, so it has to come down
+            // whenever the record grows — it was 6000 while a record was 40
+            // bytes, and leaving it there would have quietly asked for 288 KB.
+            // The previous ceiling of 20000 was 800 KB — half again the whole
+            // partition — and a config that
+            // asked for it filled the filesystem, taking the log backup, the
+            // user store and POST /config.json down with it. begin() runs
+            // before webSetup(), so the admin who caused it had no editor left
+            // to undo it.
+            if (records >= 0 && records <= 5000) {
+                historyRecords = records;
+            } else {
+                logger.warning("Ignoring out-of-range history.records " +
+                               String(records));
+            }
+        }
+        if (history.hasOwnProperty("periodSec")) {
+            const int period = (int)history["periodSec"];
+            // Floor of 10 s, matching what config.h says: at 1 s this rewrites
+            // a flash page 86400 times a day for data nobody reads that fast.
+            if (period >= 10 && period <= 3600) {
+                historyPeriodSec = period;
+            } else {
+                logger.warning("Ignoring out-of-range history.periodSec " +
+                               String(period));
+            }
+        }
+    }
+
     const unsigned minChar = g_configMinStringLength;
     if ((hostname.length() < minChar) || (ssid.length() < minChar) ||
         (wifiPassword.length() < minChar) || (otaUser.length() < minChar) ||
@@ -344,44 +581,10 @@ ConfigFile::loadFile(unsigned deviceID)
         return false;
     }
 
+    validateThingSpeakFields();
     validatePins();
 
     logger.info("Loading done.");
-    return true;
-}
-
-const char* const g_configSecretMask = "********";
-const unsigned g_configMinStringLength = 4;
-
-bool
-configDocumentIsUsable(const JSONVar& doc, String& problem)
-{
-    // Mirrors the tail of loadFile(). Every JSONVar is bound to a named local
-    // before being read: operator[] returns by value, and casting a chained
-    // subscript straight to const char* reads a freed buffer.
-    static const char* const required[][2] = {
-        { "", "hostname" },          { "wifi", "ssid" },
-        { "wifi", "password" },      { "ota", "username" },
-        { "ota", "password" },       { "thingSpeak", "apiKey" },
-        { "talkBack", "apiKey" },
-    };
-
-    JSONVar document = doc;
-    for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); ++i) {
-        const char* section = required[i][0];
-        const char* key = required[i][1];
-
-        JSONVar node = (section[0] == '\0') ? document[key]
-                                            : JSONVar(document[section])[key];
-        const String value = (const char*)node;
-
-        if (value.length() < g_configMinStringLength) {
-            problem = (section[0] == '\0') ? String(key)
-                                           : (String(section) + "." + key);
-            return false;
-        }
-    }
-
     return true;
 }
 
@@ -443,9 +646,30 @@ loadConfigFile(unsigned deviceID)
 }
 
 void
+ConfigFile::clearUndeclaredRelayPins()
+{
+    // Slots past relayCount still hold the constructor's default pins, and
+    // relayPinsSafeInit() runs again after the config loads — over every slot,
+    // because at its FIRST call the count is not known yet. Without this, a
+    // config declaring one relay would still have GPIO 16/17/18 driven as
+    // outputs, so a flow meter or a probe moved onto one of them reads a pin
+    // this firmware is holding high. validatePins() cannot catch it either: it
+    // only iterates the declared relays.
+    for (unsigned i = relayCount; i < RELAY_MAX; ++i) {
+        relayPin[i] = kNoPin;
+    }
+}
+
+void
 relayPinsSafeInit()
 {
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
+    // Every slot, not just the fitted count: this is called once before the
+    // config is known, when relayCount is still the compiled default, and a
+    // slot left floating is a slot energised.
+    for (unsigned i = 0; i < RELAY_MAX; ++i) {
+        if (config.relayPin[i] == ConfigFile::kNoPin) {
+            continue;
+        }
         pinMode(config.relayPin[i], OUTPUT);
         digitalWrite(config.relayPin[i], !config.relayPinOn[i]);
     }

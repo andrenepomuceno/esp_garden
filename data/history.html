@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="bootstrap.css" rel="stylesheet">
+  <title>History — ESP Garden</title>
+  <style>
+    /* Chart roles, not raw hex, so one edit reskins every plot. The pages are
+       committed to a dark surface (data-bs-theme="dark"), so these are the
+       dark-mode steps of the reference palette, validated against #1a1a19. */
+    .viz-root {
+      --surface-1: #1a1a19;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #8a8980;
+      --grid: #33332f;
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+    }
+
+    body { padding-bottom: 2rem; }
+    .card { margin-bottom: 1rem; }
+    .card-header {
+      font-weight: 600;
+      padding: .5rem .75rem;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: .5rem;
+    }
+    .card-body { padding: .75rem; }
+    .hint { font-size: .78rem; color: var(--text-muted); }
+
+    .chart { width: 100%; height: 150px; display: block; touch-action: none; }
+    .chart .grid { stroke: var(--grid); stroke-width: 1; }
+    .chart .axis-text { fill: var(--text-muted); font-size: 10px; }
+    /* 2px lines, no per-point markers — the hover layer supplies values. */
+    .chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+    .chart .end-label { font-size: 10px; font-weight: 600; }
+    .chart .crosshair { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+    /* 2px surface ring keeps a dot legible where two series overlap. */
+    .chart .hover-dot { stroke: var(--surface-1); stroke-width: 2; }
+
+    .legend { display: flex; flex-wrap: wrap; gap: .75rem; font-size: .8rem; }
+    .legend .swatch {
+      display: inline-block; width: .7rem; height: .7rem;
+      border-radius: .15rem; margin-right: .3rem; vertical-align: -1px;
+    }
+    .relay-row { display: flex; align-items: center; gap: .5rem; margin-bottom: .3rem; }
+    .relay-name { flex: 0 0 6.5rem; font-size: .8rem; color: var(--text-secondary); }
+    .relay-strip { flex: 1 1 auto; height: 14px; }
+    #tooltip {
+      position: fixed; pointer-events: none; z-index: 10; display: none;
+      background: #000; border: 1px solid var(--grid); border-radius: .3rem;
+      padding: .35rem .5rem; font-size: .75rem; white-space: nowrap;
+    }
+    table.history-table { font-size: .75rem; }
+    table.history-table td, table.history-table th { padding: .2rem .4rem; }
+  </style>
+</head>
+
+<body class="viz-root">
+  <div class="container py-3" style="max-width: 960px;">
+
+    <header class="d-flex flex-wrap align-items-center justify-content-between mb-3">
+      <h1 class="m-0 fs-4">&#x1F4C8; History</h1>
+      <div class="small">
+        <a href="/" class="link-primary">Dashboard</a>
+        <a href="/devices.html" class="link-primary ms-2">Devices</a>
+        <a href="/schedules.html" class="link-primary ms-2">Schedules</a>
+        <a href="/config.html" class="link-primary ms-2">Config</a>
+        <a href="/users.html" class="link-primary ms-2">Users</a>
+        <a href="#" id="a-logout" class="link-primary ms-2">Logout</a>
+      </div>
+    </header>
+
+    <div id="status"></div>
+
+    <!-- Filters in one row above the charts. -->
+    <div class="card">
+      <div class="card-body d-flex flex-wrap gap-3 align-items-end">
+        <div>
+          <label class="form-label small mb-1 d-block">Window</label>
+          <div class="btn-group btn-group-sm" id="window-buttons">
+            <button type="button" class="btn btn-outline-secondary" data-window="3600">1h</button>
+            <button type="button" class="btn btn-outline-secondary" data-window="21600">6h</button>
+            <button type="button" class="btn btn-outline-secondary" data-window="43200">12h</button>
+            <button type="button" class="btn btn-outline-secondary active" data-window="86400">1d</button>
+            <button type="button" class="btn btn-outline-secondary" data-window="604800">7d</button>
+            <button type="button" class="btn btn-outline-secondary" data-window="2592000">30d</button>
+          </div>
+        </div>
+        <div class="form-check form-switch">
+          <input id="input-table" class="form-check-input" type="checkbox">
+          <label class="form-check-label small" for="input-table">Table view</label>
+        </div>
+        <button id="button-refresh" type="button" class="btn btn-outline-secondary btn-sm">Refresh</button>
+        <div id="range-note" class="hint ms-auto"></div>
+      </div>
+    </div>
+
+    <div id="charts"></div>
+
+    <div class="card" id="card-table" style="display:none">
+      <div class="card-header"><span>Records</span></div>
+      <div class="card-body p-0" style="max-height: 26rem; overflow: auto;">
+        <table class="table table-sm table-striped mb-0 history-table">
+          <thead id="thead-history"></thead>
+          <tbody id="tbody-history"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="tooltip"></div>
+
+  <script src="jquery.js"></script>
+  <script src="auth.js"></script>
+  <script src="history.js"></script>
+</body>
+
+</html>

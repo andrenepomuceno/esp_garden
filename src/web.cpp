@@ -1,17 +1,22 @@
 #include "SPIFFS.h"
 #include "BuildConfig.h"
-#include "core/accumulator_v2.h"
 #include "core/config.h"
+#include "core/io_history.h"
 #include "core/logger.h"
 #include "core/role.h"
 #include "core/tasks.h"
-#include "core/user_store.h"
 #include "network/custom_login.h"
-#include <Arduino_JSON.h>
+#include "network/web.h"
+#include "network/web_capabilities.h"
+#include "network/web_config.h"
+#include "network/web_data.h"
+#include "network/web_files.h"
+#include "network/web_moisture.h"
+#include "network/web_ota.h"
+#include "network/web_users.h"
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
-#include <Update.h>
 // 3.7.x no longer pulls WiFi.h in transitively the way the old fork did.
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
@@ -22,168 +27,6 @@ static AsyncWebServer g_webServer(80);
 
 bool g_wifiConnected = false;
 bool g_hasNetwork = false;
-
-// Rendered by webUpdateDataCache() from loop() and served verbatim by the
-// request handler, which runs on the async_tcp task. The mutex covers the
-// String itself; the sensor accumulators are only ever touched by the writer.
-static String g_dataJson = "{}";
-static SemaphoreHandle_t g_dataMutex = nullptr;
-
-static unsigned
-getSignalStrength()
-{
-    static AccumulatorV2 rssiAcc(60);
-
-    auto rssi = WiFi.RSSI();
-    unsigned val = 0;
-    if (rssi <= -100) {
-        val = 0;
-    } else if (rssi >= -50) {
-        val = 100;
-    } else {
-        val = 2 * (rssi + 100);
-    }
-    rssiAcc.add(val);
-
-    return rssiAcc.getAverage();
-}
-
-static void
-addAccumulator(JSONVar& inputs, const char* name, AccumulatorV2& acc)
-{
-    JSONVar entry;
-    entry["val"] = String(acc.getLast());
-    entry["avg"] = String(acc.getAverage());
-    entry["var"] = String(acc.variance);
-    inputs[name] = entry;
-}
-
-void
-webUpdateDataCache()
-{
-    struct tm timeinfo;
-    getLocalTime(&timeinfo);
-    time_t now = mktime(&timeinfo);
-    int uptime = now - g_bootTime;
-    int minutes = uptime / 60;
-    int hours = minutes / 60;
-    int days = hours / 24;
-    char buffer[32];
-
-    JSONVar statusJson;
-    statusJson["Hostname"] = g_hostname;
-    statusJson["Firmware"] = FW_VERSION;
-    strftime(buffer, sizeof(buffer), "%F %T", &timeinfo);
-    statusJson["Date/Time"] = String(buffer);
-    if (g_bootTime > g_safeTimestamp) {
-        snprintf(buffer,
-                 sizeof(buffer),
-                 "%dd %dh %dm %ds",
-                 days,
-                 hours % 24,
-                 minutes % 60,
-                 uptime % 60);
-        statusJson["Uptime"] = String(buffer);
-    }
-#ifdef HAS_DHT_SENSOR
-    if (g_dhtTotalReads > 0) {
-        statusJson["DHT Error Rate"] =
-          String((float)g_dhtReadErrors / (float)g_dhtTotalReads * 100, 2);
-    }
-#endif
-    statusJson["Internet"] = String((g_hasInternet) ? "online" : "offline");
-    statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
-    statusJson["Ping"] = String(g_pingTime.getAverage()) + "ms";
-    statusJson["Connection Loss Count"] = String(g_connectionLossCount);
-    statusJson["MQTT"] = String((g_mqttEnabled) ? "enabled" : "disabled");
-    statusJson["Packages Sent"] = String(g_packagesSent);
-    statusJson["Watering Cycles"] = String(g_wateringCycles);
-
-    JSONVar inputsJson;
-#ifdef HAS_MOISTURE_SENSOR
-    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
-        // A single probe keeps the historical label so existing dashboards and
-        // the simulator do not have to special-case one device.
-        String name = (MOISTURE_SENSOR_COUNT == 1)
-                        ? String("Soil Moisture")
-                        : ("Soil Moisture " + String(i + 1));
-        addAccumulator(inputsJson, name.c_str(), g_soilMoisture[i]);
-
-        // Empty unless the probe has been calibrated against air and water.
-        const String state = moistureState(i);
-        if (state.length() > 0) {
-            inputsJson[name.c_str()]["state"] = state;
-        }
-    }
-#endif
-
-#ifdef HAS_LUMINOSITY_SENSOR
-    addAccumulator(inputsJson, "Luminosity", g_luminosity);
-#endif
-
-#ifdef HAS_DHT_SENSOR
-    addAccumulator(inputsJson, "Temperature", g_temperature);
-    addAccumulator(inputsJson, "Air Humidity", g_airHumidity);
-#endif
-
-#ifdef HAS_WATER_LEVEL_SENSOR
-    addAccumulator(inputsJson, "Water Level", g_waterLevel);
-#endif
-
-    JSONVar outputsJson;
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
-        outputsJson[config.relayName[i].c_str()] =
-          String(relayIsOn(i) ? 1 : 0);
-    }
-
-    JSONVar relaysJson;
-    for (unsigned i = 0; i < RELAY_COUNT; ++i) {
-        JSONVar relay;
-        relay["index"] = (int)i;
-        relay["name"] = config.relayName[i];
-        relay["on"] = relayIsOn(i) ? 1 : 0;
-        relay["remaining"] = (double)relayRemaining(i);
-        relaysJson[i] = relay;
-    }
-
-    JSONVar responseJson;
-    responseJson["Status"] = statusJson;
-    responseJson["Inputs"] = inputsJson;
-    responseJson["Outputs"] = outputsJson;
-    responseJson["Relays"] = relaysJson;
-    responseJson["Channel"] = String(g_thingSpeakChannelNumber);
-
-    String rendered = JSON.stringify(responseJson);
-
-    if (g_dataMutex == nullptr) {
-        g_dataJson = rendered;
-        return;
-    }
-
-    if (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE) {
-        g_dataJson = rendered;
-        xSemaphoreGive(g_dataMutex);
-    }
-}
-
-void
-handleDataJson(AsyncWebServerRequest* request)
-{
-    digitalWrite(LED_BUILTIN, 1);
-
-    String payload;
-    if ((g_dataMutex != nullptr) &&
-        (xSemaphoreTake(g_dataMutex, portMAX_DELAY) == pdTRUE)) {
-        payload = g_dataJson;
-        xSemaphoreGive(g_dataMutex);
-    } else {
-        payload = g_dataJson;
-    }
-
-    request->send(200, "application/json", payload);
-
-    digitalWrite(LED_BUILTIN, 0);
-}
 
 void
 handleControl(AsyncWebServerRequest* request)
@@ -246,377 +89,167 @@ handleLogs(AsyncWebServerRequest* request)
     digitalWrite(LED_BUILTIN, 0);
 }
 
-static bool g_otaEnabled = false;
+// Hard cap on one response. 1440 records is 57 KB of raw struct and roughly
+// 170 KB rendered as JSON — more than half this chip's DRAM, with WiFi already
+// holding a large share. Callers page with ?limit=.
+static const size_t g_historyMaxResponse = 200;
 
+// NaN marks a channel this board does not have; JSON has no NaN literal and
+// null is the honest encoding. isfinite() rather than isnan(): an infinity
+// serializes as `inf`, which is not valid JSON, so one bad sample would make
+// the browser throw on the whole response instead of on one field.
 static void
-handleUpdateEnable(AsyncWebServerRequest* request)
+appendFloatValue(String& out, float value)
 {
-    g_otaEnabled = true;
-    logger.info("[OTA] Enabled OTA");
-    request->send(200);
-}
-
-static void
-handleUpdateRequest(AsyncWebServerRequest* request)
-{
-    if (!g_otaEnabled) {
-        request->send(400);
-        return;
-    }
-
-    bool error = Update.hasError();
-    int code = error ? 500 : 200;
-    const char* content = error ? "FAIL" : "OK";
-    AsyncWebServerResponse* response =
-      request->beginResponse(code, "text/plain", content);
-    response->addHeader("Connection", "close");
-    response->addHeader("Access-Control-Allow-Origin", "*");
-    request->send(response);
-
-    // Disarm either way: a flag left set accepts an unsolicited image for as
-    // long as the device stays up.
-    g_otaEnabled = false;
-
-    if (!error) {
-        delay(500);
-        ESP.restart();
+    if (isfinite(value)) {
+        out += String(value, 2);
+    } else {
+        out += "null";
     }
 }
 
 static void
-handleUpdateUpload(AsyncWebServerRequest* request,
-                   String filename,
-                   size_t index,
-                   uint8_t* data,
-                   size_t len,
-                   bool final)
+appendFloat(String& out, const char* key, float value)
 {
-    if (!g_otaEnabled) {
-        request->send(400);
-        return;
-    }
-
-    if (!index) {
-        logger.info("[OTA] Starting update: " + filename);
-        int cmd = (filename == "filesystem") ? U_SPIFFS : U_FLASH;
-        if (request->hasParam("MD5", true)) {
-            Update.setMD5(request->getParam("MD5", true)->value().c_str());
-        }
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
-            logger.error(String("[OTA] ") + Update.errorString());
-            return request->send(400, "text/plain", "OTA could not begin");
-        }
-    }
-
-    if (len) {
-        if (Update.write(data, len) != len) {
-            logger.error(String("[OTA] ") + Update.errorString());
-            return request->send(400, "text/plain", "OTA could not write");
-        }
-    }
-
-    if (final) {
-        if (!Update.end(true)) {
-            logger.error(String("[OTA] ") + Update.errorString());
-            return request->send(400, "text/plain", "OTA could not end");
-        }
-        logger.info("[OTA] Complete!");
-    }
-}
-
-// Credentials are masked on the way out and restored on the way back in, so a
-// plaintext secret never leaves the device — unlike fullbot, which serves the
-// raw /config.json to any authenticated session.
-static const char* const g_secretPaths[][2] = {
-    { "wifi", "password" },     { "ota", "password" },
-    { "thingSpeak", "apiKey" }, { "talkBack", "apiKey" },
-    { "mqtt", "password" },
-};
-static const size_t g_secretCount =
-  sizeof(g_secretPaths) / sizeof(g_secretPaths[0]);
-
-static void
-handleConfigGet(AsyncWebServerRequest* request)
-{
-    String raw = config.readFile();
-    if (raw.isEmpty()) {
-        request->send(500, "text/plain", "config unreadable");
-        return;
-    }
-
-    JSONVar doc = JSON.parse(raw);
-    if (JSON.typeof(doc) == "undefined") {
-        request->send(500, "text/plain", "config unparseable");
-        return;
-    }
-
-    for (size_t i = 0; i < g_secretCount; ++i) {
-        const char* section = g_secretPaths[i][0];
-        const char* key = g_secretPaths[i][1];
-        if (JSON.typeof(doc[section]) != "object") {
-            continue;
-        }
-        if (doc[section].hasOwnProperty(key)) {
-            doc[section][key] = g_configSecretMask;
-        }
-    }
-
-    AsyncWebServerResponse* response =
-      request->beginResponse(200, "application/json", JSON.stringify(doc));
-    response->addHeader("Cache-Control", "no-store");
-    request->send(response);
+    out += "\"";
+    out += key;
+    out += "\":";
+    appendFloatValue(out, value);
 }
 
 static void
-handleConfigPost(AsyncWebServerRequest* request)
+handleHistoryJson(AsyncWebServerRequest* request)
 {
-    if (!request->hasParam("config", true)) {
-        request->send(400, "text/plain", "missing 'config' parameter");
+    if (!ioHistory.ready()) {
+        request->send(503, "text/plain", "history buffer not available");
         return;
     }
 
-    JSONVar incoming = JSON.parse(request->getParam("config", true)->value());
-    if (JSON.typeof(incoming) != "object") {
-        request->send(400, "text/plain", "config is not a JSON object");
-        return;
-    }
-
-    // Refuse a document addressed at a different device. Without this a config
-    // pasted from another garden would be written, and loadFile() would then
-    // reject it on the next boot — leaving the device on compiled defaults it
-    // cannot connect with, and unreachable to fix.
-    String id = (const char*)incoming["id"];
-    char* endPtr;
-    if (strtol(id.c_str(), &endPtr, 16) != (long)config.deviceId) {
-        request->send(400, "text/plain", "config id does not match this device");
-        return;
-    }
-
-    JSONVar stored = JSON.parse(config.readFile());
-    const bool haveStored = (JSON.typeof(stored) == "object");
-
-    String newOtaPassword;
-    for (size_t i = 0; i < g_secretCount; ++i) {
-        const char* section = g_secretPaths[i][0];
-        const char* key = g_secretPaths[i][1];
-
-        // Every JSONVar is bound to a named local before being read.
-        // Arduino_JSON's operator[] returns BY VALUE, so casting
-        // `incoming[section][key]` straight to const char* reads a buffer that
-        // the temporary already freed and yields an empty String. That made
-        // every mask comparison fail silently and wrote the masks over the real
-        // credentials — verified against a live device.
-        JSONVar incomingSection = incoming[section];
-        if (JSON.typeof(incomingSection) != "object" ||
-            !incomingSection.hasOwnProperty(key)) {
-            continue;
+    size_t limit = 100;
+    if (request->hasParam("limit")) {
+        const long asked = request->getParam("limit")->value().toInt();
+        if (asked > 0) {
+            limit = (size_t)asked;
         }
+    }
+    if (limit > g_historyMaxResponse) {
+        limit = g_historyMaxResponse;
+    }
 
-        JSONVar incomingValue = incomingSection[key];
-        const String value = (const char*)incomingValue;
+    // ?window=<seconds> selects by time and DECIMATES to fit. Without it a 24 h
+    // window is 1440 records against a 200-record cap, so the page could only
+    // ever show the newest 3 h — asking for a day and getting three hours,
+    // silently.
+    static IoRecord buffer[g_historyMaxResponse];
+    size_t count = 0;
+    uint32_t stride = 1;
+    uint32_t offset = IoHistory::kNewest;
+    long window = 0;
 
-        if (value != g_configSecretMask) {
-            if (strcmp(section, "ota") == 0 && strcmp(key, "password") == 0) {
-                newOtaPassword = value;
+    if (request->hasParam("window")) {
+        window = request->getParam("window")->value().toInt();
+    }
+
+    if (window > 0) {
+        const time_t now = time(NULL);
+        // A clock that has not synced would make every record look in-window;
+        // fall back to "everything stored" rather than inventing a range.
+        const uint32_t since =
+          (now > (time_t)window) ? (uint32_t)(now - window) : 0;
+        uint32_t from = 0;
+        // One call: locating the window and reading it have to happen under the
+        // same lock, or an append() between them shifts every logical index.
+        count = ioHistory.readWindow(since, buffer, limit, &stride, &from);
+        offset = from;
+    } else {
+        if (request->hasParam("offset")) {
+            const long asked = request->getParam("offset")->value().toInt();
+            if (asked >= 0) {
+                offset = (uint32_t)asked;
             }
-            continue;
         }
-
-        if (!haveStored) {
-            continue;
-        }
-        JSONVar storedSection = stored[section];
-        if (JSON.typeof(storedSection) != "object" ||
-            !storedSection.hasOwnProperty(key)) {
-            continue;
-        }
-
-        JSONVar storedValue = storedSection[key];
-        const String restored = (const char*)storedValue;
-        if (restored.isEmpty()) {
-            continue;
-        }
-
-        // Assign the C string, never the JSONVar: move-assign from an rvalue
-        // JSONVar is broken in this library and produces a null child.
-        incoming[section][key] = restored.c_str();
+        count = ioHistory.read(buffer, limit, offset);
     }
 
-    // Refuse to persist a document that still carries a mask. Writing one
-    // replaces a real credential with eight asterisks, and the damage only
-    // surfaces at the next boot — as an unreachable device.
-    for (size_t i = 0; i < g_secretCount; ++i) {
-        JSONVar section = incoming[g_secretPaths[i][0]];
-        if (JSON.typeof(section) != "object" ||
-            !section.hasOwnProperty(g_secretPaths[i][1])) {
-            continue;
+    // A String with reserve(), NOT an AsyncResponseStream — measured, twice.
+    //
+    // The stream looked like the obvious fix for the peak: beginResponse copies
+    // the String it is handed, so this path costs the payload twice. Replacing
+    // it with a stream made things WORSE on the same eight-round parallel load:
+    // the largest free block fell 53 KB -> 33 KB (once to 16) and the low-water
+    // heap 76 KB -> 60 KB.
+    //
+    // The reason is that the stream's buffer GROWS BY REALLOCATION, leaving a
+    // hole at every step, while one reserve() of the right size is a single
+    // allocation. The double copy costs peak; the stream costs fragmentation,
+    // and fragmentation is what actually bites a device that must stay up for
+    // months.
+    //
+    // If the peak ever does matter, the answer is chunked generation — emitting
+    // one record per callback — not a differently-shaped buffer.
+    String out;
+    out.reserve(count * 175 + 128);
+    out += "{\"capacity\":";
+    out += String(ioHistory.capacity());
+    out += ",\"stored\":";
+    out += String(ioHistory.stored());
+    out += ",\"returned\":";
+    out += String(count);
+    out += ",\"offset\":";
+    out += String(offset == IoHistory::kNewest
+                    ? (ioHistory.stored() > count ? ioHistory.stored() - count : 0)
+                    : offset);
+    // The page needs the stride to say "1 point per 8 minutes" rather than
+    // implying every sample is shown.
+    out += ",\"stride\":";
+    out += String(stride);
+    out += ",\"window\":";
+    out += String(window);
+    out += ",\"records\":[";
+
+    for (size_t i = 0; i < count; ++i) {
+        const IoRecord& r = buffer[i];
+        if (i) {
+            out += ",";
         }
-        JSONVar value = section[g_secretPaths[i][1]];
-        if (String((const char*)value) == g_configSecretMask) {
-            logger.error("Refusing to save config: could not restore " +
-                         String(g_secretPaths[i][0]) + "." +
-                         String(g_secretPaths[i][1]));
-            request->send(500, "text/plain", "secret restore failed");
-            return;
+        out += "{\"t\":";
+        out += String(r.timestamp);
+        out += ",\"relays\":";
+        out += String(r.relayMask);
+        out += ",\"moisture\":[";
+        for (unsigned m = 0; m < IO_HISTORY_MAX_MOISTURE; ++m) {
+            if (m) {
+                out += ",";
+            }
+            appendFloatValue(out, r.moisture[m]);
         }
+        out += "],";
+        appendFloat(out, "lum", r.luminosity);
+        out += ",";
+        appendFloat(out, "temp", r.temperature);
+        out += ",";
+        appendFloat(out, "hum", r.airHumidity);
+        out += ",";
+        appendFloat(out, "water", r.waterLevel);
+        out += ",";
+        appendFloat(out, "flow", r.flowRate);
+        out += ",";
+        appendFloat(out, "flowTotal", r.flowTotal);
+        // Three states, not two: null means the board has no float switch, so
+        // the page can leave the row out rather than draw a permanently empty
+        // reservoir.
+        out += ",\"float\":";
+        out += (r.flags & IO_HISTORY_FLAG_FLOAT_VALID)
+                 ? ((r.flags & IO_HISTORY_FLAG_FLOAT_RAISED) ? "1" : "0")
+                 : "null";
+        out += "}";
     }
-
-    // Refuse anything loadFile() would reject at boot. Persisting such a
-    // document is how the editor bricks the device: the write succeeds, the
-    // page reports success, and the next reboot falls back to compiled defaults
-    // that cannot join the network — leaving no way in except USB.
-    String problem;
-    if (!configDocumentIsUsable(incoming, problem)) {
-        logger.error("Refusing to save config: '" + problem + "' is shorter than " +
-                     String(g_configMinStringLength) + " characters.");
-        request->send(400,
-                      "text/plain",
-                      "'" + problem + "' must have at least " +
-                        String(g_configMinStringLength) + " characters");
-        return;
-    }
-
-    if (!config.saveFile(JSON.stringify(incoming))) {
-        request->send(500, "text/plain", "failed to write config");
-        return;
-    }
-
-    // The login password lives in /users.json, not /config.json, so changing
-    // ota.password has to be pushed into the user store or the new value would
-    // only take effect after a filesystem deploy wiped /users.json.
-    if (!newOtaPassword.isEmpty()) {
-        const String username = (const char*)incoming["ota"]["username"];
-        if (!username.isEmpty()) {
-            userStore.upsert(username, newOtaPassword, Role::ADMIN);
-            userStore.save();
-            logger.warning("Credentials updated for '" + username +
-                           "'. Existing sessions stay valid until logout.");
-        }
-    }
-
-    // Nothing re-reads config.json at runtime.
-    AsyncWebServerResponse* response = request->beginResponse(
-      200, "application/json", "{\"saved\":true,\"restartRequired\":true}");
-    response->addHeader("Cache-Control", "no-store");
-    request->send(response);
-}
-
-static size_t
-countAdmins()
-{
-    size_t admins = 0;
-    for (size_t i = 0; i < userStore.size(); ++i) {
-        if (userStore.at(i).role == Role::ADMIN) {
-            ++admins;
-        }
-    }
-    return admins;
-}
-
-// Usernames and roles only. The salt and the password hash never leave the
-// device — /spiffs/users* is shadowed with a 403 for the same reason.
-static void
-handleUsersJson(AsyncWebServerRequest* request)
-{
-    JSONVar users;
-    for (size_t i = 0; i < userStore.size(); ++i) {
-        JSONVar entry;
-        entry["username"] = userStore.at(i).username;
-        entry["role"] = (int)userStore.at(i).role;
-        users[i] = entry;
-    }
+    out += "]}";
 
     AsyncWebServerResponse* response =
-      request->beginResponse(200, "application/json", JSON.stringify(users));
+      request->beginResponse(200, "application/json", out);
     response->addHeader("Cache-Control", "no-store");
     request->send(response);
-}
-
-static void
-handleUsersPost(AsyncWebServerRequest* request)
-{
-    String action, username, password;
-    int role = (int)Role::OPERATOR;
-
-    for (int i = 0; i < request->params(); ++i) {
-        const AsyncWebParameter* param = request->getParam(i);
-        if (param->name() == "action") {
-            action = param->value();
-        } else if (param->name() == "username") {
-            username = param->value();
-        } else if (param->name() == "password") {
-            password = param->value();
-        } else if (param->name() == "role") {
-            role = param->value().toInt();
-        }
-    }
-
-    if (username.isEmpty()) {
-        request->send(400, "text/plain", "Missing username");
-        return;
-    }
-    if ((role != (int)Role::OPERATOR) && (role != (int)Role::ADMIN)) {
-        request->send(400, "text/plain", "Invalid role");
-        return;
-    }
-
-    const int index = userStore.find(username);
-
-    if (action == "delete") {
-        if (index < 0) {
-            request->send(404, "text/plain", "User not found");
-            return;
-        }
-        if ((userStore.at((size_t)index).role == Role::ADMIN) &&
-            (countAdmins() <= 1)) {
-            request->send(400, "text/plain", "Cannot delete the last admin");
-            return;
-        }
-
-        userStore.remove(username);
-        userStore.save();
-        logger.warning("User '" + username + "' deleted.");
-
-        // remove() shifts every later entry, and a Session holds an index.
-        customLogin.invalidateAllSessions();
-        request->send(200, "application/json", "{\"reauth\":true}");
-        return;
-    }
-
-    if (action == "upsert") {
-        // Demoting the only admin locks every administrative route — including
-        // this one — behind an account that no longer exists. fullbot guards
-        // deletion but not demotion; both close the same door.
-        if ((index >= 0) && (userStore.at((size_t)index).role == Role::ADMIN) &&
-            (role != (int)Role::ADMIN) && (countAdmins() <= 1)) {
-            request->send(400, "text/plain", "Cannot demote the last admin");
-            return;
-        }
-
-        if (password.isEmpty()) {
-            if (index < 0) {
-                request->send(400, "text/plain", "Password required for a new user");
-                return;
-            }
-            userStore.setRole(username, (Role)role);
-        } else {
-            if (password.length() < g_configMinStringLength) {
-                request->send(400,
-                              "text/plain",
-                              "Password must have at least " +
-                                String(g_configMinStringLength) + " characters");
-                return;
-            }
-            userStore.upsert(username, password, (Role)role);
-        }
-
-        userStore.save();
-        logger.info("User '" + username + "' saved with role " + String(role) + ".");
-        request->send(200, "application/json", "{\"reauth\":false}");
-        return;
-    }
-
-    request->send(400, "text/plain", "Invalid action");
 }
 
 // Refuses a path outright. Used to shadow files that a serveStatic below would
@@ -695,6 +328,15 @@ webSetup()
     // Vendored so the pages work with the WAN down. The config page in
     // particular exists to fix a device that cannot reach the internet, and
     // with jQuery on a CDN it rendered blank in exactly that situation.
+    // Bootstrap, vendored. Every page used to pull it from jsdelivr, which
+    // made the dashboard degrade to unstyled HTML exactly when it matters — on
+    // a device whose whole purpose is surviving a connectivity loss. The
+    // bundle's JS went away entirely: nothing here uses a modal, a dropdown or
+    // any other component that needs it.
+    //
+    // Only the .gz exists on the filesystem; AsyncFileResponse finds it and
+    // sets Content-Encoding itself, which is the same trick jquery.js uses.
+    servePublicFile("/bootstrap.css", "/bootstrap.css", "text/css");
     servePublicFile("/jquery.js", "/jquery.js", "application/javascript");
     servePublicFile("/spark-md5.js", "/spark-md5.js", "application/javascript");
     servePublicFile("/sha256.js", "/sha256.js", "application/javascript");
@@ -703,6 +345,20 @@ webSetup()
     servePublicFile("/config.js", "/config.js", "application/javascript");
     servePublicFile("/users.html", "/users.html", "text/html");
     servePublicFile("/users.js", "/users.js", "application/javascript");
+    servePublicFile("/history.html", "/history.html", "text/html");
+    servePublicFile("/history.js", "/history.js", "application/javascript");
+    servePublicFile("/devices.html", "/devices.html", "text/html");
+    // Load order matters: devices.js calls into both modules from its ready
+    // handler, and the page loads them as plain <script> tags with no module
+    // system. Registering them is not optional — the allow-list is exhaustive,
+    // so a file that is not here 404s.
+    servePublicFile("/devices_model.js", "/devices_model.js", "application/javascript");
+    servePublicFile("/devices_render.js", "/devices_render.js", "application/javascript");
+    servePublicFile("/devices.js", "/devices.js", "application/javascript");
+    servePublicFile("/schedules.html", "/schedules.html", "text/html");
+    servePublicFile("/schedules.js", "/schedules.js", "application/javascript");
+    servePublicFile("/moisture.html", "/moisture.html", "text/html");
+    servePublicFile("/moisture.js", "/moisture.js", "application/javascript");
     servePublicFile("/update.html", "/update.html", "text/html");
     servePublicFile("/update.js", "/update.js", "application/javascript");
     servePublicFile("/favicon.ico", "/favicon.ico", "image/x-icon");
@@ -726,6 +382,12 @@ webSetup()
 
     g_webServer.on("/data.json", HTTP_GET, handleDataJson)
       .addMiddleware(&authenticated);
+    g_webServer.on("/history.json", HTTP_GET, handleHistoryJson)
+      .addMiddleware(&authenticated);
+    g_webServer.on("/capabilities.json", HTTP_GET, handleCapabilitiesJson)
+      .addMiddleware(&authenticated);
+    g_webServer.on("/moisture.json", HTTP_GET, handleMoistureJson)
+      .addMiddleware(&authenticated);
     g_webServer.on("/control", HTTP_POST, handleControl)
       .addMiddleware(operatorOnly);
     g_webServer.on("/logs", HTTP_GET, handleLogs).addMiddleware(adminOnly);
@@ -740,6 +402,15 @@ webSetup()
       .addMiddleware(adminOnly);
     g_webServer
       .on("/update", HTTP_POST, handleUpdateRequest, handleUpdateUpload)
+      .addMiddleware(adminOnly);
+
+    // Registered above the /spiffs prefix handlers below, which are GET-only
+    // and would not match a POST anyway — but keeping every /spiffs route
+    // together is what makes the shadow ordering readable.
+    g_webServer
+      .on("/spiffs/upload", HTTP_POST, handleFileUploadRequest, handleFileUpload)
+      .addMiddleware(adminOnly);
+    g_webServer.on("/spiffs/delete", HTTP_POST, handleFileDelete)
       .addMiddleware(adminOnly);
 
     // MUST be registered BEFORE the serveStatic they shadow: handlers are
@@ -762,11 +433,17 @@ webSetup()
     g_webServer.serveStatic("/spiffs", SPIFFS, "/").addMiddleware(adminOnly);
 #else
     g_webServer.on("/data.json", HTTP_GET, handleDataJson);
+    g_webServer.on("/history.json", HTTP_GET, handleHistoryJson);
+    g_webServer.on("/capabilities.json", HTTP_GET, handleCapabilitiesJson);
+    g_webServer.on("/moisture.json", HTTP_GET, handleMoistureJson);
     g_webServer.on("/control", HTTP_POST, handleControl);
     g_webServer.on("/logs", HTTP_GET, handleLogs);
     g_webServer.on("/updateEnable", HTTP_POST, handleUpdateEnable);
     g_webServer.on(
       "/update", HTTP_POST, handleUpdateRequest, handleUpdateUpload);
+    g_webServer.on(
+      "/spiffs/upload", HTTP_POST, handleFileUploadRequest, handleFileUpload);
+    g_webServer.on("/spiffs/delete", HTTP_POST, handleFileDelete);
 #endif
 
     g_webServer.onNotFound(

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="bootstrap.css" rel="stylesheet">
+  <title>Moisture Model &mdash; ESP Garden</title>
+  <style>
+    body { padding-bottom: 2rem; }
+    .card { margin-bottom: 1rem; }
+    .card-header { font-weight: 600; padding: .5rem .75rem; }
+    .hint { font-size: .78rem; }
+    .table td, .table th { padding: .35rem .5rem; vertical-align: middle; }
+    .num { font-variant-numeric: tabular-nums; text-align: right; }
+    .bands { height: 26px; border-radius: 4px; overflow: hidden; display: flex; }
+    .bands div { height: 100%; }
+    .marker { width: 2px; background: var(--bs-body-color); }
+    .swatch { display: inline-block; width: .7rem; height: .7rem;
+              border-radius: 2px; margin-right: .3rem; vertical-align: -1px; }
+  </style>
+</head>
+
+<body>
+  <div class="container py-3" style="max-width: 1000px;">
+
+    <header class="d-flex flex-wrap align-items-center justify-content-between mb-3">
+      <h1 class="m-0 fs-4">&#x1F4A7; Moisture Model</h1>
+      <div class="small">
+        <a href="/" class="link-primary">Dashboard</a>
+        <a href="/history.html" class="link-primary ms-2">History</a>
+        <a href="/devices.html" class="link-primary ms-2">Devices</a>
+        <a href="/schedules.html" class="link-primary ms-2">Schedules</a>
+        <a href="/config.html" class="link-primary ms-2">Config</a>
+        <a href="#" id="a-logout" class="link-primary ms-2">Logout</a>
+      </div>
+    </header>
+
+    <div id="status"></div>
+
+    <div class="alert alert-secondary hint">
+      Dry / Humid / Wet come from a <strong>Gaussian naive Bayes</strong> model
+      fitted per probe, one Gaussian per class. The labels are not guessed from
+      the shape of the data &mdash; they come from the <strong>watering
+      record</strong>: soil is wettest shortly after its pump runs and driest
+      just before the next time it does. Training runs once a day and
+      <em>accumulates</em>, because one day holds only a watering cycle or two.
+      <br>
+      A probe reports nothing until its model earns it. That is deliberate: an
+      earlier attempt to derive these bands by clustering a month of history
+      produced three confident groups that were an artefact of the drying trend
+      plus the readings of a disconnected probe.
+    </div>
+
+    <div id="probes"></div>
+
+    <div class="card">
+      <div class="card-header">Training run</div>
+      <div class="card-body">
+        <div id="run" class="small"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">Gates</div>
+      <div class="card-body">
+        <div id="gates" class="small"></div>
+      </div>
+    </div>
+
+    <div class="d-flex gap-2 flex-wrap">
+      <button id="button-reload" type="button" class="btn btn-outline-secondary btn-sm">Reload</button>
+    </div>
+
+  </div>
+
+  <script src="jquery.js"></script>
+  <script src="auth.js"></script>
+  <script src="moisture.js"></script>
+</body>
+
+</html>

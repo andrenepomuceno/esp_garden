@@ -40,6 +40,13 @@ jobs:
 
       # No board and no data/config.json needed: [env:native] builds only the
       # sources that compile without the Arduino core.
+      - name: Check file sizes
+        # The 1000-line rule sat in CLAUDE.md unenforced long enough for two
+        # files to cross it unnoticed. Running the gate by hand is the honour
+        # system with extra steps, so it runs here — before the tests, because
+        # it takes a second and answers a question the tests never ask.
+        run: python scripts/check_lines.py
+
       - name: Run unit tests
         run: pio test -e native
 

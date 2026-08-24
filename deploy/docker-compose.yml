@@ -1,0 +1,167 @@
+# ThingsBoard CE on a single Ubuntu VPS: PostgreSQL + tb-node (monolith) +
+# Traefik. Official public images only — nothing here is hand-built.
+#
+# Every deployment-specific fact (domain, versions, credentials, limits)
+# lives in .env — see .env.example. `${VAR:?...}` on the secrets makes
+# compose itself refuse to start with a missing value, independently of the
+# same check in ./tbctl: two gates, because the failure they prevent (a stack
+# that silently comes up on a default password) is worse than a refusal.
+#
+# TLS design, stated once: Traefik terminates TLS for BOTH HTTPS (443) and
+# MQTT (8883), from one Let's Encrypt certificate with one renewal path. An
+# HTTP-only reverse proxy cannot carry MQTT, and letting ThingsBoard
+# terminate MQTT TLS itself would mean a second certificate consumer with its
+# own reload dance — the exact setup where the web cert renews for years
+# while MQTT quietly serves an expired one and every device connect fails
+# with -9984. This project already lost three years of telemetry to a stale
+# CA story; one certificate, one terminator, zero humans in the renewal loop.
+
+services:
+  postgres:
+    image: postgres:${POSTGRES_TAG:-16}
+    restart: unless-stopped
+    # No `ports:` on purpose. Publishing 5432 — even "temporarily for a
+    # migration" — puts the database on the public internet, and Docker's
+    # published ports BYPASS ufw (Docker installs its own iptables rules
+    # ahead of the ufw chain), so the host firewall would not save you.
+    # The DB is reachable only on the internal compose network.
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-thingsboard}
+      POSTGRES_USER: ${POSTGRES_USER:-thingsboard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - copy .env.example to .env and fill it in}
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
+    security_opt:
+      # Blocks privilege escalation via setuid binaries inside the container:
+      # a compromised process stays at the privileges it started with.
+      - no-new-privileges:true
+    mem_limit: ${PG_MEM_LIMIT:-1g}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  tb:
+    # tb-node in monolith mode with an external Postgres, exactly as
+    # ThingsBoard's own docker/ compose does it — NOT thingsboard/tb-postgres,
+    # whose bundled database would entangle app upgrades with DB lifecycle
+    # and make pg_dump-based backups a guessing game about container
+    # internals.
+    image: thingsboard/tb-node:${TB_VERSION:?TB_VERSION missing - see .env.example}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No `ports:` here either. HTTP and MQTT are only reachable through
+    # Traefik, which is what guarantees a device can never accidentally be
+    # pointed at plaintext 1883 from outside — the port simply is not there.
+    environment:
+      TB_SERVICE_TYPE: monolith
+      # Single node -> in-memory queue. Kafka is for clusters; running it
+      # here would triple the RAM bill for zero benefit.
+      TB_QUEUE_TYPE: in-memory
+      HTTP_BIND_PORT: ${TB_HTTP_PORT:-8080}
+      MQTT_BIND_PORT: ${TB_MQTT_PORT:-1883}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-thingsboard}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-thingsboard}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - copy .env.example to .env and fill it in}
+      JAVA_OPTS: ${JAVA_OPTS:-}
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - tbdata:/data
+      - tblogs:/var/log/thingsboard
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${TB_MEM_LIMIT:-2g}
+    healthcheck:
+      # TCP-open on the HTTP port, via bash's /dev/tcp: the port binds only
+      # once Spring is actually up. Deliberately not curl — whether the
+      # tb-node image ships curl is unverified, and a healthcheck that fails
+      # because its own tool is missing reports "unhealthy" forever and
+      # trains the operator to ignore the one signal that matters.
+      test: ["CMD-SHELL", "bash -c \"exec 3<>/dev/tcp/127.0.0.1/$${HTTP_BIND_PORT}\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  traefik:
+    image: traefik:${TRAEFIK_TAG:-v3.3}
+    restart: unless-stopped
+    depends_on:
+      - tb
+    # The ONLY container with published ports, and the only three ports this
+    # deployment ever exposes. Anything not in this list is unreachable from
+    # the internet by construction.
+    ports:
+      - "80:80"     # ACME HTTP-01 challenge + redirect to HTTPS. Never serves content.
+      - "443:443"   # ThingsBoard UI / REST / WebSocket, TLS.
+      - "8883:8883" # MQTT over TLS — the port the ESP32 dials.
+    command:
+      # Routes come from a rendered file (./tbctl renders traefik/dynamic/
+      # from dynamic.yml.in), NOT from the Docker provider: the Docker
+      # provider needs /var/run/docker.sock mounted, and socket access is
+      # root on the host — a Traefik RCE would own the VPS. A static file
+      # cannot be escalated through.
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.mqtts.address=:8883"
+      # Port 80 exists only for ACME; everything else is bounced to HTTPS so
+      # no session token ever crosses in clear.
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # One resolver feeds both the HTTPS router and the MQTT TCP router, so
+      # renewal is a single automatic path — no human has to remember that
+      # MQTT uses the same certificate, because it cannot use any other.
+      - "--certificatesresolvers.le.acme.email=${ACME_EMAIL:?ACME_EMAIL missing - see .env.example}"
+      - "--certificatesresolvers.le.acme.storage=/acme/acme.json"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
+      # Dashboard/API off: it enumerates every route and middleware to
+      # whoever reaches it, and it is one more attack surface with a history.
+      - "--api.dashboard=false"
+      # Internal-only entrypoint for the container healthcheck; not in
+      # `ports:`, so unreachable from outside.
+      - "--entrypoints.traefik.address=:8080"
+      - "--ping=true"
+      - "--log.level=INFO"
+      # No call-home.
+      - "--global.checknewversion=false"
+      - "--global.sendanonymoususage=false"
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      # Certificates + ACME account key live in a named volume so `tbctl
+      # backup` can capture them; losing acme.json after a rebuild means
+      # re-issuing against Let's Encrypt rate limits at the worst moment.
+      - acme:/acme
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${PROXY_MEM_LIMIT:-256m}
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  pgdata:
+  tbdata:
+  tblogs:
+  acme:

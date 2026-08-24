@@ -1,11 +1,36 @@
 #include "SPIFFS.h"
 #include "BuildConfig.h"
 #include "core/config.h"
+#include "core/io_history.h"
+#include "core/moisture_model.h"
 #include "core/logger.h"
 #include "core/tasks.h"
 #include "core/user_store.h"
 #include "network/web.h"
 #include <Arduino.h>
+#include <esp_system.h>
+
+// esp_reset_reason() returns an enum; the names are worth spelling out because
+// the number alone sends the reader to a header. Not static: the ThingsBoard
+// connect publishes it too, so the cloud gets a timeline of reboots rather than
+// a line in an 8 KB log that rotates.
+const char*
+resetReasonName()
+{
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:  return "power-on";
+        case ESP_RST_EXT:      return "external reset pin";
+        case ESP_RST_SW:       return "software (ESP.restart)";
+        case ESP_RST_PANIC:    return "PANIC or exception";
+        case ESP_RST_INT_WDT:  return "interrupt watchdog";
+        case ESP_RST_TASK_WDT: return "task watchdog";
+        case ESP_RST_WDT:      return "other watchdog";
+        case ESP_RST_DEEPSLEEP:return "deep sleep wake";
+        case ESP_RST_BROWNOUT: return "BROWNOUT (supply dipped)";
+        case ESP_RST_SDIO:     return "SDIO";
+        default:               return "unknown";
+    }
+}
 
 void
 setup(void)
@@ -26,6 +51,12 @@ setup(void)
     logger.info("Initializing ESP Garden " FW_VERSION "...");
 
     digitalWrite(LED_BUILTIN, 1);
+
+    // Why the last boot happened. A panic, a watchdog and a power cut are
+    // three completely different investigations, and without this line all
+    // three look identical: "it restarted".
+    logger.info(String("Reset reason: ") + resetReasonName());
+    logger.info("Free heap at boot: " + String(ESP.getFreeHeap() / 1024) + " KB");
 
     unsigned id = ESP.getEfuseMac() % 0x10000;
     logger.info("ID: " + String(id, 16));
@@ -53,6 +84,15 @@ setup(void)
     // the compiled WiFi defaults cannot associate. Assigning it afterwards left
     // the only failure indicator unreachable in exactly the case it exists for.
     g_ledBlinkEnabled = error;
+
+    // After the config load so the capacity is the configured one, and before
+    // webSetup() so /history.json never sees a half-open buffer.
+    ioHistory.begin((uint16_t)config.historyRecords);
+
+    // After the config load, because it reports per configured probe, and
+    // before webSetup() so /moisture.json never answers from a zeroed model
+    // that has not been read off flash yet.
+    moistureModelSetup();
 
     logger.backupSetup();
     webSetup();

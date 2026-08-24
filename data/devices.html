@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="bootstrap.css" rel="stylesheet">
+  <title>Devices &mdash; ESP Garden</title>
+  <style>
+    body { padding-bottom: 2rem; }
+    .card { margin-bottom: 1rem; }
+    .card-header { font-weight: 600; padding: .5rem .75rem; }
+    .card-body { padding: .75rem; }
+    .card-footer { padding: .4rem .75rem; }
+    .table td, .table th { padding: .35rem .4rem; vertical-align: middle; }
+    .hint { font-size: .78rem; }
+    .col-fixed { white-space: nowrap; }
+    .col-name { min-width: 9rem; }
+    .col-pin { width: 10rem; }
+    .col-cal { width: 7rem; }
+    .col-level { width: 9rem; }
+    .pin-chip { display: inline-block; margin: 0 .4rem .25rem 0; }
+    /* Bootstrap paints .is-invalid, but a flagged pin has to stay obvious when
+       the CDN stylesheet is unreachable — which is the normal state of a garden
+       that has lost its uplink. */
+    .is-invalid { outline: 2px solid #dc3545; }
+  </style>
+</head>
+
+<body>
+  <div class="container py-3" style="max-width: 1040px;">
+
+    <header class="d-flex flex-wrap align-items-center justify-content-between mb-3">
+      <h1 class="m-0 fs-4">&#x1F50C; Devices</h1>
+      <div class="small">
+        <a href="/" class="link-primary">Dashboard</a>
+        <a href="/history.html" class="link-primary ms-2">History</a>
+        <a href="/schedules.html" class="link-primary ms-2">Schedules</a>
+        <a href="/config.html" class="link-primary ms-2">Config</a>
+        <a href="/users.html" class="link-primary ms-2">Users</a>
+        <a href="/update.html" class="link-primary ms-2">Update</a>
+        <a href="#" id="a-logout" class="link-primary ms-2">Logout</a>
+      </div>
+    </header>
+
+    <div id="status"></div>
+
+    <div class="alert alert-secondary hint">
+      <strong>Which peripherals this board has is configuration, not a build
+      flag.</strong> A sensor is fitted if and only if its key exists in
+      <code>io</code>; the number of relays is the length of
+      <code>io.relays</code> and the number of probes the length of
+      <code>io.soilMoisture</code>. Adding and deleting here rewrites
+      <code>config.json</code>, which the device only reads at boot &mdash; so
+      <strong>nothing changes until the device restarts</strong>.
+      <div id="caps-note" class="mt-1 text-muted"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-baseline">
+        <span>Relays</span>
+        <span id="relay-count" class="hint text-muted"></span>
+      </div>
+      <div class="card-body p-0">
+        <div style="overflow-x: auto;">
+          <table class="table table-sm table-striped mb-0">
+            <thead>
+              <tr>
+                <th class="col-fixed">#</th>
+                <th class="col-name">Name</th>
+                <th class="col-pin">GPIO</th>
+                <th class="col-level">Active level</th>
+                <th class="col-fixed">Now</th>
+                <th class="text-end col-fixed"></th>
+              </tr>
+            </thead>
+            <tbody id="tbody-relays"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card-footer">
+        <button id="button-add-relay" type="button" class="btn btn-outline-secondary btn-sm" disabled>+ Add relay</button>
+        <span id="relay-add-note" class="hint text-muted ms-2"></span>
+        <div class="hint text-muted mt-1">
+          <strong>Index 0 is the watering relay on every board.</strong>
+          TalkBack's <code>watering:&lt;ms&gt;</code>, the legacy
+          <code>watering</code> parameter of <code>/control</code> and ThingSpeak
+          field 2 all address it, and every schedule targets a relay by index
+          &mdash; so deleting row 0, or deleting any row above another, changes
+          what all of those mean. <em>Active level</em> is the level that
+          energises the relay: 0 for the usual opto-isolated board, which idles
+          high. <em>Test</em> switches the <strong>running</strong> relay on for
+          three seconds, on the pin the device booted with, not the one selected
+          above.
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-baseline">
+        <span>Soil moisture probes</span>
+        <span id="probe-count" class="hint text-muted"></span>
+      </div>
+      <div class="card-body p-0">
+        <div style="overflow-x: auto;">
+          <table class="table table-sm table-striped mb-0">
+            <thead>
+              <tr>
+                <th class="col-fixed">#</th>
+                <th class="col-name">Name</th>
+                <th class="col-pin">GPIO</th>
+                <th class="col-cal">Dry (air)</th>
+                <th class="col-cal">Wet (water)</th>
+                <th>Fed by</th>
+                <th>Reading</th>
+                <th class="text-end col-fixed"></th>
+              </tr>
+            </thead>
+            <tbody id="tbody-probes"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card-footer">
+        <button id="button-add-probe" type="button" class="btn btn-outline-secondary btn-sm" disabled>+ Add probe</button>
+        <span id="probe-add-note" class="hint text-muted ms-2"></span>
+        <div class="hint text-muted mt-1">
+          Each probe carries its own two reference readings: <em>dry</em> taken
+          in air, <em>wet</em> taken submerged. They live in the
+          <code>moisture</code> array, which stays parallel to this table &mdash;
+          delete a probe here and its calibration goes with it instead of sliding
+          onto the next probe. While the two are equal the probe counts as
+          uncalibrated and the dashboard shows no Dry/Humid/Wet badge, which is
+          honest rather than a band invented from nothing. A disconnected probe
+          reads at a rail, and that is not a usable dry anchor.
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">Single-instance sensors</div>
+      <div class="card-body p-0">
+        <div style="overflow-x: auto;">
+          <table class="table table-sm table-striped mb-0">
+            <thead>
+              <tr>
+                <th class="col-fixed">Fitted</th>
+                <th class="col-name">Device</th>
+                <th class="col-name">Name</th>
+                <th class="col-pin">GPIO</th>
+                <th>Options</th>
+                <th>Reading</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-sensors"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card-footer hint text-muted">
+        Unticking a box removes the key from <code>io</code> entirely, which is
+        how the device is told the hardware is not there. A phantom sensor is not
+        harmless: a flow meter that is not wired counts interference as flow, and
+        a float switch that is not wired reads at its pull-up, which means
+        &ldquo;empty&rdquo;. A name is the dashboard label
+        <code>/data.json</code> keys <code>Inputs</code> by; on the DHT it is a
+        <em>prefix</em>, because one pin produces two channels. Names are labels,
+        not identifiers &mdash; telemetry keys and the history record stay
+        positional, so a rename never rewrites stored data.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">Pin map</div>
+      <div class="card-body" id="pin-map"></div>
+    </div>
+
+    <div id="warnings"></div>
+
+    <div class="d-flex gap-2 flex-wrap">
+      <button id="button-save" type="button" class="btn btn-primary btn-sm" disabled>Save</button>
+      <button id="button-reload" type="button" class="btn btn-outline-secondary btn-sm">Reload</button>
+      <button id="button-restart" type="button" class="btn btn-outline-danger btn-sm">Restart device</button>
+    </div>
+
+  </div>
+
+  <script src="jquery.js"></script>
+  <script src="auth.js"></script>
+  <!-- Order is load-bearing: devices_render.js binds names out of
+       espDevicesModel at load time, and devices.js binds both. -->
+  <script src="devices_model.js"></script>
+  <script src="devices_render.js"></script>
+  <script src="devices.js"></script>
+</body>
+
+</html>

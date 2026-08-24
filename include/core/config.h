@@ -1,8 +1,26 @@
 #pragma once
 
 #include "BuildConfig.h"
+// Pin capability rules moved to their own header; included here so that every
+// file which has always got them from core/config.h still does.
+#include "core/config_pins.h"
 #include <Arduino.h>
 #include <Arduino_JSON.h>
+
+// One scheduled relay activation. `days` is a bitmask with bit 0 = Sunday
+// through bit 6 = Saturday, so 127 is every day and 62 is weekdays. Times are
+// LOCAL, which is why the timezone matters and why a schedule is skipped
+// entirely until NTP has answered.
+struct Schedule
+{
+    bool enabled;
+    uint8_t relay;
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t days;
+    unsigned durationMs;
+    String name;
+};
 
 class ConfigFile
 {
@@ -23,6 +41,11 @@ class ConfigFile
     // ThingSpeak
     String thingSpeakAPIKey;
     long thingSpeakChannelNumber;
+    // ThingSpeak field for the SECOND soil probe, 0 to keep it off. Per-device
+    // configuration rather than a build flag: field 4 is free on a board with
+    // no water level sensor and taken on a board with one, and renumbering
+    // rewrites the meaning of everything already stored under it.
+    int thingSpeakMoisture2Field;
 
     // TalkBack
     String talkBackAPIKey;
@@ -36,6 +59,31 @@ class ConfigFile
     int mqttPort;
     String mqttCACert;
 
+    // "thingspeak" (default) or "thingsboard". Only the topic and the payload
+    // format differ — the broker connection is the same block above. On
+    // ThingsBoard the access token goes in mqtt.username and the password is
+    // empty, which is how that broker authenticates a device.
+    String mqttBackend;
+    // ThingsBoard is commonly self-hosted on plain 1883. TLS costs 30-45 KB of
+    // heap for the handshake buffers, so it is not forced on.
+    bool mqttUseTLS;
+
+    // ThingsBoard downlink. Both are ignored by the ThingSpeak backend, which
+    // has no downlink at all beyond TalkBack.
+    //
+    // mqttRpc accepts two-way RPC on v1/devices/me/rpc/request/+ — relay
+    // control and status. The commands run through the same startRelay() as
+    // the web UI, so the ceiling and the already-running guard still apply.
+    bool mqttRpc;
+    // mqttFwUpdate accepts a firmware image pushed from the broker. The arming
+    // step is on the ThingsBoard side: an operator has to assign a package to
+    // this device before anything is announced.
+    bool mqttFwUpdate;
+    // Only firmware whose fw_title matches is flashed. One tenant holds every
+    // device an operator owns and assigning the wrong package is one wrong
+    // click, so this is the catch that keeps another board's image out.
+    String mqttFwTitle;
+
     // pins
     uint8_t buttonPin;
 
@@ -43,25 +91,104 @@ class ConfigFile
     // legacy `watering` control parameter and the ThingSpeak watering field all
     // address it. relayPinOn holds the logic level that ENERGISES the relay
     // (0 for the usual active-low opto-isolated boards).
-    uint8_t relayPin[RELAY_COUNT];
-    uint8_t relayPinOn[RELAY_COUNT];
-    String relayName[RELAY_COUNT];
+    //
+    // relayCount is how many of these are FITTED, from config.json. The array
+    // is sized by RELAY_MAX, which is only capacity — every loop over relays
+    // runs to relayCount, never to RELAY_MAX, or it would drive pins nothing
+    // is connected to.
+    uint8_t relayCount;
+    // Sentinel for "this slot has no pin". relayPinsSafeInit() skips it rather
+    // than driving GPIO 0, which is a strapping pin.
+    static const uint8_t kNoPin = 255;
+    uint8_t relayPin[RELAY_MAX];
+    uint8_t relayPinOn[RELAY_MAX];
+    String relayName[RELAY_MAX];
+
+    // Presence of each sensor kind, decided by whether its key exists in
+    // config.json's `io` object. Deleting the key in /devices.html is what
+    // "remove this sensor" means — there is no separate enabled flag to fall
+    // out of step with the pin it names.
+    uint8_t moistureCount;
+    bool dhtFitted;
+    bool luminosityFitted;
+    bool waterLevelFitted;
+    bool flowFitted;
+    bool floatFitted;
 
     uint8_t dhtPin;
-    uint8_t soilMoisturePin[MOISTURE_SENSOR_COUNT];
+    uint8_t soilMoisturePin[MOISTURE_MAX];
+
+    // Display labels. /data.json keys Inputs by these, so they are what the
+    // dashboard, the history charts and the table show. They are labels, not
+    // identifiers: telemetry keys and the Relays array stay index-based, so
+    // renaming a probe never rewrites stored history.
+    String soilMoistureName[MOISTURE_MAX];
+    String dhtName;
+    String luminosityName;
+    String waterLevelName;
 
     // Two-point calibration, per probe: the reading with the probe in air and
     // the reading submerged in water. Every capacitive probe has its own gain
     // and offset, so these are not shared. No ordering is assumed — with the
-    // current 100-ADC% conversion the air reading is the SMALLER number.
+    // current 100-ADC% conversion the air reading is believed to be the
+    // SMALLER number, but that has never been checked on hardware and nothing
+    // depends on it: no ordering is assumed anywhere.
     // Equal values disable classification for that probe.
-    float moistureDry[MOISTURE_SENSOR_COUNT];
-    float moistureWet[MOISTURE_SENSOR_COUNT];
+    float moistureDry[MOISTURE_MAX];
+    float moistureWet[MOISTURE_MAX];
+
+    // Which relay waters which probe. The Bayesian model labels a reading by
+    // its distance from a watering EVENT, so it needs to know whose pump
+    // matters — and on a rectangular planter with one pump per zone, probe i
+    // is not necessarily fed by relay i.
+    //
+    // -1 means no pump feeds this probe: nothing labels its readings, so it
+    // never gets a model and falls back to the two-point calibration.
+    int8_t moistureRelay[MOISTURE_MAX];
     uint8_t luminosityPin;
     uint8_t waterLevelPin;
 
+    // Pulse-output flow meter (YF-S201 and friends). pulsesPerLitre is the K
+    // factor from the datasheet; it is per-model and per-plumbing, so it is
+    // configuration rather than a constant.
+    uint8_t flowPin;
+    String flowName;
+    float flowPulsesPerLitre;
+
+    // Float switch: a bare contact, not an analog level. floatActiveLevel is
+    // the logic level that means "float raised"; the input is driven with an
+    // internal pull-up, so a normally-open switch to ground reads 0 when
+    // raised.
+    uint8_t floatPin;
+    String floatName;
+    uint8_t floatActiveLevel;
+
+    // Reservoir interlock. When on, startRelay() refuses a zone relay while
+    // the float reads empty, which is the difference between a pump that runs
+    // dry for 30 s and one that does not run at all.
+    //
+    // DEFAULT OFF, deliberately. A float that is not wired yet reads at the
+    // pull-up, i.e. "empty", so switching this on by default would stop every
+    // watering on every board that has the sensor compiled in and not fitted.
+    // It is a decision that belongs to whoever looked at the reading.
+    bool floatInterlock;
+    // Relay that refills the reservoir, exempt from the interlock — blocking
+    // the one thing that fixes an empty tank would deadlock the system.
+    // -1 when no relay refills.
+    int floatFillRelay;
+
+    Schedule schedules[SCHEDULE_COUNT];
+    unsigned scheduleCount;
+
     // log
     int logLevel;
+
+    // I/O history ring buffer. `historyRecords` is the file capacity — 0
+    // disables it entirely. `historyPeriodSec` paces the appends: SPIFFS
+    // rewrites a whole page per record, so a 1 s period would burn flash for
+    // data nobody reads at that resolution.
+    int historyRecords;
+    int historyPeriodSec;
 
     ConfigFile();
 
@@ -70,6 +197,15 @@ class ConfigFile
     // Logs every GPIO assigned to more than one peripheral, and every relay
     // parked on an input-only pin. Diagnostic only — it never refuses a config.
     void validatePins() const;
+
+    // Clears the pin of every relay slot past relayCount, so relayPinsSafeInit()
+    // cannot drive a pin the config gave to something else.
+    void clearUndeclaredRelayPins();
+
+    // Drops thingSpeak.moisture2Field when it names a slot another FITTED
+    // sensor already publishes. Runs after the io block, because that is when
+    // the fitted flags are known.
+    void validateThingSpeakFields();
 
     // Replaces /config.json wholesale — there is no merge at this level. The
     // caller is responsible for having produced a complete document; the
