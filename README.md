@@ -133,7 +133,8 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
     },
     "moisture": [                // two-point calibration, one entry per probe
         { "dry": 0, "wet": 0 },  // dry = reading in air, wet = submerged
-        { "dry": 0, "wet": 0 }   // equal values disable classification
+        { "dry": 0, "wet": 0 },  // equal values disable classification
+        { "dry": 0, "wet": 0 }
     ],
     "io": {                      // GPIO pin overrides (optional)
         "button": 0,
@@ -144,7 +145,7 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
             { "pin": 18, "on": 0, "name": "Relay 4" }
         ],
         "dht": 23,
-        "soilMoisture": [36, 34],
+        "soilMoisture": [36, 35, 32],
         "luminosity": 39,
         "waterLevel": 34
     }

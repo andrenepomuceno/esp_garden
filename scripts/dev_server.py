@@ -71,8 +71,12 @@ class DeviceState:
         # config block the device reads — hardcoding them let the simulator
         # report a capacity the device would never return.
         history_cfg = SIM_CONFIG.get("history", {})
-        self.history_capacity = int(history_cfg.get("records", 1440)) or 1
-        self.history: deque[dict] = deque(maxlen=self.history_capacity)
+        self.history_capacity = int(history_cfg.get("records", 1440))
+        # records = 0 means disabled on the device, where /history.json answers
+        # 503. Coercing it to 1 here made that branch unreachable in the UI.
+        self.history_enabled = self.history_capacity > 0
+        self.history: deque[dict] = deque(
+            maxlen=self.history_capacity if self.history_enabled else 1)
         self.history_period_s = int(history_cfg.get("periodSec", 60))
         self._history_next = 0.0
 
@@ -85,12 +89,44 @@ class DeviceState:
         self._sensors = {
             "Soil Moisture 1": _Sensor(45.0, amplitude=8.0, period=900, noise=1.5),
             "Soil Moisture 2": _Sensor(38.0, amplitude=6.0, period=1100, noise=1.5),
+            "Soil Moisture 3": _Sensor(52.0, amplitude=7.0, period=1300, noise=1.5),
             "Luminosity":      _Sensor(55.0, amplitude=35.0, period=120, noise=4.0),
             "Temperature":     _Sensor(25.5, amplitude=3.0, period=1800, noise=0.4),
             "Air Humidity":    _Sensor(70.0, amplitude=8.0, period=2400, noise=1.5),
         }
 
+        self._seed_history()
         self.log("info", "Simulator booted")
+
+    def _seed_history(self) -> None:
+        """Backdated records so the charts are testable immediately.
+
+        Without this the deque starts empty and gains one record per period:
+        every path the history page adds — gap breaking, the crosshair index
+        map, the relay run-length strip — is unreachable for hours.
+        """
+        if not self.history_enabled:
+            return
+        import math as _math
+        now = time.time()
+        count = min(self.history_capacity, 400)
+        for i in range(count, 0, -1):
+            t = now - i * self.history_period_s
+            phase = i / 30.0
+            self.history.append({
+                "t": int(t),
+                "relays": 1 if i % 37 == 0 else 0,
+                "moisture": [
+                    round(45 + 6 * _math.sin(phase), 2),
+                    round(38 + 4 * _math.sin(phase + 1), 2),
+                    round(52 + 5 * _math.sin(phase + 2), 2),
+                    None,
+                ],
+                "lum": round(max(0.0, 55 + 40 * _math.sin(i / 60.0)), 2),
+                "temp": round(25 + 3 * _math.sin(phase / 2), 2),
+                "hum": round(70 + 8 * _math.sin(phase / 3), 2),
+                "water": None,
+            })
 
     # ----- logging -----
     def log(self, level: str, message: str) -> None:
@@ -182,7 +218,8 @@ class DeviceState:
                     "moisture": [
                         round(self._sensors["Soil Moisture 1"].average, 2),
                         round(self._sensors["Soil Moisture 2"].average, 2),
-                        None, None,
+                        round(self._sensors["Soil Moisture 3"].average, 2),
+                        None,
                     ],
                     "lum": round(self._sensors["Luminosity"].average, 2),
                     "temp": round(self._sensors["Temperature"].average, 2),
@@ -213,6 +250,7 @@ class DeviceState:
                 "MQTT": "enabled" if self.mqtt_enabled else "disabled",
                 "Packages Sent": str(self.packages_sent),
                 "Watering Cycles": str(self.watering_cycles),
+                "Filesystem": "139 / 463 KB",
             }
             if self.dht_total_reads:
                 rate = self.dht_read_errors / self.dht_total_reads * 100
@@ -378,6 +416,7 @@ SIM_CONFIG = {
         "cacert": "/thingspeak.pem",
     },
     "log": {"level": 4},
+    "history": {"records": 1440, "periodSec": 60},
     "io": {
         "button": 0,
         "relays": [
@@ -624,6 +663,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/users.json":
             self._send_json(SIM_USERS)
         elif path == "/history.json":
+            if not STATE.history_enabled:
+                self._send(HTTPStatus.SERVICE_UNAVAILABLE,
+                           b"history buffer not available")
+                return
             limit = 100
             raw = parse_qs(url.query).get("limit", [""])[0]
             if raw.isdigit() and int(raw) > 0:

@@ -93,6 +93,11 @@ static const unsigned g_bootTimeField = 8;
 #warning "Second soil probe is dashboard-only: no ThingSpeak field assigned (set -D MOISTURE2_FIELD=<n>)."
 #endif
 
+// Ceiling on each blocking wait in tasksSetup(). Long enough for a normal
+// association and NTP round trip, short enough that an outage costs a minute
+// rather than the whole session.
+static const unsigned long g_bootWaitMaxMs = 60UL * 1000UL;
+
 const unsigned int g_wateringDefaultTime = 5 * 1000;
 static const unsigned g_relayMaxTime = 30 * 1000;
 
@@ -153,9 +158,15 @@ static portMUX_TYPE g_relayMux = portMUX_INITIALIZER_UNLOCKED;
 // record samples state once per historyPeriodSec (60 s by default) while a
 // watering defaults to 5 s and is capped at 30 — so an instantaneous sample
 // misses roughly nine activations in ten, and the moisture rise that follows
-// appears in the file with no cause. Set by startRelay() and by the 50 ms
-// critical task, consumed and cleared by the history task.
-static volatile uint16_t g_relaySticky = 0;
+// appears in the file with no cause.
+//
+// EVERY access takes g_relayMux, producers included. `|=` is a
+// read-modify-write, and the producers run on the critical runner and on
+// async_tcp while the consumer clears from loop(): guarding only the consumer
+// lets a producer store a stale word back over the clear, or the clear discard
+// an activation that arrived mid-sequence. portENTER_CRITICAL masks the current
+// core, so it excludes nothing unless both sides take it.
+static uint16_t g_relaySticky = 0;
 
 static WiFiClient g_wifiClient;
 static TalkBack talkBack;
@@ -202,7 +213,9 @@ relaysTaskHandler()
         }
 
         if (relayIsOn(i)) {
+            portENTER_CRITICAL(&g_relayMux);
             g_relaySticky |= (uint16_t)(1u << i);
+            portEXIT_CRITICAL(&g_relayMux);
         }
     }
 }
@@ -271,7 +284,9 @@ startRelay(unsigned index, unsigned int duration)
 
     logger.info("Starting " + config.relayName[index] + " for " +
                 String(duration) + " ms");
+    portENTER_CRITICAL(&g_relayMux);
     g_relaySticky |= (uint16_t)(1u << index);
+    portEXIT_CRITICAL(&g_relayMux);
     relayWrite(index, true);
 
     if (index == 0) {
@@ -484,6 +499,15 @@ clockUpdateTaskHandler()
 
     setenv("TZ", g_timezone.c_str(), 1); // America/Sao Paulo
     tzset();
+
+    // While the clock is still unset, come back in a minute instead of a day —
+    // otherwise a boot that missed NTP stays undatable until tomorrow.
+    if (time(NULL) < g_safeTimestamp) {
+        g_clockUpdateTask.setPeriod(60UL * 1000UL);
+    } else {
+        g_bootTime = (g_bootTime < g_safeTimestamp) ? time(NULL) : g_bootTime;
+        g_clockUpdateTask.setPeriod(g_clockUpdateTaskPeriod);
+    }
 }
 
 static void
@@ -609,8 +633,15 @@ ledBlinkTaskHandler()
 static void
 historyTaskHandler()
 {
+    // A record stamped before the clock synced is undatable, and it would sit
+    // in the ring pretending to be from 1970.
+    const time_t now = time(NULL);
+    if (now < g_safeTimestamp) {
+        return;
+    }
+
     IoRecord record = {};
-    record.timestamp = (uint32_t)time(NULL);
+    record.timestamp = (uint32_t)now;
 
     // Everything that fired during the period, not just what happens to be on
     // at this instant.
@@ -720,15 +751,36 @@ tasksSetup()
         logger.fatal("Failed to start the critical task runner.");
     }
 
+    // Both waits are BOUNDED. They used to be unbounded, and that turned any
+    // outage into a dead device: with WiFi up and the web server answering, a
+    // DNS hiccup on the NTP pool kept setup() spinning "Syncing clock..." for
+    // ever, so no sensor was read, no relay timer was armed from the scheduler
+    // and no history was written — observed on the live board, stuck for
+    // minutes with a perfectly good network.
+    //
+    // Nothing here actually needs to finish before loop() starts:
+    // checkInternet and clockUpdate are periodic tasks that keep retrying.
     logger.info("Waiting for internet connection...");
-    while (!g_hasInternet) {
+    unsigned long waitStart = millis();
+    while (!g_hasInternet && (millis() - waitStart < g_bootWaitMaxMs)) {
         checkInternetTaskHandler();
         delay(1000);
     }
-    while (g_bootTime < g_safeTimestamp) {
+    if (!g_hasInternet) {
+        logger.warning("No internet after " + String(g_bootWaitMaxMs / 1000) +
+                       " s. Continuing offline; checkInternet keeps retrying.");
+    }
+
+    waitStart = millis();
+    while ((g_bootTime < g_safeTimestamp) &&
+           (millis() - waitStart < g_bootWaitMaxMs)) {
         clockUpdateTaskHandler();
         delay(2000);
         g_bootTime = time(NULL);
+    }
+    if (g_bootTime < g_safeTimestamp) {
+        logger.warning("Clock not synced. Timestamps stay invalid and history "
+                       "is skipped until NTP answers.");
     }
 
     mqttSetup();

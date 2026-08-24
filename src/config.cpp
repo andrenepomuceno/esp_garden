@@ -32,15 +32,19 @@ String& g_mqttCACert = config.mqttCACert;
 // strapping pin (MTDO) — new hardware should override it in config.json.
 static const uint8_t g_defaultRelayPin[] = { 15, 16, 17, 18 };
 // All ADC1: ADC2 cannot be read while WiFi is associated, so every analog
-// channel has to come from GPIO 32-39. These three are also mutually distinct
-// and clear of the luminosity (39) and water level (34) defaults — the previous
-// second entry was A6 (34) and collided with the water level on any board
-// carrying both.
+// channel has to come from GPIO 32-39.
+//
+// Index 1 is 34 because that is where espgarden5 — the only board that takes a
+// second probe on compiled defaults — has it wired, and that board has no water
+// level sensor to contend with. A board carrying BOTH a water level sensor and
+// a second probe must assign pins in config.json; validatePins() logs the
+// collision if it does not. (Briefly changed to 35 to dodge that collision,
+// which silently moved espgarden5's probe onto a floating pin.)
 //
 // GPIO 32/33 double as XTAL_32K_P/N. The ESP32-WROOM-32 on a NodeMCU-32S ships
 // without that crystal, so they are ordinary ADC1 inputs; a module that does
 // have one fitted cannot use them.
-static const uint8_t g_defaultSoilMoisturePin[] = { 36, 35, 32 };
+static const uint8_t g_defaultSoilMoisturePin[] = { 36, 34, 32 };
 
 ConfigFile::ConfigFile()
 {
@@ -364,7 +368,9 @@ ConfigFile::loadFile(unsigned deviceID)
         }
         if (history.hasOwnProperty("periodSec")) {
             const int period = (int)history["periodSec"];
-            if (period >= 1 && period <= 3600) {
+            // Floor of 10 s, matching what config.h says: at 1 s this rewrites
+            // a flash page 86400 times a day for data nobody reads that fast.
+            if (period >= 10 && period <= 3600) {
                 historyPeriodSec = period;
             } else {
                 logger.warning("Ignoring out-of-range history.periodSec " +

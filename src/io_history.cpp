@@ -65,6 +65,12 @@ IoHistory::begin(uint16_t capacity, FS& filesystem)
 
     if (mutex == nullptr) {
         mutex = xSemaphoreCreateMutex();
+        if (mutex == nullptr) {
+            // Every other allocation here is checked; leaving this one meant
+            // append() would call xSemaphoreTake(nullptr, portMAX_DELAY).
+            logger.error("io_history: cannot create mutex; history disabled");
+            return false;
+        }
     }
 
     if (capacity == 0) {
@@ -93,6 +99,12 @@ IoHistory::begin(uint16_t capacity, FS& filesystem)
                     // skip = stored - wanted and serves arbitrary slots in
                     // scrambled order, and append() stops counting for good.
                     onDisk.stored <= onDisk.capacity &&
+                    // Before the buffer wraps the two are the same number.
+                    // Checking them only separately lets head=5/stored=3 pass,
+                    // and read() then serves preallocated zeros while the real
+                    // records in slots 3 and 4 are unreachable.
+                    (onDisk.stored == onDisk.capacity ||
+                     onDisk.head == onDisk.stored) &&
                     (uint32_t)file.size() == expected) {
                     header = onDisk;
                     needsFormat = false;

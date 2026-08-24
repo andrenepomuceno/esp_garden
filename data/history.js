@@ -10,7 +10,16 @@
 (function () {
   var SERIES = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)'];
   var records = [];
-  var relayNames = ['Watering', 'Relay 2', 'Relay 3', 'Relay 4'];
+  var offset = null;      // null = newest page
+  var stored = 0;
+  // Relay labels come from /data.json's Relays array — the payload CLAUDE.md
+  // names as the addressing contract. Hardcoding them mislabels a renamed
+  // relay and invents rows on a one-relay board.
+  var relayNames = [];
+  // The record carries IO_HISTORY_MAX_MOISTURE slots regardless of build, so
+  // the column count follows the data rather than a constant that would drop a
+  // fourth probe silently.
+  var probeCount = 0;
 
   function esc(s) { return espUI.escapeHtml(s); }
 
@@ -194,7 +203,7 @@
   // line implies values in between.
   function drawRelays(container) {
     var n = records.length;
-    if (!n) return;
+    if (!n || !relayNames.length) return;
     var rows = '';
     for (var r = 0; r < relayNames.length; r++) {
       var bars = '', runStart = -1;
@@ -225,7 +234,7 @@
   // palette check requires it or direct labels wherever contrast is low.
   function drawTable() {
     var head = '<tr><th>Time</th>';
-    for (var m = 0; m < 3; m++) head += '<th>Moist ' + (m + 1) + '</th>';
+    for (var m = 0; m < probeCount; m++) head += '<th>Moist ' + (m + 1) + '</th>';
     head += '<th>Lum</th><th>Temp</th><th>Hum</th><th>Water</th><th>Relays</th></tr>';
     $('#thead-history').html(head);
 
@@ -233,7 +242,7 @@
     for (var i = records.length - 1; i >= 0; i--) {
       var r = records[i];
       rows += '<tr><td>' + esc(fmtDateTime(r.t)) + '</td>';
-      for (var k = 0; k < 3; k++) {
+      for (var k = 0; k < probeCount; k++) {
         rows += '<td>' + (r.moisture[k] === null ? '—' : r.moisture[k]) + '</td>';
       }
       rows += '<td>' + (r.lum === null ? '—' : r.lum) + '</td>' +
@@ -269,10 +278,14 @@
     // One plot per measure. Probes share a plot because they share a unit;
     // everything else gets its own because it does not.
     var moisture = [];
-    for (var m = 0; m < 3; m++) {
+    for (var m = 0; m < probeCount; m++) {
       var vals = column('moisture', m);
       if (hasData(vals)) {
-        moisture.push({ name: 'Probe ' + (m + 1), values: vals, color: SERIES[m] });
+        moisture.push({
+          name: 'Probe ' + (m + 1),
+          values: vals,
+          color: SERIES[m % SERIES.length],
+        });
       }
     }
     if (moisture.length) drawChart(charts, 'Soil Moisture', '%', moisture);
@@ -296,14 +309,28 @@
   }
 
   function load() {
-    var limit = $('#select-limit').val();
+    var limit = parseInt($('#select-limit').val(), 10);
+    var url = '/history.json?limit=' + limit;
+    if (offset !== null) url += '&offset=' + offset;
+
     espUI.setStatus('info', 'Loading…');
-    $.getJSON('/history.json?limit=' + limit)
+    $.getJSON(url)
       .done(function (data) {
         records = data.records || [];
+        stored = data.stored;
+        offset = data.offset;
+        probeCount = 0;
+        for (var i = 0; i < records.length; i++) {
+          probeCount = Math.max(probeCount, (records[i].moisture || []).length);
+        }
         $('#range-note').text(
-          data.returned + ' of ' + data.stored + ' stored (capacity ' +
-          data.capacity + ')');
+          'records ' + (offset + 1) + '–' + (offset + data.returned) +
+          ' of ' + stored + ' (capacity ' + data.capacity + ')');
+        // Without paging the newest `limit` were the only records reachable,
+        // so a 1440-record buffer showed its final 14 % and wrote the rest for
+        // nobody.
+        $('#button-older').prop('disabled', offset <= 0);
+        $('#button-newer').prop('disabled', offset + data.returned >= stored);
         $('#status').empty();
         render();
       })
@@ -317,8 +344,24 @@
   $(function () {
     if (!espAuth.requireToken()) return;
 
-    $('#select-limit').on('change', load);
-    $('#button-refresh').on('click', load);
+    // Labels and relay count come from the device, not from this file.
+    $.getJSON('/data.json').done(function (info) {
+      relayNames = (info.Relays || []).map(function (r) { return r.name; });
+      if (records.length) render();
+    });
+
+    $('#select-limit').on('change', function () { offset = null; load(); });
+    $('#button-refresh').on('click', function () { offset = null; load(); });
+    $('#button-older').on('click', function () {
+      var limit = parseInt($('#select-limit').val(), 10);
+      offset = Math.max(0, (offset === null ? stored - limit : offset) - limit);
+      load();
+    });
+    $('#button-newer').on('click', function () {
+      var limit = parseInt($('#select-limit').val(), 10);
+      offset = Math.min(Math.max(0, stored - limit), (offset || 0) + limit);
+      load();
+    });
     $('#input-table').on('change', function () {
       $('#card-table').toggle(this.checked);
     });
