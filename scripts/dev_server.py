@@ -515,6 +515,8 @@ PUBLIC_PATHS = {
     "/users.js",
     "/history.html",
     "/history.js",
+    "/devices.html",
+    "/devices.js",
     "/jquery.js",
     "/spark-md5.js",
     "/favicon.ico",

@@ -36,6 +36,15 @@ class ConfigFile
     int mqttPort;
     String mqttCACert;
 
+    // "thingspeak" (default) or "thingsboard". Only the topic and the payload
+    // format differ — the broker connection is the same block above. On
+    // ThingsBoard the access token goes in mqtt.username and the password is
+    // empty, which is how that broker authenticates a device.
+    String mqttBackend;
+    // ThingsBoard is commonly self-hosted on plain 1883. TLS costs 30-45 KB of
+    // heap for the handshake buffers, so it is not forced on.
+    bool mqttUseTLS;
+
     // pins
     uint8_t buttonPin;
 
@@ -49,6 +58,15 @@ class ConfigFile
 
     uint8_t dhtPin;
     uint8_t soilMoisturePin[MOISTURE_SENSOR_COUNT];
+
+    // Display labels. /data.json keys Inputs by these, so they are what the
+    // dashboard, the history charts and the table show. They are labels, not
+    // identifiers: telemetry keys and the Relays array stay index-based, so
+    // renaming a probe never rewrites stored history.
+    String soilMoistureName[MOISTURE_SENSOR_COUNT];
+    String dhtName;
+    String luminosityName;
+    String waterLevelName;
 
     // Two-point calibration, per probe: the reading with the probe in air and
     // the reading submerged in water. Every capacitive probe has its own gain

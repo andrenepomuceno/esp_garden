@@ -76,6 +76,8 @@ ConfigFile::ConfigFile()
     mqttServer = "mqtt3.thingspeak.com";
     mqttPort = 8883;
     mqttCACert = "/thingspeak.pem";
+    mqttBackend = "thingspeak";
+    mqttUseTLS = true;
 
     // pins
     buttonPin = 0;
@@ -100,7 +102,17 @@ ConfigFile::ConfigFile()
         // which is honest rather than inventing a band from nothing.
         moistureDry[i] = 0.0;
         moistureWet[i] = 0.0;
+
+        // A single probe keeps the unsuffixed historical label so existing
+        // dashboards do not have to special-case one device.
+        soilMoistureName[i] = (MOISTURE_SENSOR_COUNT == 1)
+                                ? String("Soil Moisture")
+                                : ("Soil Moisture " + String(i + 1));
     }
+
+    dhtName = "";
+    luminosityName = "Luminosity";
+    waterLevelName = "Water Level";
 
     luminosityPin = A3;
     waterLevelPin = A6;
@@ -149,8 +161,37 @@ loadRelays(ConfigFile& cfg, JSONVar& io)
     }
 }
 
-// `io.soilMoisture` is either a bare pin number (legacy, one probe) or an
-// array of pins.
+// Reads a sensor entry that may be a bare pin number or {pin, name}. Both
+// shapes exist in the wild: the pin-only form predates naming, and a device in
+// the field must keep loading after a firmware update.
+static void
+loadSensor(JSONVar node, uint8_t& pin, String& name)
+{
+    const String type = JSON.typeof(node);
+    if (type == "number") {
+        pin = (int)node;
+        return;
+    }
+    if (type != "object") {
+        return;
+    }
+
+    JSONVar entry = node;
+    if (entry.hasOwnProperty("pin")) {
+        pin = (int)entry["pin"];
+    }
+    // An absent or empty name keeps the compiled default rather than blanking
+    // the label the dashboard renders.
+    if (JSON.typeof(entry["name"]) == "string") {
+        const String label = (const char*)JSONVar(entry["name"]);
+        if (label.length() > 0) {
+            name = label;
+        }
+    }
+}
+
+// `io.soilMoisture` is a bare pin number (legacy, one probe), an array of pins,
+// or an array of {pin, name}.
 static void
 loadSoilMoisture(ConfigFile& cfg, JSONVar& io)
 {
@@ -165,13 +206,13 @@ loadSoilMoisture(ConfigFile& cfg, JSONVar& io)
         }
 
         for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT && i < count; ++i) {
-            cfg.soilMoisturePin[i] = (int)pins[i];
+            loadSensor(pins[i], cfg.soilMoisturePin[i], cfg.soilMoistureName[i]);
         }
         return;
     }
 
     if (JSON.typeof(pins) != "undefined") {
-        cfg.soilMoisturePin[0] = (int)pins;
+        loadSensor(pins, cfg.soilMoisturePin[0], cfg.soilMoistureName[0]);
     }
 }
 
@@ -297,12 +338,25 @@ ConfigFile::loadFile(unsigned deviceID)
     mqttPort = (int)mqtt["port"];
     mqttCACert = (const char*)mqtt["cacert"];
 
+    if (mqtt.hasOwnProperty("backend")) {
+        const String backend = (const char*)JSONVar(mqtt["backend"]);
+        if (backend == "thingspeak" || backend == "thingsboard") {
+            mqttBackend = backend;
+        } else {
+            logger.warning("Unknown mqtt.backend '" + backend +
+                           "'; keeping " + mqttBackend);
+        }
+    }
+    if (mqtt.hasOwnProperty("useTLS")) {
+        mqttUseTLS = (bool)mqtt["useTLS"];
+    }
+
     JSONVar io = configJson["io"];
     buttonPin = (int)io["button"];
     loadRelays(*this, io);
 
 #if defined(HAS_DHT_SENSOR)
-    dhtPin = (int)io["dht"];
+    loadSensor(io["dht"], dhtPin, dhtName);
 #endif
 #if defined(HAS_MOISTURE_SENSOR)
     loadSoilMoisture(*this, io);
@@ -327,10 +381,10 @@ ConfigFile::loadFile(unsigned deviceID)
     }
 #endif
 #if defined(HAS_LUMINOSITY_SENSOR)
-    luminosityPin = (int)io["luminosity"];
+    loadSensor(io["luminosity"], luminosityPin, luminosityName);
 #endif
 #if defined(HAS_WATER_LEVEL_SENSOR)
-    waterLevelPin = (int)io["waterLevel"];
+    loadSensor(io["waterLevel"], waterLevelPin, waterLevelName);
 #endif
 
     // An out-of-range log level would silence the device entirely, so it is

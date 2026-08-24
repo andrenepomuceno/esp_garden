@@ -122,7 +122,9 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
         "password": "your-mqtt-password",
         "server": "mqtt3.thingspeak.com",
         "port": 8883,
-        "cacert": "/thingspeak.pem"
+        "cacert": "/thingspeak.pem",
+        "backend": "thingspeak",  // or "thingsboard"
+        "useTLS": true            // false for a self-hosted broker on 1883
     },
     "log": {
         "level": 4               // 0 disable .. 4 info (default) .. 6 trace
@@ -253,6 +255,38 @@ Send commands to the device via the ThingSpeak TalkBack queue:
 
 Example: `watering:5000` triggers a 5-second watering cycle; `relay:2:3000`
 runs the third relay for 3 seconds.
+
+## Telemetry backends
+
+The broker connection is one `mqtt` block; only the topic and the payload
+format change with `mqtt.backend`.
+
+| | ThingSpeak | ThingsBoard |
+|---|---|---|
+| Topic | `channels/<id>/publish` | `v1/devices/me/telemetry` |
+| Payload | form-encoded `field1=..&field2=..` | JSON, arbitrary keys |
+| Channels | **8 fields, all taken** | unlimited |
+| Auth | `mqtt.username` / `mqtt.password` | access token in `mqtt.username`, empty password |
+
+**ThingsBoard is what unblocks the extra probes.** The ThingSpeak channel's
+eight fields are spoken for, which is why soil probes 2 and 3 are dashboard-only
+there; the JSON payload carries every probe, its Dry/Humid/Wet state, each relay,
+the DHT error rate and the firmware version with no numbering to negotiate.
+
+```jsonc
+"mqtt": {
+    "backend": "thingsboard",
+    "server": "thingsboard.example.com",
+    "port": 1883,
+    "useTLS": false,          // TLS costs 30-45 KB of heap for the handshake
+    "username": "<device access token>",
+    "password": "",
+    "clientID": "espgarden1"
+}
+```
+
+Switching backend does not migrate history: the ThingSpeak channel keeps what it
+has, and ThingsBoard starts empty.
 
 ## Task Schedule
 

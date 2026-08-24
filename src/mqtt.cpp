@@ -3,10 +3,27 @@
 #include "core/logger.h"
 #include <PubSubClient.h>
 #include <SPIFFS.h>
+#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 
-WiFiClientSecure client;
-PubSubClient mqttClient(client);
+// Both transports exist statically; only the selected one is ever connected,
+// and WiFiClientSecure allocates its handshake buffers on connect rather than
+// at construction, so the unused one costs almost nothing.
+static WiFiClientSecure secureClient;
+static WiFiClient plainClient;
+PubSubClient mqttClient(secureClient);
+
+bool
+mqttIsThingsBoard()
+{
+    return config.mqttBackend == "thingsboard";
+}
+
+bool
+mqttPublishTopic(const String& topic, const String& message)
+{
+    return mqttClient.publish(topic.c_str(), message.c_str());
+}
 
 void
 mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length)
@@ -49,18 +66,30 @@ mqttConnect()
 bool
 mqttSetup()
 {
+    logger.info("MQTT backend: " + config.mqttBackend + " on " + g_mqttServer +
+                ":" + String(g_mqttPort) +
+                (config.mqttUseTLS ? " (TLS)" : " (plain)"));
+
+    mqttClient.setClient(config.mqttUseTLS ? (Client&)secureClient
+                                           : (Client&)plainClient);
     mqttClient.setServer(g_mqttServer.c_str(), g_mqttPort);
     mqttClient.setCallback(mqttSubscriptionCallback);
     mqttClient.setBufferSize(2048);
 
+    if (!config.mqttUseTLS) {
+        // A self-hosted ThingsBoard on 1883 has no certificate to pin, and
+        // loading one would only fail confusingly.
+        return true;
+    }
+
     File cacert = SPIFFS.open(g_mqttCACert, FILE_READ);
     if (cacert == false) {
-        logger.println("Failed to open MQTT CA Certificate.");
+        logger.error("Failed to open MQTT CA certificate " + g_mqttCACert);
         return false;
     }
     static String data = cacert.readString();
     cacert.close();
-    client.setCACert(data.c_str());
+    secureClient.setCACert(data.c_str());
 
     return true;
 }

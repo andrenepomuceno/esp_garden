@@ -107,11 +107,7 @@ webUpdateDataCache()
     JSONVar inputsJson;
 #ifdef HAS_MOISTURE_SENSOR
     for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
-        // A single probe keeps the historical label so existing dashboards and
-        // the simulator do not have to special-case one device.
-        String name = (MOISTURE_SENSOR_COUNT == 1)
-                        ? String("Soil Moisture")
-                        : ("Soil Moisture " + String(i + 1));
+        const String name = config.soilMoistureName[i];
         addAccumulator(inputsJson, name.c_str(), g_soilMoisture[i]);
 
         // Empty unless the probe has been calibrated against air and water.
@@ -123,16 +119,25 @@ webUpdateDataCache()
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
-    addAccumulator(inputsJson, "Luminosity", g_luminosity);
+    addAccumulator(inputsJson, config.luminosityName.c_str(), g_luminosity);
 #endif
 
 #ifdef HAS_DHT_SENSOR
-    addAccumulator(inputsJson, "Temperature", g_temperature);
-    addAccumulator(inputsJson, "Air Humidity", g_airHumidity);
+    // One pin, two channels: a name given to the DHT reads as a prefix so both
+    // channels stay distinguishable.
+    {
+        const String prefix =
+          config.dhtName.length() > 0 ? (config.dhtName + " ") : String("");
+        const String tempName = prefix + "Temperature";
+        const String humName =
+          config.dhtName.length() > 0 ? (prefix + "Humidity") : String("Air Humidity");
+        addAccumulator(inputsJson, tempName.c_str(), g_temperature);
+        addAccumulator(inputsJson, humName.c_str(), g_airHumidity);
+    }
 #endif
 
 #ifdef HAS_WATER_LEVEL_SENSOR
-    addAccumulator(inputsJson, "Water Level", g_waterLevel);
+    addAccumulator(inputsJson, config.waterLevelName.c_str(), g_waterLevel);
 #endif
 
     JSONVar outputsJson;
@@ -819,6 +824,8 @@ webSetup()
     servePublicFile("/users.js", "/users.js", "application/javascript");
     servePublicFile("/history.html", "/history.html", "text/html");
     servePublicFile("/history.js", "/history.js", "application/javascript");
+    servePublicFile("/devices.html", "/devices.html", "text/html");
+    servePublicFile("/devices.js", "/devices.js", "application/javascript");
     servePublicFile("/update.html", "/update.html", "text/html");
     servePublicFile("/update.js", "/update.js", "application/javascript");
     servePublicFile("/favicon.ico", "/favicon.ico", "image/x-icon");

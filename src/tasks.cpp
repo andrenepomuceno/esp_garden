@@ -5,6 +5,7 @@
 #include "network/mqtt.h"
 #include "network/talkback.h"
 #include "network/web.h"
+#include <Arduino_JSON.h>
 #include <CriticalTaskScheduler.h>
 #include <ESP32Ping.h>
 #include <WiFi.h>
@@ -103,6 +104,13 @@ static const unsigned g_relayMaxTime = 30 * 1000;
 
 AccumulatorV2 g_pingTime(g_mqttTaskPeriod / g_checkInternetTaskPeriod);
 static String g_mqttMessage = "";
+
+// Duration of the last watering, pending publication. ThingSpeak carries it in
+// field 2 through g_mqttMessage; ThingsBoard reads it here, since its payload
+// is rebuilt from scratch each period.
+static unsigned g_pendingWateringMs = 0;
+
+static const char* const g_thingsBoardTelemetryTopic = "v1/devices/me/telemetry";
 
 #if USE_WATERING_PWM
 static const unsigned g_wateringPWMChannel = 0;
@@ -291,6 +299,7 @@ startRelay(unsigned index, unsigned int duration)
 
     if (index == 0) {
         ++g_wateringCycles;
+        g_pendingWateringMs = duration;
         mqttAddField(g_wateringField, String(duration));
 
 #ifdef HAS_MOISTURE_SENSOR
@@ -412,6 +421,79 @@ mqttAddStatus(String status)
     g_mqttMessage += "status='" + status + "'&";
 }
 
+// ThingsBoard telemetry: one JSON object, arbitrary keys. This is the reason
+// to support it at all — the ThingSpeak channel's eight fields are spoken for,
+// which is what keeps probes 2 and 3 off the cloud entirely.
+//
+// Written through chained subscripts on a named JSONVar, never by returning one
+// by value: that library's move-assign for rvalues yields null children.
+static String
+buildThingsBoardPayload()
+{
+    JSONVar telemetry;
+
+#ifdef HAS_MOISTURE_SENSOR
+    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT; ++i) {
+        if (g_soilMoisture[i].getSamples() == 0) {
+            continue; // never sampled: sending 0 would read as a real value
+        }
+        const String key = "moisture" + String(i + 1);
+        telemetry[key.c_str()] = (double)g_soilMoisture[i].getAverage();
+
+        const String state = moistureState(i);
+        if (state.length() > 0) {
+            const String stateKey = "moisture" + String(i + 1) + "State";
+            telemetry[stateKey.c_str()] = state;
+        }
+    }
+#endif
+#ifdef HAS_LUMINOSITY_SENSOR
+    if (g_luminosity.getSamples() > 0) {
+        telemetry["luminosity"] = (double)g_luminosity.getAverage();
+    }
+#endif
+#ifdef HAS_DHT_SENSOR
+    if (g_temperature.getSamples() > 0) {
+        telemetry["temperature"] = (double)g_temperature.getAverage();
+    }
+    if (g_airHumidity.getSamples() > 0) {
+        telemetry["airHumidity"] = (double)g_airHumidity.getAverage();
+    }
+    if (g_dhtTotalReads > 0) {
+        telemetry["dhtErrorRate"] =
+          (double)g_dhtReadErrors * 100.0 / (double)g_dhtTotalReads;
+    }
+#endif
+#ifdef HAS_WATER_LEVEL_SENSOR
+    if (g_waterLevel.getSamples() > 0) {
+        telemetry["waterLevel"] = (double)g_waterLevel.getAverage();
+    }
+#endif
+
+    uint16_t mask = 0;
+    for (unsigned i = 0; i < RELAY_COUNT && i < 16; ++i) {
+        const String key = "relay" + String(i + 1);
+        const bool on = relayIsOn(i);
+        telemetry[key.c_str()] = on;
+        if (on) {
+            mask |= (uint16_t)(1u << i);
+        }
+    }
+    telemetry["relayMask"] = (int)mask;
+
+    if (g_pendingWateringMs > 0) {
+        telemetry["wateringMs"] = (int)g_pendingWateringMs;
+        g_pendingWateringMs = 0;
+    }
+
+    telemetry["ping"] = (double)g_pingTime.getAverage();
+    telemetry["connectionLoss"] = (int)g_connectionLossCount;
+    telemetry["wateringCycles"] = (int)g_wateringCycles;
+    telemetry["firmware"] = FW_VERSION;
+
+    return JSON.stringify(telemetry);
+}
+
 void
 mqttTaskHandler()
 {
@@ -424,39 +506,45 @@ mqttTaskHandler()
         return;
     }
 
+    if (mqttIsThingsBoard()) {
+        msgQueue.push_back(buildThingsBoardPayload());
+        g_mqttMessage = ""; // the ThingSpeak accumulator is unused here
+    } else {
+
 #ifdef HAS_MOISTURE_SENSOR
-    mqttAddField(g_soilMoistureField,
-                 FLOAT_TO_STRING(g_soilMoisture[0].getAverage()));
+        mqttAddField(g_soilMoistureField,
+                     FLOAT_TO_STRING(g_soilMoisture[0].getAverage()));
 #if (MOISTURE_SENSOR_COUNT > 1) && defined(MOISTURE2_FIELD)
-    mqttAddField(MOISTURE2_FIELD,
-                 FLOAT_TO_STRING(g_soilMoisture[1].getAverage()));
+        mqttAddField(MOISTURE2_FIELD,
+                     FLOAT_TO_STRING(g_soilMoisture[1].getAverage()));
 #endif
 #endif
 
 #ifdef HAS_LUMINOSITY_SENSOR
-    mqttAddField(g_luminosityField, FLOAT_TO_STRING(g_luminosity.getAverage()));
+        mqttAddField(g_luminosityField, FLOAT_TO_STRING(g_luminosity.getAverage()));
 #endif
 
 #ifdef HAS_DHT_SENSOR
-    mqttAddField(g_temperatureField,
-                 FLOAT_TO_STRING(g_temperature.getAverage()));
-    mqttAddField(g_airHumidityField,
-                 FLOAT_TO_STRING(g_airHumidity.getAverage()));
+        mqttAddField(g_temperatureField,
+                     FLOAT_TO_STRING(g_temperature.getAverage()));
+        mqttAddField(g_airHumidityField,
+                     FLOAT_TO_STRING(g_airHumidity.getAverage()));
 #endif
 
 #ifdef HAS_WATER_LEVEL_SENSOR
-    mqttAddField(g_waterLevelField, FLOAT_TO_STRING(g_waterLevel.getAverage()));
+        mqttAddField(g_waterLevelField, FLOAT_TO_STRING(g_waterLevel.getAverage()));
 #endif
 
-    mqttAddField(g_pingField, String(g_pingTime.getAverage()));
+        mqttAddField(g_pingField, String(g_pingTime.getAverage()));
 
-    char timestamp[64];
-    time_t now = time(nullptr);
-    strftime(timestamp, sizeof timestamp, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
-    g_mqttMessage += "created_at='" + String(timestamp) + "'";
+        char timestamp[64];
+        time_t now = time(nullptr);
+        strftime(timestamp, sizeof timestamp, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+        g_mqttMessage += "created_at='" + String(timestamp) + "'";
 
-    msgQueue.push_back(g_mqttMessage);
-    g_mqttMessage = "";
+        msgQueue.push_back(g_mqttMessage);
+        g_mqttMessage = "";
+    }
 
     digitalWrite(LED_BUILTIN, 1);
     int errors = 0;
@@ -466,7 +554,10 @@ mqttTaskHandler()
         msgQueue.pop_front();
     }
     while (msgQueue.size() > 0) {
-        bool success = mqttPublish(g_thingSpeakChannelNumber, msgQueue.front());
+        const bool success =
+          mqttIsThingsBoard()
+            ? mqttPublishTopic(g_thingsBoardTelemetryTopic, msgQueue.front())
+            : mqttPublish(g_thingSpeakChannelNumber, msgQueue.front());
 
         if (success) {
             ++g_packagesSent;

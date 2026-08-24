@@ -25,7 +25,9 @@
         "password": "",
         "server": "mqtt3.thingspeak.com",
         "port": 8883,
-        "cacert": "/thingspeak.pem"
+        "cacert": "/thingspeak.pem",
+        "backend": "thingspeak",
+        "useTLS": true
     },
     "log": {
         "level": 4
@@ -56,12 +58,27 @@
         ],
         "dht": 23,
         "soilMoisture": [
-            36,
-            35,
-            32
+            {
+                "pin": 36,
+                "name": "Soil Moisture 1"
+            },
+            {
+                "pin": 35,
+                "name": "Soil Moisture 2"
+            },
+            {
+                "pin": 32,
+                "name": "Soil Moisture 3"
+            }
         ],
-        "luminosity": 39,
-        "waterLevel": 34
+        "luminosity": {
+            "pin": 39,
+            "name": "Luminosity"
+        },
+        "waterLevel": {
+            "pin": 34,
+            "name": "Water Level"
+        }
     },
     "moisture": [
         {
