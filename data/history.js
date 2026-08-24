@@ -63,6 +63,37 @@
     return ticks;
   }
 
+  // ---------- geometry ----------
+  // Points are positioned by TIMESTAMP, never by array position. The window
+  // selector labels the axis as a time range, and index-linear placement makes
+  // that label a lie: three days of downtime inside a 7-day window would render
+  // as one ordinary segment, and a dense burst of records as a slow trend.
+  // Before the window buttons the axis was honestly "the last N records"; now
+  // it has to be what it says it is.
+  function timeFrac(i) {
+    var n = records.length;
+    if (n <= 1) return 0;
+    var t0 = records[0].t, span = records[n - 1].t - t0;
+    // Every record sharing a timestamp is not a time range at all — fall back
+    // to even spacing rather than stacking every point on the left edge.
+    if (span <= 0) return i / (n - 1);
+    return (records[i].t - t0) / span;
+  }
+
+  // Nearest record to a position along that same time axis, for the crosshair.
+  function nearestIndex(frac) {
+    var n = records.length;
+    if (!n) return 0;
+    var t0 = records[0].t, span = records[n - 1].t - t0;
+    if (span <= 0) return Math.max(0, Math.min(n - 1, Math.round(frac * (n - 1))));
+    var target = t0 + frac * span, best = 0, bestDelta = Infinity;
+    for (var i = 0; i < n; i++) {
+      var delta = Math.abs(records[i].t - target);
+      if (delta < bestDelta) { bestDelta = delta; best = i; }
+    }
+    return best;
+  }
+
   // ---------- chart ----------
   // `series` is [{name, values[], color}]. Values may hold nulls: a channel the
   // board does not have, or a gap. Gaps break the path instead of being drawn
@@ -75,7 +106,7 @@
     if (!range) return;
 
     var n = records.length;
-    var x = function (i) { return L + (n <= 1 ? 0 : (i * (W - L - R)) / (n - 1)); };
+    var x = function (i) { return L + timeFrac(i) * (W - L - R); };
     var y = function (v) {
       return T + (H - T - B) * (1 - (v - range[0]) / (range[1] - range[0]));
     };
@@ -165,8 +196,7 @@
       var box = svg.getBoundingClientRect();
       var px = ((event.clientX - box.left) / box.width) * W;
       var frac = (px - L) / (W - L - R);
-      var idx = Math.round(frac * (records.length - 1));
-      idx = Math.max(0, Math.min(records.length - 1, idx));
+      var idx = nearestIndex(Math.max(0, Math.min(1, frac)));
 
       crosshair.setAttribute('x1', x(idx));
       crosshair.setAttribute('x2', x(idx));
@@ -212,8 +242,11 @@
         var on = i < n && ((records[i].relays >> r) & 1);
         if (on && runStart < 0) runStart = i;
         if (!on && runStart >= 0) {
-          var x0 = (runStart / n) * 100;
-          var w = Math.max(((i - runStart) / n) * 100, 0.4);
+          // Same time axis as the charts above, so a run lines up with the
+          // moisture rise it caused.
+          var x0 = timeFrac(runStart) * 100;
+          var x1 = (i >= n) ? 100 : timeFrac(i) * 100;
+          var w = Math.max(x1 - x0, 0.4);
           bars += '<rect x="' + x0 + '%" y="0" width="' + w +
                   '%" height="14" rx="2" fill="var(--series-1)"/>';
           runStart = -1;

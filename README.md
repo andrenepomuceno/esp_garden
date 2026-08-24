@@ -6,24 +6,26 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
 
 - **Automated irrigation** — timed watering triggered locally or remotely via ThingSpeak TalkBack
 - **Multi-zone relay control** — up to 4 independently timed relays, switched off by a dedicated real-time task
-- **Environmental monitoring** — soil moisture (up to 2 probes), luminosity, temperature, humidity, and water level
+- **Environmental monitoring** — soil moisture (up to 3 probes), luminosity, temperature, humidity, water level, pulse flow meter and a reservoir float switch
 - **Local web UI** — dashboard, configuration editor and account management, served
   from the device with no CDN dependency (jQuery is bundled)
 - **Per-probe moisture classification** — Dry / Humid / Wet from a two-point
   calibration, shown on the dashboard
-- **Cloud logging** — sensor data published to ThingSpeak over MQTT
+- **Scheduled watering** — up to 8 timed relay activations, edited in the web UI
+- **Cloud logging** — sensor data published to ThingSpeak or ThingsBoard over MQTT (TLS)
 - **On-device history** — a fixed-size ring buffer keeps the last N I/O snapshots
   across reboots, served as JSON
 - **Internet watchdog** — pings Google/Cloudflare DNS and reports connectivity losses
 - **NTP time sync** — clock synchronized daily via Brazilian NTP pool
 - **Authenticated web UI** — nonce + SHA-256 login with OPERATOR/ADMIN roles, per-IP lockout and persistent sessions
-- **Over-The-Air firmware update** — via the web UI (ADMIN only)
+- **Over-The-Air firmware update** — from the web UI (ADMIN only) or pushed from ThingsBoard over MQTT
+- **Remote commands** — ThingsBoard RPC for relay control and status, with the same guards as the web UI
 
 ## Hardware
 
 | Environment | Board | Sensors | Relays |
 |---|---|---|---|
-| `espgarden1` | NodeMCU-32S | 3× soil moisture, luminosity, DHT11 (temp + humidity), water level | 4 |
+| `espgarden1` | NodeMCU-32S | 3× soil moisture, luminosity, DHT11 (temp + humidity), water level, flow, float switch | 4 |
 | `espgarden2` | ESP32 DOIT DevKit v1 | Luminosity | 1 |
 | `espgarden3` | ESP32 DOIT DevKit v1 | Soil moisture, luminosity | 1 |
 | `espgarden4` | ESP32 DOIT DevKit v1 | — (base config) | 1 |
@@ -43,6 +45,8 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
 | Soil moisture 2 | GPIO 34 (A6) | Capacitive sensor v2.0, % reported |
 | Luminosity | GPIO 39 (`VN`, A3) | 5 mm LDR in a divider with 10 kΩ to GND, % reported |
 | Water level | GPIO 34 (A6) | Analog, converted via calibration curve (not on `espgarden5`) |
+| Flow meter | GPIO 27 | Pulse input, interrupt-counted; `pulsesPerLitre` sets the scale (`espgarden1`) |
+| Float switch | GPIO 26 | Digital, internal pull-up; `activeLevel` sets which level means "raised" (`espgarden1`) |
 
 Two hardware rules constrain these choices:
 
@@ -124,7 +128,10 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
         "port": 8883,
         "cacert": "/thingspeak.pem",
         "backend": "thingspeak",  // or "thingsboard"
-        "useTLS": true            // false for a self-hosted broker on 1883
+        "useTLS": true,           // false for a self-hosted broker on 1883
+        "rpc": true,              // accept remote commands (ThingsBoard only)
+        "fwUpdate": true,         // accept firmware pushed from the broker
+        "fwTitle": "esp-garden"   // only firmware with this fw_title is flashed
     },
     "log": {
         "level": 4               // 0 disable .. 4 info (default) .. 6 trace
@@ -149,10 +156,39 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
         "dht": 23,
         "soilMoisture": [36, 35, 32],
         "luminosity": 39,
-        "waterLevel": 34
-    }
+        "waterLevel": 34,
+        "flow": {                // pulse flow meter (HAS_FLOW_SENSOR)
+            "pin": 27,
+            "name": "Flow",
+            "pulsesPerLitre": 450
+        },
+        "floatSwitch": {         // reservoir level switch (HAS_FLOAT_SWITCH)
+            "pin": 26,
+            "name": "Float Switch",
+            "activeLevel": 0     // logic level that means "raised"
+        }
+    },
+    "schedules": [               // up to SCHEDULE_COUNT (8) timed activations
+        {
+            "name": "Morning zone 1",
+            "relay": 0,          // index into io.relays
+            "hour": 6,
+            "minute": 30,
+            "days": 127,         // bitmask, bit 0 = Sunday; 127 = every day
+            "durationMs": 10000, // 1..30 000 — the same ceiling startRelay applies
+            "enabled": false     // absent means false
+        }
+    ]
 }
 ```
+
+Schedules are edited at **`/schedules.html`**, not through the generic config
+editor — that editor renders a top-level array of objects as a read-only text
+field. A schedule fires at most once per minute per entry, is skipped while the
+clock is unsynced (the device will not water on a 1970 clock), and goes through
+the same `startRelay()` as every other path, so the duration ceiling and the
+already-running guard apply. Changes take effect after a restart.
+
 
 `io.relays` and `io.soilMoisture` also accept the pre-2.0 spelling — a scalar
 `"watering"` / `"wateringOn"` pair and a scalar `"soilMoisture"` — so a config
@@ -187,6 +223,7 @@ username that is not stored yet.
 | Route | Role |
 |---|---|
 | `/data.json`, `/history.json` | any signed-in user |
+| `/schedules.html` | ADMIN (the page reads and writes `/config.json`) |
 | `/control` | OPERATOR |
 | `/config.json`, `/logs`, `/updateEnable`, `/update`, `/spiffs/*` | ADMIN |
 
@@ -243,6 +280,24 @@ python scripts/moisture_calibration.py --dry 94.0 --wet 12.0        # emit bands
 | `/config.html` | ADMIN | Edit the configuration in tabs; secrets stay masked |
 | `/users.html` | ADMIN | Add, edit and remove accounts and roles |
 | `/update.html` | ADMIN | Firmware and filesystem OTA |
+| `/history.html` | any signed-in user | Charts over 1 h / 6 h / 12 h / 1 d / 7 d / 30 d |
+| `/devices.html` | ADMIN | Name the sensors and relays; review the pin map |
+| `/schedules.html` | ADMIN | Timed relay activations |
+
+Two endpoint behaviours worth knowing, because neither has a button:
+
+- **`GET /config.json?secrets=1`** (ADMIN) exports the configuration
+  **unmasked**. Take this before any filesystem upload: `uploadfs` overwrites
+  `/config.json`, and a backup taken through the normal masked `GET` cannot be
+  restored — every credential comes back as eight asterisks and the loss only
+  surfaces at the next boot, as a device that cannot join the network. The
+  export is logged with the caller's IP.
+- **`GET /history.json?window=<seconds>`** selects by time and decimates to fit
+  `limit`, returning the `stride` it used. Without it a 24 h window is 1440
+  records against a 200-record cap, so the page would silently show only the
+  newest three hours. The relay mask is OR-ed across each decimation bucket
+  rather than sampled — it is sticky precisely because a watering is seconds
+  long, and sampling would drop seven activations in eight.
 
 ## Remote Control (TalkBack)
 
@@ -287,6 +342,66 @@ the DHT error rate and the firmware version with no numbering to negotiate.
 
 Switching backend does not migrate history: the ThingSpeak channel keeps what it
 has, and ThingsBoard starts empty.
+
+### Remote commands over ThingsBoard (RPC)
+
+With `mqtt.backend = "thingsboard"` and `mqtt.rpc = true`, the device answers
+two-way RPC on `v1/devices/me/rpc/request/+`. Send them from the device's
+**Rpc debug terminal** widget or the REST API.
+
+| Method | Params | Answers |
+|---|---|---|
+| `getStatus` | — | firmware, hostname, uptime, connectivity, counters, relay array |
+| `getRelays` | — | `[{index, name, on, remaining}]` |
+| `startRelay` | `{"relay": 0, "seconds": 5}` or `{"relay": 0, "durationMs": 5000}` | `{ok, relay, durationMs}` |
+| `startWatering` | `{"seconds": 5}` — relay 0 on every board | as above |
+| `stopRelay` | `{"relay": 0}` | `{ok, relay, wasRunning}` |
+| `getFirmware` | — | running version, accepted `fw_title`, update state |
+| `checkFirmware` | — | re-asks the broker for the firmware shared attributes |
+| `restart` | — | reboots from `loop()` shortly after answering |
+
+Commands go through the same `startRelay()` as the web UI, so **the cloud gets
+no privileged path to the pumps**: the 30 s ceiling, the range check and the
+already-running guard all still apply, and a refusal comes back as
+`{"ok": false, "error": "..."}` rather than silence.
+
+### Firmware updates over ThingsBoard (FOTA)
+
+With `mqtt.fwUpdate = true` the device subscribes to the firmware shared
+attributes and downloads an assigned package over MQTT in 4 KB chunks
+(`v2/fw/request/<id>/chunk/<n>`), verifies the MD5, and reboots. It reports
+`fw_state` telemetry (`DOWNLOADING` → `DOWNLOADED` → `VERIFIED` → `UPDATING`,
+or `FAILED` with `fw_error`), and publishes `current_fw_title` /
+`current_fw_version` as client attributes on every connection — which is how
+ThingsBoard learns the update landed.
+
+Assign a package in ThingsBoard with **`Title` = `esp-garden`** (matching
+`mqtt.fwTitle`), checksum algorithm **MD5**, and upload
+`.pio/build/<env>/firmware.bin`. Any version different from the running one is
+accepted, in either direction, so a rollback is just assigning the older package.
+
+Four things it refuses to do:
+
+- **Flash a package titled anything else.** One tenant holds every device an
+  operator owns and assigning the wrong package is one wrong click; an image
+  built for another board is a brick that needs USB to recover.
+- **Start while a relay is energised.** The update ends in a reboot, and on an
+  ESP32 reset every GPIO floats until `relayPinsSafeInit()` runs — which on an
+  active-low relay board means the pump switches back on for the length of the
+  boot. The download waits for an idle relay.
+- **Share the flash with a browser upload.** Both paths drive one `Update`
+  object, so `/updateEnable` answers `409` while a cloud download is running and
+  the cloud download waits while a browser upload is in flight.
+- **Hold the flash forever.** A stalled download re-requests its chunk five
+  times and then aborts, releasing `Update` — otherwise an abandoned cloud FOTA
+  would lock out the browser OTA that exists precisely to recover from one.
+
+Progress appears in `/data.json`'s `Status` as `Cloud Update` while it runs.
+Set `mqtt.fwUpdate = false` to switch the whole path off.
+
+The filesystem image is **not** distributable this way — `handleUpdateUpload`
+picks `U_SPIFFS` from the uploaded filename, and the FOTA path always writes
+`U_FLASH`. Use `/update.html` for `spiffs.bin`.
 
 ## Task Schedule
 

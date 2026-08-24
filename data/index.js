@@ -1,5 +1,14 @@
 // ESP Garden — dashboard UI
 (function () {
+  // Every label below comes from /data.json, and several of them are config
+  // strings an admin typed: the sensor and relay names, the hostname. Building
+  // a row by string concatenation means a name containing markup executes in
+  // every dashboard session, including another admin's. escapeHtml is the same
+  // helper auth.js uses for device response bodies.
+  function esc(value) {
+    return espUI.escapeHtml(value === undefined || value === null ? '' : value);
+  }
+
   var POLL_INTERVAL_MS = 1000;
   var REQUEST_TIMEOUT_MS = 1500;
   var pollTimer = null;
@@ -11,7 +20,7 @@
     var cls = 'text-bg-secondary';
     if (v === 'online' || v === 'enabled') cls = 'text-bg-success';
     else if (v === 'offline' || v === 'disabled') cls = 'text-bg-danger';
-    return '<span class="badge ' + cls + '">' + value + '</span>';
+    return '<span class="badge ' + cls + '">' + esc(value) + '</span>';
   }
 
   function formatStatusValue(key, value) {
@@ -22,15 +31,15 @@
       if (isNaN(pct)) cls = 'text-bg-secondary';
       else if (pct < 30) cls = 'text-bg-danger';
       else if (pct < 60) cls = 'text-bg-warning';
-      return '<span class="badge num-badge ' + cls + '">' + value + '</span>';
+      return '<span class="badge num-badge ' + cls + '">' + esc(value) + '</span>';
     }
-    return '<span class="num-badge">' + value + '</span>';
+    return '<span class="num-badge">' + esc(value) + '</span>';
   }
 
   function fillStatus(data) {
     var rows = '';
     for (var key in data) {
-      rows += '<tr><th scope="row" class="fw-normal text-muted">' + key + '</th>' +
+      rows += '<tr><th scope="row" class="fw-normal text-muted">' + esc(key) + '</th>' +
               '<td class="text-end">' + formatStatusValue(key, data[key]) + '</td></tr>';
     }
     $('#tbody-status').html(rows);
@@ -41,12 +50,12 @@
     for (var key in data) {
       var d = data[key] || {};
       rows += '<tr>' +
-              '<th scope="row" class="fw-normal">' + key + '</th>' +
-              '<td class="text-end num-badge">' + (d.val || '') +
-              (d.state ? ' <span class="badge text-bg-secondary">' + d.state + '</span>' : '') +
+              '<th scope="row" class="fw-normal">' + esc(key) + '</th>' +
+              '<td class="text-end num-badge">' + esc(d.val || '') +
+              (d.state ? ' <span class="badge text-bg-secondary">' + esc(d.state) + '</span>' : '') +
               '</td>' +
-              '<td class="text-end num-badge text-muted">' + (d.avg || '') + '</td>' +
-              '<td class="text-end num-badge text-muted">' + (d.var || '') + '</td>' +
+              '<td class="text-end num-badge text-muted">' + esc(d.avg || '') + '</td>' +
+              '<td class="text-end num-badge text-muted">' + esc(d.var || '') + '</td>' +
               '</tr>';
     }
     $('#tbody-inputs').html(rows);
@@ -58,7 +67,7 @@
       var v = data[key];
       var label = (v == 1 || v === '1') ? '<span class="badge text-bg-info">ON</span>'
                                         : '<span class="badge text-bg-secondary">OFF</span>';
-      rows += '<tr><th scope="row" class="fw-normal">' + key + '</th>' +
+      rows += '<tr><th scope="row" class="fw-normal">' + esc(key) + '</th>' +
               '<td class="text-end">' + label + '</td></tr>';
     }
     $('#tbody-outputs').html(rows);
@@ -78,7 +87,7 @@
       for (var i = 0; i < relays.length; i++) {
         html += '<div><button type="button" class="btn btn-outline-primary btn-sm relay-btn"' +
                 ' data-index="' + relays[i].index + '"' +
-                ' data-name="' + relays[i].name + '">' + relays[i].name + '</button></div>';
+                ' data-name="' + esc(relays[i].name) + '">' + esc(relays[i].name) + '</button></div>';
       }
       $('#relay-buttons').html(html);
     }

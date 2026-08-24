@@ -29,10 +29,20 @@
       var seconds = Math.round(((typeof s.durationMs === 'number') ? s.durationMs : 0) / 1000);
 
       var relayOptions = '';
+      var relayKnown = false;
       for (var r = 0; r < relays.length; r++) {
+        if (relays[r].index === s.relay) relayKnown = true;
         relayOptions += '<option value="' + relays[r].index + '"' +
                         (relays[r].index === s.relay ? ' selected' : '') + '>' +
                         esc(relays[r].name) + '</option>';
+      }
+      // A stored index this board does not report — a config carried over from
+      // a board with more relays — keeps its own option instead of falling
+      // through to the first one. Silently retargeting a schedule to relay 0
+      // would point it at the watering pump.
+      if (!relayKnown && typeof s.relay === 'number') {
+        relayOptions += '<option value="' + s.relay + '" selected>relay ' +
+                        s.relay + ' (not on this board)</option>';
       }
 
       var dayBoxes = '';
@@ -85,7 +95,16 @@
       list[$(this).data('row')].name = $(this).val();
     });
     $('.sch-relay').each(function () {
-      list[$(this).data('row')].relay = parseInt($(this).val(), 10);
+      var row = $(this).data('row');
+      var value = parseInt($(this).val(), 10);
+      // An empty <select> yields NaN, which JSON.stringify writes as null and
+      // the device reads as relay 0 — the watering pump. Leave the stored value
+      // alone and let save() refuse instead.
+      if (isNaN(value)) {
+        problems.push('row ' + (row + 1) + ': no relay selected');
+        return;
+      }
+      list[row].relay = value;
     });
     $('.sch-time').each(function () {
       var row = $(this).data('row');
@@ -141,7 +160,19 @@
           return { index: r.index, name: r.name };
         });
       })
+      .fail(function () {
+        // Loading the config anyway would render every relay picker empty, and
+        // saving from there rewrites each schedule's target. Better to show
+        // nothing than to show a form that silently repoints the pumps.
+        relays = [];
+      })
       .always(function () {
+        if (!relays.length) {
+          espUI.setStatus('danger', 'Could not read the relay list from ' +
+            '/data.json — reload before editing, or a save would repoint ' +
+            'every schedule.');
+          return;
+        }
         $.getJSON('/config.json')
           .done(function (config) {
             doc = config;

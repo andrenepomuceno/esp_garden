@@ -60,6 +60,22 @@ class ConfigFile
     // heap for the handshake buffers, so it is not forced on.
     bool mqttUseTLS;
 
+    // ThingsBoard downlink. Both are ignored by the ThingSpeak backend, which
+    // has no downlink at all beyond TalkBack.
+    //
+    // mqttRpc accepts two-way RPC on v1/devices/me/rpc/request/+ — relay
+    // control and status. The commands run through the same startRelay() as
+    // the web UI, so the ceiling and the already-running guard still apply.
+    bool mqttRpc;
+    // mqttFwUpdate accepts a firmware image pushed from the broker. The arming
+    // step is on the ThingsBoard side: an operator has to assign a package to
+    // this device before anything is announced.
+    bool mqttFwUpdate;
+    // Only firmware whose fw_title matches is flashed. One tenant holds every
+    // device an operator owns and assigning the wrong package is one wrong
+    // click, so this is the catch that keeps another board's image out.
+    String mqttFwTitle;
+
     // pins
     uint8_t buttonPin;
 

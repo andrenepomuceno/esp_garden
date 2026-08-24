@@ -1,4 +1,5 @@
 #include "core/config.h"
+#include "core/tasks.h"
 #include "core/logger.h"
 #include <Arduino_JSON.h>
 #include <SPIFFS.h>
@@ -78,6 +79,9 @@ ConfigFile::ConfigFile()
     mqttCACert = "/thingspeak.pem";
     mqttBackend = "thingspeak";
     mqttUseTLS = true;
+    mqttRpc = true;
+    mqttFwUpdate = true;
+    mqttFwTitle = "esp-garden";
 
     // pins
     buttonPin = 0;
@@ -387,6 +391,23 @@ ConfigFile::loadFile(unsigned deviceID)
         mqttUseTLS = (bool)mqtt["useTLS"];
     }
 
+    if (mqtt.hasOwnProperty("rpc")) {
+        mqttRpc = (bool)mqtt["rpc"];
+    }
+    if (mqtt.hasOwnProperty("fwUpdate")) {
+        mqttFwUpdate = (bool)mqtt["fwUpdate"];
+    }
+    if (mqtt.hasOwnProperty("fwTitle")) {
+        const String title = (const char*)JSONVar(mqtt["fwTitle"]);
+        if (title.length() > 0) {
+            mqttFwTitle = title;
+        } else {
+            // An empty title would match nothing, so every update would be
+            // ignored with only a warning per announcement to say why.
+            logger.warning("Empty mqtt.fwTitle; keeping " + mqttFwTitle);
+        }
+    }
+
     JSONVar io = configJson["io"];
     buttonPin = (int)io["button"];
     loadRelays(*this, io);
@@ -464,9 +485,13 @@ ConfigFile::loadFile(unsigned deviceID)
             }
 
             Schedule& sch = schedules[scheduleCount];
+            // Absent means off. A schedule is a thing that starts a pump on
+            // its own, so the fail-safe default is the one that does nothing —
+            // and it is the default data/schedules.js gives a new row, which
+            // this used to contradict on the very same document.
             sch.enabled = entry.hasOwnProperty("enabled")
                             ? (bool)entry["enabled"]
-                            : true;
+                            : false;
             sch.relay = entry.hasOwnProperty("relay") ? (int)entry["relay"] : 0;
             sch.hour = entry.hasOwnProperty("hour") ? (int)entry["hour"] : 0;
             sch.minute = entry.hasOwnProperty("minute") ? (int)entry["minute"] : 0;
@@ -492,6 +517,16 @@ ConfigFile::loadFile(unsigned deviceID)
             }
             if (sch.durationMs == 0) {
                 logger.warning(sch.name + ": zero duration; ignored.");
+                continue;
+            }
+            // startRelay() refuses anything above g_relayMaxTime, so a longer
+            // schedule would load as valid, count as loaded, and then fail at
+            // every single firing with a log line that names no schedule.
+            if (sch.durationMs > g_relayMaxTime) {
+                logger.warning(sch.name + ": duration " +
+                               String(sch.durationMs) + " ms exceeds the " +
+                               String(g_relayMaxTime) +
+                               " ms relay ceiling; ignored.");
                 continue;
             }
 

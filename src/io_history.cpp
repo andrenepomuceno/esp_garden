@@ -195,29 +195,15 @@ IoHistory::readAt(File& file, uint32_t index, IoRecord& out) const
     return file.read((uint8_t*)&out, sizeof(IoRecord)) == (int)sizeof(IoRecord);
 }
 
-uint32_t
-IoHistory::lowerBound(uint32_t sinceEpoch)
+bool
+IoHistory::lowerBoundLocked(File& file, uint32_t sinceEpoch, uint32_t& out)
 {
-    if (!initialised || header.stored == 0) {
-        return 0;
-    }
-
-    if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
-        return 0;
-    }
-
-    File file = fs->open(IO_HISTORY_FILE, FILE_READ);
-    if (file == false) {
-        xSemaphoreGive(mutex);
-        return 0;
-    }
-
     uint32_t lo = 0, hi = header.stored; // answer lives in [lo, hi]
     IoRecord record;
     while (lo < hi) {
         const uint32_t mid = lo + (hi - lo) / 2;
         if (!readAt(file, mid, record)) {
-            break;
+            return false;
         }
         if (record.timestamp < sinceEpoch) {
             lo = mid + 1;
@@ -226,28 +212,15 @@ IoHistory::lowerBound(uint32_t sinceEpoch)
         }
     }
 
-    file.close();
-    xSemaphoreGive(mutex);
-    return lo;
+    out = lo;
+    return true;
 }
 
 size_t
-IoHistory::readDecimated(IoRecord* out, size_t maxPoints, uint32_t fromIndex,
-                         uint32_t* strideOut)
+IoHistory::readDecimatedLocked(File& file, IoRecord* out, size_t maxPoints,
+                               uint32_t fromIndex, uint32_t* strideOut)
 {
-    if (strideOut) {
-        *strideOut = 1;
-    }
-    if (!initialised || out == nullptr || maxPoints == 0) {
-        return 0;
-    }
-
-    if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
-        return 0;
-    }
-
     if (fromIndex >= header.stored) {
-        xSemaphoreGive(mutex);
         return 0;
     }
 
@@ -262,24 +235,45 @@ IoHistory::readDecimated(IoRecord* out, size_t maxPoints, uint32_t fromIndex,
         *strideOut = stride;
     }
 
-    File file = fs->open(IO_HISTORY_FILE, FILE_READ);
-    if (file == false) {
-        xSemaphoreGive(mutex);
-        return 0;
-    }
-
     size_t got = 0;
+    uint16_t bucketRelays = 0;
+    IoRecord bucket;
+    bool haveBucket = false;
+
     // Walk backwards from the newest so the last sample is always present —
     // striding forwards would drop it whenever span is not a multiple.
-    for (uint32_t back = 0; back < span && got < maxPoints; back += stride) {
-        const uint32_t index = header.stored - 1 - back;
-        if (!readAt(file, index, out[got])) {
+    //
+    // Every record in the bucket is read, not just the one that represents it.
+    // The analog channels can be sampled: they move slowly and one record in
+    // `stride` is a fair stand-in. The relay mask cannot. It is deliberately
+    // STICKY — set for the whole period if the relay was on at any point in it,
+    // because a watering lasts seconds and a 60 s record would otherwise miss
+    // nine activations in ten. Sampling it re-introduces exactly that bug one
+    // level up: at the default one-day window the stride is 8, so seven of
+    // every eight waterings would vanish from the chart and the moisture rise
+    // would again appear with no cause. So the mask is OR-ed across the bucket
+    // while the rest of the record comes from the bucket's newest sample.
+    for (uint32_t back = 0; back < span && got < maxPoints; ++back) {
+        IoRecord record;
+        if (!readAt(file, header.stored - 1 - back, record)) {
             break;
         }
-        ++got;
+
+        if (!haveBucket) {
+            bucket = record;
+            haveBucket = true;
+        }
+        bucketRelays |= record.relayMask;
+
+        const bool bucketFull = ((back % stride) == stride - 1);
+        if (bucketFull || back == span - 1) {
+            bucket.relayMask = bucketRelays;
+            out[got] = bucket;
+            ++got;
+            haveBucket = false;
+            bucketRelays = 0;
+        }
     }
-    file.close();
-    xSemaphoreGive(mutex);
 
     // Collected newest-first; the callers all want oldest-first.
     for (size_t i = 0; i < got / 2; ++i) {
@@ -288,6 +282,48 @@ IoHistory::readDecimated(IoRecord* out, size_t maxPoints, uint32_t fromIndex,
         out[got - 1 - i] = tmp;
     }
     return got;
+}
+
+
+size_t
+IoHistory::readWindow(uint32_t sinceEpoch, IoRecord* out, size_t maxPoints,
+                      uint32_t* strideOut, uint32_t* fromOut)
+{
+    if (strideOut) {
+        *strideOut = 1;
+    }
+    if (fromOut) {
+        *fromOut = 0;
+    }
+    if (!initialised || out == nullptr || maxPoints == 0 ||
+        header.stored == 0) {
+        return 0;
+    }
+
+    if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
+        return 0;
+    }
+
+    File file = fs->open(IO_HISTORY_FILE, FILE_READ);
+    if (file == false) {
+        xSemaphoreGive(mutex);
+        return 0;
+    }
+
+    // One lock, one file handle, both halves of the answer. See the header for
+    // what happened when these were two calls.
+    uint32_t from = 0;
+    size_t count = 0;
+    if (lowerBoundLocked(file, sinceEpoch, from)) {
+        count = readDecimatedLocked(file, out, maxPoints, from, strideOut);
+        if (fromOut) {
+            *fromOut = from;
+        }
+    }
+
+    file.close();
+    xSemaphoreGive(mutex);
+    return count;
 }
 
 size_t

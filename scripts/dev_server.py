@@ -93,7 +93,14 @@ class DeviceState:
             "Luminosity":      _Sensor(55.0, amplitude=35.0, period=120, noise=4.0),
             "Temperature":     _Sensor(25.5, amplitude=3.0, period=1800, noise=0.4),
             "Air Humidity":    _Sensor(70.0, amplitude=8.0, period=2400, noise=1.5),
+            "Water Level":     _Sensor(6.0, amplitude=2.0, period=3600, noise=0.2),
+            "Flow":            _Sensor(0.0, amplitude=0.0, period=60, noise=0.0),
         }
+        # Cumulative litres and the reservoir float. Neither fits the
+        # val/avg/var accumulator shape, so both are built by hand in
+        # snapshot() exactly as src/web_data.cpp builds them.
+        self.flow_total_litres = 0.0
+        self.float_raised = True
 
         self._seed_history()
         self.log("info", "Simulator booted")
@@ -109,13 +116,17 @@ class DeviceState:
             return
         import math as _math
         now = time.time()
-        count = min(self.history_capacity, 400)
+        # Fill the whole buffer. 400 records is 6.7 h at the default period, so
+        # the 12 h / 1 d / 7 d / 30 d window buttons all collapsed onto the same
+        # data and decimation never engaged — the one behaviour the window
+        # selector exists to exercise.
+        count = self.history_capacity
         for i in range(count, 0, -1):
             t = now - i * self.history_period_s
             phase = i / 30.0
             self.history.append({
                 "t": int(t),
-                "relays": 1 if i % 37 == 0 else 0,
+                "relays": (1 if i % 37 == 0 else 0) | (8 if i % 211 == 0 else 0),
                 "moisture": [
                     round(45 + 6 * _math.sin(phase), 2),
                     round(38 + 4 * _math.sin(phase + 1), 2),
@@ -196,6 +207,13 @@ class DeviceState:
                     finished.append(self.relay_names[index])
             for sensor in self._sensors.values():
                 sensor.update()
+
+            # A flow meter reads zero unless something is pumping. Faking a
+            # constant trickle would hide the one thing the sensor is for.
+            pumping = any(relay["on"] for relay in self.relays)
+            self._sensors["Flow"].baseline = 2.4 if pumping else 0.0
+            if pumping:
+                self.flow_total_litres += 2.4 / 60.0
             # Mqtt publishes a "package" every 30s when enabled.
             if self.mqtt_enabled and int(now - self.boot_time) % 30 == 0:
                 self.packages_sent += 1
@@ -263,6 +281,20 @@ class DeviceState:
                     "var": f"{s.variance:.4f}",
                 }
                 for name, s in self._sensors.items()
+            }
+            # A running total has no window, so it does not fit val/avg/var.
+            inputs["Flow Total"] = {
+                "val": f"{self.flow_total_litres:.3f}",
+                "avg": f"{self.flow_total_litres:.3f}",
+                "var": "0",
+            }
+            # Binary, and the only input outside moisture that carries a state
+            # badge — which is unreachable off-hardware without this entry.
+            inputs["Float Switch"] = {
+                "val": "1" if self.float_raised else "0",
+                "avg": "1" if self.float_raised else "0",
+                "var": "0",
+                "state": "Raised" if self.float_raised else "Lowered",
             }
 
             outputs = {
@@ -417,6 +449,11 @@ SIM_CONFIG = {
         "server": "mqtt3.thingspeak.com",
         "port": 8883,
         "cacert": "/thingspeak.pem",
+        "backend": "thingspeak",
+        "useTLS": True,
+        "rpc": True,
+        "fwUpdate": True,
+        "fwTitle": "esp-garden",
     },
     "log": {"level": 4},
     "history": {"records": 1440, "periodSec": 60},
@@ -429,16 +466,30 @@ SIM_CONFIG = {
             {"pin": 18, "on": 0, "name": "Relay 4"},
         ],
         "dht": 23,
-        "soilMoisture": [36, 34],
+        "soilMoisture": [36, 34, 32],
         "luminosity": 39,
+        "waterLevel": 35,
+        "flow": {"pin": 27, "name": "Flow", "pulsesPerLitre": 450},
+        "floatSwitch": {"pin": 26, "name": "Float Switch", "activeLevel": 0},
     },
+    # Both disabled, matching the fail-safe default the device now applies to a
+    # schedule whose "enabled" key is absent.
+    "schedules": [
+        {"name": "Morning zone 1", "relay": 0, "hour": 6, "minute": 30,
+         "days": 127, "durationMs": 10000, "enabled": False},
+        {"name": "Fill reservoir", "relay": 3, "hour": 6, "minute": 0,
+         "days": 127, "durationMs": 30000, "enabled": False},
+    ],
 }
 
 
 def config_masked() -> dict:
     doc = json.loads(json.dumps(SIM_CONFIG))  # deep copy
     for section, key in CONFIG_SECRET_PATHS:
-        if key in doc.get(section, {}):
+        # An empty field is not masked, mirroring handleConfigGet: there is
+        # nothing to hide, and a mask the POST handler cannot restore from an
+        # empty stored value would make every save fail.
+        if doc.get(section, {}).get(key):
             doc[section][key] = CONFIG_SECRET_MASK
     return doc
 
@@ -700,19 +751,65 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(raw)
             limit = min(limit, HISTORY_MAX_RESPONSE)
             raw_offset = parse_qs(url.query).get("offset", [""])[0]
+            raw_window = parse_qs(url.query).get("window", [""])[0]
+            window = int(raw_window) if raw_window.lstrip("-").isdigit() else 0
+            stride = 1
+
             with STATE.lock:
                 everything = list(STATE.history)
-                if raw_offset.isdigit():
+
+                if window > 0:
+                    # ?window=<seconds> selects by time and DECIMATES to fit,
+                    # exactly as handleHistoryJson does. Without mirroring it
+                    # every window button here returns the same newest 200
+                    # records and the page reports a range it is not showing.
+                    since = time.time() - window
+                    start = 0
+                    for i, record in enumerate(everything):
+                        if record["t"] >= since:
+                            start = i
+                            break
+                    else:
+                        start = len(everything)
+
+                    span = len(everything) - start
+                    stride = max(1, -(-span // limit))  # ceiling division
+
+                    # Walk backwards from the newest so the last sample is
+                    # always present, and OR the relay mask across each bucket:
+                    # the mask is sticky on the device and sampling it would
+                    # drop seven of every eight waterings at a 1-day window.
+                    picked = []
+                    bucket = None
+                    bucket_relays = 0
+                    for back in range(span):
+                        record = everything[len(everything) - 1 - back]
+                        if bucket is None:
+                            bucket = dict(record)
+                        bucket_relays |= record["relays"]
+                        if back % stride == stride - 1 or back == span - 1:
+                            bucket["relays"] = bucket_relays
+                            picked.append(bucket)
+                            bucket = None
+                            bucket_relays = 0
+                        if len(picked) >= limit:
+                            break
+                    records = list(reversed(picked))
+                    skip = start
+                elif raw_offset.isdigit():
                     skip = int(raw_offset)
                     records = everything[skip:skip + limit]
                 else:
                     skip = max(0, len(everything) - limit)
                     records = everything[-limit:]
+
                 payload = {
                     "capacity": STATE.history_capacity,
                     "stored": len(STATE.history),
                     "returned": len(records),
                     "offset": skip,
+                    "stride": stride,
+                    "window": window,
                     "records": records,
                 }
             self._send_json(payload)
