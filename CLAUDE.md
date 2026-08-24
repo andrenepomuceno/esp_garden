@@ -474,6 +474,38 @@ an event is a label:
 | everything between | **Humid** | |
 | before the first event in the buffer | *none* | There is no cycle to place the reading in |
 
+**Every sample carries a CONFIDENCE, not just a label**, passed as the weight
+`gaussianAdd()` has always accepted. Until it was used, a reading taken at the
+instant the pump started counted as firmly "wet" as one taken twenty minutes
+later. Boundary samples are precisely what blurs the class means together, and
+blurred means are what fails the separation gate.
+
+- **Wet** ramps from 0 to full over `g_absorptionLagSec` (5 min). Soil does not
+  become wet when a pump starts; for the first minutes the probe is still
+  reading the old soil.
+- **Dry** ramps up as the next watering approaches. Moisture falls monotonically
+  between waterings, so the closest sample is the driest and the most confident.
+- **Humid** tapers toward both neighbours over `g_taperSec` (10 min): a reading
+  one minute outside the wet window is not meaningfully more humid than one a
+  minute inside it.
+
+**The watering RESPONSE is tracked and reported** — the mean rise from the dry
+window to the wet one, decayed across runs like everything else. It is free,
+because the labels the fit already needs are exactly what it is made of, and it
+is the cheapest evidence that a probe is in the pot its pump waters. A response
+near zero after two waterings is reported as `blockedBy` **before** the
+statistical gates, because it names a physical cause — disconnected probe,
+wrong pot, pump not running — where "bands overlap" would arrive days later and
+name only the symptom.
+
+**What is deliberately NOT a feature: time since watering.** Adding it would
+raise accuracy and destroy the point. The model exists to say what the SOIL is
+doing, read from a probe; a classifier that leans on the pump schedule is a
+timer wearing a posterior, and it would report "wet" confidently through a
+disconnected probe or a failed pump — the exact failures the separation gate
+and the response check are there to catch. The watering record is used to
+LABEL the training data and never as an input at classification time.
+
 `moisture[i].relay` says whose pump matters. **-1 means no pump feeds this
 probe**, and such a probe never gets a model at all — nothing labels its
 readings — so it falls through to the two-point calibration.

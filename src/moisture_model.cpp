@@ -34,6 +34,15 @@ static const uint32_t g_dryWindowSec = 60 * 60;
 // the component BIC found when the history was clustered blind.
 static const double g_outlierZ = 3.0;
 
+// How long the soil takes to actually take up the water. Samples inside this
+// window after a watering carry a reduced weight, ramping to full: the probe is
+// still reading the old soil for the first minutes.
+static const uint32_t g_absorptionLagSec = 5 * 60;
+
+// How far from a window's edge a HUMID sample has to be to count fully. Inside
+// it the reading is a transition, and transitions belong to neither neighbour.
+static const uint32_t g_taperSec = 10 * 60;
+
 // Per probe, per training run. A day holds a handful of waterings; the cap
 // costs 4 bytes each and bounds the pass.
 static const unsigned g_maxEventsPerRun = 32;
@@ -165,6 +174,12 @@ struct ScanContext
     uint32_t outliersDropped;
 
     // The half-open window of history this run is allowed to consume.
+    // Wet-vs-dry means for this run only, used to report the watering response.
+    double wetSum[MOISTURE_MAX];
+    double wetWeight[MOISTURE_MAX];
+    double drySum[MOISTURE_MAX];
+    double dryWeight[MOISTURE_MAX];
+
     uint32_t consumedFrom; // exclusive: everything at or before is spent
     uint32_t consumeUntil; // exclusive: the newest watering, whose own cycle
                            // is not complete until the NEXT one arrives
@@ -212,18 +227,58 @@ collectEvents(const IoRecord& record, uint32_t, void* ctx)
 // Nothing at all before the first event the buffer contains, where there is no
 // cycle to place the reading in.
 static int
-labelFor(uint32_t timestamp, uint32_t previousWatering, uint32_t nextWatering)
+labelFor(uint32_t timestamp,
+         uint32_t previousWatering,
+         uint32_t nextWatering,
+         double& confidence)
 {
+    // The label is not equally trustworthy across its window, and saying so is
+    // worth more than the label itself. gaussianAdd() has always taken a
+    // weight; until now every sample was fed at 1.0, so a reading taken at the
+    // exact instant the pump started counted as firmly "wet" as one taken
+    // twenty minutes later. Boundary samples are the ones that blur the class
+    // means together, and blurred means are what fails the separation gate.
+    confidence = 1.0;
+
     if (previousWatering != 0 &&
         timestamp <= previousWatering + g_wetWindowSec) {
+        // Soil does not become wet the moment a pump starts. Over the first
+        // few minutes the probe is still reading the OLD soil, so those
+        // samples are weighted down to near zero and the confidence ramps to
+        // full once absorption has had time to happen.
+        const uint32_t since = timestamp - previousWatering;
+        confidence = (since >= g_absorptionLagSec)
+                       ? 1.0
+                       : ((double)since / (double)g_absorptionLagSec);
         return MOISTURE_WET;
     }
+
     if (nextWatering != 0 && timestamp + g_dryWindowSec >= nextWatering) {
+        // Moisture falls monotonically between waterings, so the closer to the
+        // next one, the drier — and the more confidently "dry". The sample at
+        // the far edge of the window is barely drier than humid.
+        const uint32_t until = nextWatering - timestamp;
+        confidence = 1.0 - ((double)until / (double)g_dryWindowSec);
+        if (confidence < 0.0) {
+            confidence = 0.0;
+        }
         return MOISTURE_DRY;
     }
+
     if (previousWatering != 0 && nextWatering != 0) {
+        // Full confidence in the middle, tapering toward both neighbours: a
+        // reading one minute outside the wet window is not meaningfully more
+        // "humid" than one a minute inside it.
+        const uint32_t sinceWet = timestamp - (previousWatering + g_wetWindowSec);
+        const uint32_t untilDry = (nextWatering > timestamp + g_dryWindowSec)
+                                    ? (nextWatering - g_dryWindowSec - timestamp)
+                                    : 0;
+        const uint32_t edge = (sinceWet < untilDry) ? sinceWet : untilDry;
+        confidence = (edge >= g_taperSec) ? 1.0
+                                          : ((double)edge / (double)g_taperSec);
         return MOISTURE_HUMID;
     }
+
     return MOISTURE_UNKNOWN;
 }
 
@@ -261,8 +316,9 @@ accumulate(const IoRecord& record, uint32_t, void* ctx)
             ? scan.events[p][scan.nextEvent[p]]
             : 0;
 
-        const int label =
-          labelFor(record.timestamp, scan.previousWatering[p], nextWatering);
+        double confidence = 1.0;
+        const int label = labelFor(
+          record.timestamp, scan.previousWatering[p], nextWatering, confidence);
         if (label == MOISTURE_UNKNOWN) {
             continue;
         }
@@ -273,8 +329,24 @@ accumulate(const IoRecord& record, uint32_t, void* ctx)
             continue;
         }
 
-        gaussianAdd(scan.fit[p][label], value);
+        // A sample nobody is confident about contributes almost nothing rather
+        // than being dropped outright — it is still weak evidence.
+        gaussianAdd(scan.fit[p][label], value, confidence);
         ++scan.samplesUsed;
+
+        // The watering RESPONSE, tracked per probe: how far the wet window sits
+        // above the dry one. It is the cheapest check that this probe is
+        // actually in the pot this pump waters, and it is free here because the
+        // labels are already computed. A probe whose response stays near zero
+        // after several waterings is either disconnected, in the wrong pot, or
+        // downstream of a pump that is not running.
+        if (label == MOISTURE_WET && confidence > 0.5) {
+            scan.wetSum[p] += value;
+            scan.wetWeight[p] += 1.0;
+        } else if (label == MOISTURE_DRY && confidence > 0.5) {
+            scan.drySum[p] += value;
+            scan.dryWeight[p] += 1.0;
+        }
     }
     return true;
 }
@@ -288,6 +360,10 @@ resetFit(ScanContext& scan)
         for (int c = 0; c < MOISTURE_CLASS_COUNT; ++c) {
             gaussianReset(scan.fit[p][c]);
         }
+        scan.wetSum[p] = 0.0;
+        scan.wetWeight[p] = 0.0;
+        scan.drySum[p] = 0.0;
+        scan.dryWeight[p] = 0.0;
     }
     scan.samplesUsed = 0;
     scan.outliersDropped = 0;
@@ -406,6 +482,23 @@ moistureModelTrain()
           (uint32_t)(model.wateringEvents * g_moistureDecayPerRun) +
           scan->eventCount[p];
 
+        // The watering response: how far this run's wet readings sat above its
+        // dry ones. Decayed with the rest of the evidence so it follows a soil
+        // that changes, and reported by /moisture.json because a response that
+        // stays near zero is a finding — a probe that does not answer its own
+        // pump is not in that pot, not connected, or downstream of a pump that
+        // is not running. The separation gate would eventually refuse such a
+        // probe anyway; this says WHY several days earlier.
+        if (scan->wetWeight[p] > 0.0 && scan->dryWeight[p] > 0.0) {
+            const float response =
+              (float)((scan->wetSum[p] / scan->wetWeight[p]) -
+                      (scan->drySum[p] / scan->dryWeight[p]));
+            model.response = (model.response == 0.0f)
+                               ? response
+                               : (float)(model.response * g_moistureDecayPerRun +
+                                         response * (1.0 - g_moistureDecayPerRun));
+        }
+
         model.separation = (float)moistureSeparation(model.classes);
         model.usable = (model.wateringEvents >= g_moistureMinEvents) &&
                        moistureModelIsUsable(model.classes,
@@ -420,6 +513,7 @@ moistureModelTrain()
           String(gaussianMean(model.classes[MOISTURE_DRY]), 1) + "/" +
           String(gaussianMean(model.classes[MOISTURE_HUMID]), 1) + "/" +
           String(gaussianMean(model.classes[MOISTURE_WET]), 1) +
+          ", response " + String(model.response, 2) +
           (model.usable ? " -> usable" : " -> not usable yet"));
     }
 

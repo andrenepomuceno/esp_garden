@@ -49,6 +49,13 @@ struct MoistureProbeModel
     uint32_t wateringEvents; // cumulative, decayed like the statistics
     bool usable;             // passed the weight, ordering and separation gates
     float separation;        // Fisher's J between dry and wet
+
+    // Mean rise from the dry window to the wet one, decayed across runs. The
+    // cheapest evidence that this probe is in the pot its pump waters: a
+    // response that stays near zero means it is not, or is not connected, or
+    // the pump is not running. Free to compute, because the labels the model
+    // already needs are exactly what it is made of.
+    float response;
 };
 
 struct MoistureModelState

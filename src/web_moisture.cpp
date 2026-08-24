@@ -42,6 +42,7 @@ handleMoistureJson(AsyncWebServerRequest* request)
         doc["probes"][p]["usable"] = model.usable;
         doc["probes"][p]["separation"] = (double)model.separation;
         doc["probes"][p]["wateringEvents"] = (int)model.wateringEvents;
+        doc["probes"][p]["response"] = (double)model.response;
 
         double totalWeight = 0.0;
         for (int c = 0; c < MOISTURE_CLASS_COUNT; ++c) {
@@ -103,6 +104,16 @@ handleMoistureJson(AsyncWebServerRequest* request)
 
             if (!sampled) {
                 reason = "no reading from this probe yet";
+            } else if (model.wateringEvents >= 2 &&
+                       fabs(model.response) < 0.5) {
+                // Said BEFORE the statistical gates, because it names a
+                // physical cause rather than a symptom. The separation gate
+                // would refuse this probe too, several days later, with
+                // "bands overlap" — true, and useless for fixing it.
+                reason = "this probe does not respond to its pump (rise of " +
+                         String(model.response, 2) +
+                         " across waterings): check the probe, the pot it is "
+                         "in, and whether the pump runs";
             } else if (config.moistureRelay[p] < 0) {
                 reason = "no relay assigned: nothing labels this probe";
             } else if (state.trainedAt == 0) {

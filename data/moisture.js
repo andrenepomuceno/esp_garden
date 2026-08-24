@@ -138,6 +138,12 @@
         fixed(gates.minSeparation, 1) + ' needed</div>' +
       '<div class="col-auto">Fed by relay: <strong>' +
         (probe.relay < 0 ? 'none' : esc(probe.relay)) + '</strong></div>' +
+      '<div class="col-auto">Response to watering: <strong>' +
+        fixed(probe.response, 2) + '</strong>' +
+        (typeof probe.response === 'number' && Math.abs(probe.response) < 0.5 &&
+         probe.wateringEvents >= 2
+           ? ' <span class="badge text-bg-warning">no response</span>' : '') +
+        '</div>' +
       '</div>';
 
     return '<div class="card">' +
