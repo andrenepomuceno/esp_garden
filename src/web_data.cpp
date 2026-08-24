@@ -86,6 +86,15 @@ webUpdateDataCache()
     statusJson["Ping"] = String(g_pingTime.getAverage()) + "ms";
     statusJson["Connection Loss Count"] = String(g_connectionLossCount);
     statusJson["MQTT"] = String((g_mqttEnabled) ? "enabled" : "disabled");
+#ifdef HAS_FLOAT_SWITCH
+    // Only while it is actually blocking something. A refusal that leaves no
+    // trace in the UI is indistinguishable from a relay button that does not
+    // work, which is how a safety feature becomes a bug report.
+    if (config.floatInterlock && !floatRaised()) {
+        statusJson["Interlock"] =
+          "pumps blocked — " + config.floatName + " reads empty";
+    }
+#endif
     {
         // Empty unless the broker has announced an image, so the row only
         // appears while there is something to say about it.

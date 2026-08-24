@@ -120,6 +120,16 @@ startRelay(unsigned index, unsigned int duration)
         return false;
     }
 
+    // Asked before the relay is claimed, not after: a refusal must not leave
+    // the relay marked on. The check is deliberately in startRelay() rather
+    // than at each call site, because there are five of them and the one that
+    // gets forgotten is the one that runs a pump dry.
+    String veto;
+    if (!relayStartAllowed(index, veto)) {
+        logger.warning(config.relayName[index] + " refused: " + veto);
+        return false;
+    }
+
     bool started = false;
 
     portENTER_CRITICAL(&g_relayMux);

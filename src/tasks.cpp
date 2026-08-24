@@ -84,6 +84,36 @@ bool g_mqttEnabled = true;
 bool g_ledBlinkEnabled = false;
 unsigned g_connectionLossCount = 0;
 
+// Seam with src/relays.cpp: the reservoir interlock. Lives here rather than in
+// relays.cpp because it couples a relay to a SENSOR, and relays.cpp is the one
+// module that must stay about switching.
+bool
+relayStartAllowed(unsigned index, String& reason)
+{
+#ifdef HAS_FLOAT_SWITCH
+    if (!config.floatInterlock) {
+        return true;
+    }
+
+    // The refill relay is the remedy for an empty reservoir. Blocking it would
+    // mean an empty tank could never be filled — the interlock deadlocking the
+    // system it exists to protect.
+    if ((int)index == config.floatFillRelay) {
+        return true;
+    }
+
+    if (!floatRaised()) {
+        reason = config.floatName + " reads empty";
+        return false;
+    }
+#else
+    (void)index;
+    (void)reason;
+#endif
+
+    return true;
+}
+
 // Seam with src/relays.cpp: startRelay() calls this once the relay is
 // energised, so relay switching itself stays free of the watering bookkeeping.
 void
@@ -313,6 +343,8 @@ historyTaskHandler()
     record.temperature = NAN;
     record.airHumidity = NAN;
     record.waterLevel = NAN;
+    record.flowRate = NAN;
+    record.flowTotal = NAN;
 
 #ifdef HAS_MOISTURE_SENSOR
     for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT && i < IO_HISTORY_MAX_MOISTURE;
@@ -334,6 +366,19 @@ historyTaskHandler()
 #endif
 #ifdef HAS_WATER_LEVEL_SENSOR
     record.waterLevel = (g_waterLevel.getSamples() == 0) ? NAN : g_waterLevel.getAverage();
+#endif
+#ifdef HAS_FLOW_SENSOR
+    record.flowRate = (g_flowRate.getSamples() == 0) ? NAN : g_flowRate.getAverage();
+    // The running total is the point of storing flow at all: it answers how
+    // much a watering actually delivered, and it only lives in RAM otherwise —
+    // gone at every reboot, brownout and OTA.
+    record.flowTotal = (float)flowTotalLitres();
+#endif
+#ifdef HAS_FLOAT_SWITCH
+    record.flags |= IO_HISTORY_FLAG_FLOAT_VALID;
+    if (floatRaised()) {
+        record.flags |= IO_HISTORY_FLAG_FLOAT_RAISED;
+    }
 #endif
 
     ioHistory.append(record);

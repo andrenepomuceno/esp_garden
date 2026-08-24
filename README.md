@@ -165,7 +165,9 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
         "floatSwitch": {         // reservoir level switch (HAS_FLOAT_SWITCH)
             "pin": 26,
             "name": "Float Switch",
-            "activeLevel": 0     // logic level that means "raised"
+            "activeLevel": 0,    // logic level that means "raised"
+            "interlock": false,  // refuse to run a pump on an empty reservoir
+            "fillRelay": 3       // the relay that refills it, exempt; -1 = none
         }
     },
     "schedules": [               // up to SCHEDULE_COUNT (8) timed activations
@@ -246,6 +248,28 @@ The firmware ships a custom 4 MB layout (`partitions/esp_garden_4mb.csv`) with
 1.69 MB per OTA slot. **This cannot be delivered over OTA** — a board flashed
 with the stock table needs one serial upload (`pio run -e <env> -t upload`) to
 move to it.
+
+### Reservoir interlock
+
+`io.floatSwitch.interlock` makes `startRelay()` refuse a pump while the float
+reads empty — the difference between a pump that runs dry for 30 s and one that
+does not run at all. The check lives in `startRelay()`, not at the call sites,
+so the web UI, TalkBack, a schedule and a ThingsBoard RPC all inherit it and
+all get the same refusal back. `fillRelay` names the relay that refills the
+reservoir; it is exempt, because blocking the one thing that fixes an empty
+tank would deadlock the system the interlock exists to protect.
+
+**It defaults to off, and that is not laziness.** A float that is not wired yet
+sits at the internal pull-up, which reads as *empty* — switching this on by
+default would stop every watering on every board that has the sensor compiled
+in and not fitted. Check the reading on the dashboard first, then turn it on.
+While it is blocking, `/data.json` says so in `Status.Interlock`, because a
+refusal that leaves no trace is indistinguishable from a relay button that does
+not work.
+
+There is deliberately **no auto-refill**. A single float that fails in the
+"empty" direction would hold the fill relay on, and the failure mode of that is
+a flood rather than a dry pot.
 
 ## Soil Moisture Calibration
 

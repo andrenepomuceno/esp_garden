@@ -169,7 +169,7 @@ handleHistoryJson(AsyncWebServerRequest* request)
     }
 
     String out;
-    out.reserve(count * 140 + 128);
+    out.reserve(count * 175 + 128);
     out += "{\"capacity\":";
     out += String(ioHistory.capacity());
     out += ",\"stored\":";
@@ -212,6 +212,17 @@ handleHistoryJson(AsyncWebServerRequest* request)
         appendFloat(out, "hum", r.airHumidity);
         out += ",";
         appendFloat(out, "water", r.waterLevel);
+        out += ",";
+        appendFloat(out, "flow", r.flowRate);
+        out += ",";
+        appendFloat(out, "flowTotal", r.flowTotal);
+        // Three states, not two: null means the board has no float switch, so
+        // the page can leave the row out rather than draw a permanently empty
+        // reservoir.
+        out += ",\"float\":";
+        out += (r.flags & IO_HISTORY_FLAG_FLOAT_VALID)
+                 ? ((r.flags & IO_HISTORY_FLAG_FLOAT_RAISED) ? "1" : "0")
+                 : "null";
         out += "}";
     }
     out += "]}";

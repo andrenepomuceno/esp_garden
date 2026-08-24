@@ -19,6 +19,12 @@
 // still writes four slots, filled with NaN. Making the layout depend on
 // MOISTURE_SENSOR_COUNT would mean two firmwares disagree about how to read the
 // same file, and the reader has no way to tell which wrote it.
+//
+// Changing the layout DISCARDS the stored history. The header carries
+// `recordSize`, and begin() reformats on any mismatch — which is the point:
+// reading 40-byte records out of a 48-byte file would silently return garbage
+// that looks like data. Growing this struct is a deliberate trade of the
+// buffer's current contents for the new channel.
 
 #define IO_HISTORY_MAX_MOISTURE 4
 #define IO_HISTORY_MAGIC 0x45474831UL // "EGH1"
@@ -29,13 +35,21 @@ struct IoRecord
 {
     uint32_t timestamp;  ///< epoch seconds; 0 marks an unwritten slot
     uint16_t relayMask;  ///< bit i set while relay i is energised
-    uint16_t reserved;   ///< keeps the struct 4-byte aligned and leaves room
+    uint16_t flags;      ///< see IO_HISTORY_FLAG_*
     float moisture[IO_HISTORY_MAX_MOISTURE];
     float luminosity;
     float temperature;
     float airHumidity;
     float waterLevel;
+    float flowRate;      ///< litres/min, mean over the period; NaN when unfitted
+    float flowTotal;     ///< cumulative litres since boot; NaN when unfitted
 };
+
+// The float switch is one bit, so it rides in `flags` rather than costing a
+// whole float. VALID distinguishes "not fitted" from "reads empty" — without
+// it every board without the sensor would look like a dry reservoir.
+#define IO_HISTORY_FLAG_FLOAT_VALID  0x0001
+#define IO_HISTORY_FLAG_FLOAT_RAISED 0x0002
 
 struct IoHistoryHeader
 {

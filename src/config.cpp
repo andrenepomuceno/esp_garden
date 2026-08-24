@@ -129,6 +129,8 @@ ConfigFile::ConfigFile()
     floatPin = 26;
     floatName = "Float Switch";
     floatActiveLevel = 0; // normally-open to ground, with the pull-up
+    floatInterlock = false;
+    floatFillRelay = -1;
 
     scheduleCount = 0;
     for (unsigned i = 0; i < SCHEDULE_COUNT; ++i) {
@@ -464,6 +466,28 @@ ConfigFile::loadFile(unsigned deviceID)
         if (sw.hasOwnProperty("activeLevel")) {
             floatActiveLevel = ((int)sw["activeLevel"] != 0) ? 1 : 0;
         }
+        if (sw.hasOwnProperty("interlock")) {
+            floatInterlock = (bool)sw["interlock"];
+        }
+        if (sw.hasOwnProperty("fillRelay")) {
+            const int relay = (int)sw["fillRelay"];
+            // Out of range would exempt nothing, so the refill relay would be
+            // blocked by the interlock along with the pumps it is meant to
+            // supply — an empty reservoir that can never be filled.
+            if (relay >= -1 && relay < (int)RELAY_COUNT) {
+                floatFillRelay = relay;
+            } else {
+                logger.warning("floatSwitch.fillRelay " + String(relay) +
+                               " out of range; keeping " +
+                               String(floatFillRelay));
+            }
+        }
+        if (floatInterlock) {
+            logger.info("Reservoir interlock ON" +
+                        (floatFillRelay >= 0
+                           ? (" (relay " + String(floatFillRelay) + " exempt)")
+                           : String(" (no refill relay exempt)")));
+        }
     }
 #endif
 
@@ -554,14 +578,18 @@ ConfigFile::loadFile(unsigned deviceID)
         JSONVar history = configJson["history"];
         if (history.hasOwnProperty("records")) {
             const int records = (int)history["records"];
-            // 6000 records is 240 KB, which fits beside the ~190 KB of web
-            // assets in the 463 KB usable SPIFFS. The previous ceiling of 20000
-            // was 800 KB — half again the whole partition — and a config that
+            // 5000 records is 240 KB at the current 48-byte record, which
+            // fits beside the ~190 KB of web assets in the 463 KB usable
+            // SPIFFS. The ceiling is in RECORDS, so it has to come down
+            // whenever the record grows — it was 6000 while a record was 40
+            // bytes, and leaving it there would have quietly asked for 288 KB.
+            // The previous ceiling of 20000 was 800 KB — half again the whole
+            // partition — and a config that
             // asked for it filled the filesystem, taking the log backup, the
             // user store and POST /config.json down with it. begin() runs
             // before webSetup(), so the admin who caused it had no editor left
             // to undo it.
-            if (records >= 0 && records <= 6000) {
+            if (records >= 0 && records <= 5000) {
                 historyRecords = records;
             } else {
                 logger.warning("Ignoring out-of-range history.records " +

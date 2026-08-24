@@ -121,6 +121,10 @@ class DeviceState:
         # data and decimation never engaged — the one behaviour the window
         # selector exists to exercise.
         count = self.history_capacity
+        # The live counter continues from where the seed left off. Restarting
+        # it at zero made the cumulative total jump backwards at the seam, so
+        # the "Water Delivered" chart showed a drop no meter can produce.
+        seeded_total = 0.0
         for i in range(count, 0, -1):
             t = now - i * self.history_period_s
             phase = i / 30.0
@@ -136,8 +140,16 @@ class DeviceState:
                 "lum": round(max(0.0, 55 + 40 * _math.sin(i / 60.0)), 2),
                 "temp": round(25 + 3 * _math.sin(phase / 2), 2),
                 "hum": round(70 + 8 * _math.sin(phase / 3), 2),
-                "water": None,
+                "water": round(6 + 1.5 * _math.sin(i / 90.0), 2),
+                # Flow only runs while a pump does, and the total only climbs —
+                # a flat line here would hide the one shape that matters.
+                "flow": 2.4 if i % 37 == 0 else 0.0,
+                "flowTotal": round(seeded_total, 3),
+                "float": 1,
             })
+            if i % 37 == 0:
+                seeded_total += 0.4
+        self.flow_total_litres = seeded_total
 
     # ----- logging -----
     def log(self, level: str, message: str) -> None:
@@ -242,7 +254,12 @@ class DeviceState:
                     "lum": round(self._sensors["Luminosity"].average, 2),
                     "temp": round(self._sensors["Temperature"].average, 2),
                     "hum": round(self._sensors["Air Humidity"].average, 2),
-                    "water": None,
+                    "water": round(self._sensors["Water Level"].average, 2),
+                    "flow": round(self._sensors["Flow"].average, 2),
+                    "flowTotal": round(self.flow_total_litres, 3),
+                    # Three states: null is "no float switch fitted", which the
+                    # device distinguishes with IO_HISTORY_FLAG_FLOAT_VALID.
+                    "float": 1 if self.float_raised else 0,
                 })
 
         # Logging takes the same lock, so it cannot happen inside the block.
@@ -470,7 +487,8 @@ SIM_CONFIG = {
         "luminosity": 39,
         "waterLevel": 35,
         "flow": {"pin": 27, "name": "Flow", "pulsesPerLitre": 450},
-        "floatSwitch": {"pin": 26, "name": "Float Switch", "activeLevel": 0},
+        "floatSwitch": {"pin": 26, "name": "Float Switch", "activeLevel": 0,
+                        "interlock": False, "fillRelay": 3},
     },
     # Both disabled, matching the fail-safe default the device now applies to a
     # schedule whose "enabled" key is absent.

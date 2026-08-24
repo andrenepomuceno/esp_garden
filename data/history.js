@@ -329,6 +329,8 @@
       { key: 'temp', title: 'Temperature', unit: '°C' },
       { key: 'hum', title: 'Air Humidity', unit: '%' },
       { key: 'water', title: 'Water Level', unit: 'cm' },
+      { key: 'flow', title: 'Flow Rate', unit: 'L/min' },
+      { key: 'flowTotal', title: 'Water Delivered', unit: 'L' },
     ];
     for (var s = 0; s < singles.length; s++) {
       var v = column(singles[s].key);

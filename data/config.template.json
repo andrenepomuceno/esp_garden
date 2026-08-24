@@ -90,7 +90,9 @@
     "floatSwitch": {
       "pin": 26,
       "name": "Boia do Reservatorio",
-      "activeLevel": 0
+      "activeLevel": 0,
+      "interlock": false,
+      "fillRelay": 3
     }
   },
   "moisture": [

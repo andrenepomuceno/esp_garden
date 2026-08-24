@@ -76,7 +76,15 @@ relayRemaining(unsigned index);
 void
 startWatering(unsigned int wateringTime = g_wateringDefaultTime);
 
-// The one seam between this module and the rest of the firmware. startRelay()
+// The mirror of relayStartedHook: a veto asked BEFORE the relay is energised,
+// also implemented in tasks.cpp. Returns false and fills `reason` to refuse,
+// so every caller — the web UI, TalkBack, a schedule, a ThingsBoard RPC — gets
+// the same answer through the same path. Relay switching itself knows nothing
+// about reservoirs.
+bool
+relayStartAllowed(unsigned index, String& reason);
+
+// The other seam between this module and the rest of the firmware. startRelay()
 // calls it right after the relay is energised; it is implemented in tasks.cpp,
 // which owns the watering bookkeeping (telemetry field 2, the pre-watering
 // moisture snapshot and the checkMoisture task) that relay switching itself

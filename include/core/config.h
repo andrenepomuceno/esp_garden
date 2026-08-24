@@ -124,6 +124,20 @@ class ConfigFile
     String floatName;
     uint8_t floatActiveLevel;
 
+    // Reservoir interlock. When on, startRelay() refuses a zone relay while
+    // the float reads empty, which is the difference between a pump that runs
+    // dry for 30 s and one that does not run at all.
+    //
+    // DEFAULT OFF, deliberately. A float that is not wired yet reads at the
+    // pull-up, i.e. "empty", so switching this on by default would stop every
+    // watering on every board that has the sensor compiled in and not fitted.
+    // It is a decision that belongs to whoever looked at the reading.
+    bool floatInterlock;
+    // Relay that refills the reservoir, exempt from the interlock — blocking
+    // the one thing that fixes an empty tank would deadlock the system.
+    // -1 when no relay refills.
+    int floatFillRelay;
+
     Schedule schedules[SCHEDULE_COUNT];
     unsigned scheduleCount;
 
