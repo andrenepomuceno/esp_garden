@@ -5,6 +5,7 @@
 #include "core/moisture_model.h"
 #include "core/tasks.h"
 #include <new>
+#include <string.h>
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
@@ -208,11 +209,24 @@ sensorsReadIo()
 
     // Publish the snapshot for readers on other threads. Last, so it reflects
     // this tick's samples.
-    portENTER_CRITICAL(&g_moistureSnapshotMux);
+    //
+    // The VALUES ARE COMPUTED OUTSIDE THE LOCK, and the critical section is a
+    // 32-byte copy. The first version called getAverage() inside it, which
+    // walks the sample list TWICE — once for the mean, once for the variance —
+    // and writes a member on the way. Four probes at a 60-sample window is
+    // ~480 pointer-chased list nodes with interrupts disabled on this core,
+    // every one a potential cache miss that fetches from flash.
+    //
+    // CLAUDE.md states this rule about relayWrite and I broke it here anyway.
+    // The board panicked with InterruptWDTTimoutCPU1.
+    MoistureReading fresh[MOISTURE_MAX];
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
-        g_moistureSnapshot[i].average = g_soilMoisture[i].getAverage();
-        g_moistureSnapshot[i].samples = g_soilMoisture[i].getSamples();
+        fresh[i].average = g_soilMoisture[i].getAverage();
+        fresh[i].samples = g_soilMoisture[i].getSamples();
     }
+
+    portENTER_CRITICAL(&g_moistureSnapshotMux);
+    memcpy(g_moistureSnapshot, fresh, sizeof(fresh));
     portEXIT_CRITICAL(&g_moistureSnapshotMux);
 
     if (config.floatFitted) {

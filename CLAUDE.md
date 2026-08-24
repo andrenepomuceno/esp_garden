@@ -64,6 +64,29 @@ stated *"no source file exceeds 1000 lines"* while two did; it recorded
 reader, not by the project. A number without an execution behind it is a guess
 that has been formatted to look like a fact.
 
+**A hardware fault worth knowing before blaming firmware:** every boot prints
+
+```
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+flash read err, 1000
+ets_main.c 371
+rst:0x10 (RTCWDT_RTC_RESET)   <- second attempt, boots fine
+```
+
+The ROM bootloader fails its first flash read and the RTC watchdog restarts it.
+That is marginal supply — a long USB cable, a hub, or the regulator sagging —
+not code, and it costs a few seconds of every boot. It will become a real boot
+loop if the supply gets worse.
+
+**Getting the board back after serial work:** `esptool.py --port COM7 run`.
+Hand-rolled DTR/RTS toggling left it in `DOWNLOAD_BOOT` — off the network,
+silent on serial, and looking exactly like a hang. An hour went into diagnosing
+a board that was sitting in the ROM bootloader waiting for a flash.
+
+**Reading serial:** `pio device monitor` under a `timeout` truncates its buffer
+unpredictably, which made a healthy boot look like it stopped at three different
+places. Read the port directly and flush per line when the answer matters.
+
 **Verified on hardware (device `9e7c`, espgarden1):**
 
 - Nonce + SHA-256 login, roles, per-IP lockout, persistent sessions.
@@ -79,6 +102,13 @@ that has been formatted to look like a fact.
 - The I/O history ring buffer, its wrap-around, and `/history.json`.
 - Relay switching, the 30 s ceiling, the sticky mask in the history record.
 - Probe readings: three probes at 42.9 / 57.0 / 52.6 with variances ≤ 0.10.
+- **Heap under load** (2026-08-24, firmware 2.2.1). Six endpoints hammered in
+  parallel — including `/history.json?limit=200` — eight rounds, zero failures.
+  269 KB free at boot, ~115 KB in steady state, **76 KB at the low-water mark**.
+  Memory is not the constraint it was assumed to be. The number to watch is the
+  largest free block: it drifts 53 → 49 KB while free stays flat, which is
+  fragmentation from `/history.json` building a ~28 KB String that
+  `beginResponse` then copies.
 - **Runtime hardware.** Firmware 2.2.0 boots off `config.json` alone and logs
   what it decided: `Sensors: 3 moisture, luminosity, DHT, water level, flow,
   float switch`, `DHT11 on GPIO 23`, `Flow sensor on GPIO 27`. No `HAS_*` flag
