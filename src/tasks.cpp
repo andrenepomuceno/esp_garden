@@ -149,6 +149,14 @@ static RelayState g_relay[RELAY_COUNT] = {};
 // read-modify-write of g_relay goes through this spinlock.
 static portMUX_TYPE g_relayMux = portMUX_INITIALIZER_UNLOCKED;
 
+// Sticky record of which relays fired since the last history append. A history
+// record samples state once per historyPeriodSec (60 s by default) while a
+// watering defaults to 5 s and is capped at 30 — so an instantaneous sample
+// misses roughly nine activations in ten, and the moisture rise that follows
+// appears in the file with no cause. Set by startRelay() and by the 50 ms
+// critical task, consumed and cleared by the history task.
+static volatile uint16_t g_relaySticky = 0;
+
 static WiFiClient g_wifiClient;
 static TalkBack talkBack;
 
@@ -191,6 +199,10 @@ relaysTaskHandler()
 
         if (expired) {
             relayWrite(i, false);
+        }
+
+        if (relayIsOn(i)) {
+            g_relaySticky |= (uint16_t)(1u << i);
         }
     }
 }
@@ -259,6 +271,7 @@ startRelay(unsigned index, unsigned int duration)
 
     logger.info("Starting " + config.relayName[index] + " for " +
                 String(duration) + " ms");
+    g_relaySticky |= (uint16_t)(1u << index);
     relayWrite(index, true);
 
     if (index == 0) {
@@ -599,7 +612,13 @@ historyTaskHandler()
     IoRecord record = {};
     record.timestamp = (uint32_t)time(NULL);
 
-    uint16_t mask = 0;
+    // Everything that fired during the period, not just what happens to be on
+    // at this instant.
+    portENTER_CRITICAL(&g_relayMux);
+    uint16_t mask = g_relaySticky;
+    g_relaySticky = 0;
+    portEXIT_CRITICAL(&g_relayMux);
+
     for (unsigned i = 0; i < RELAY_COUNT && i < 16; ++i) {
         if (relayIsOn(i)) {
             mask |= (uint16_t)(1u << i);
@@ -618,18 +637,23 @@ historyTaskHandler()
 #ifdef HAS_MOISTURE_SENSOR
     for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT && i < IO_HISTORY_MAX_MOISTURE;
          ++i) {
-        record.moisture[i] = g_soilMoisture[i].getAverage();
+        // An empty accumulator averages to 0.0, which would be written as a
+        // genuine zero reading and defeat the whole not-fitted-vs-read-zero
+        // contract the record layout exists for.
+        record.moisture[i] = (g_soilMoisture[i].getSamples() == 0)
+                               ? NAN
+                               : g_soilMoisture[i].getAverage();
     }
 #endif
 #ifdef HAS_LUMINOSITY_SENSOR
-    record.luminosity = g_luminosity.getAverage();
+    record.luminosity = (g_luminosity.getSamples() == 0) ? NAN : g_luminosity.getAverage();
 #endif
 #ifdef HAS_DHT_SENSOR
-    record.temperature = g_temperature.getAverage();
-    record.airHumidity = g_airHumidity.getAverage();
+    record.temperature = (g_temperature.getSamples() == 0) ? NAN : g_temperature.getAverage();
+    record.airHumidity = (g_airHumidity.getSamples() == 0) ? NAN : g_airHumidity.getAverage();
 #endif
 #ifdef HAS_WATER_LEVEL_SENSOR
-    record.waterLevel = g_waterLevel.getAverage();
+    record.waterLevel = (g_waterLevel.getSamples() == 0) ? NAN : g_waterLevel.getAverage();
 #endif
 
     ioHistory.append(record);

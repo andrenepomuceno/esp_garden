@@ -67,10 +67,13 @@ class DeviceState:
 
         # Mirrors the on-device ring buffer in src/io_history.cpp. A deque with
         # maxlen IS a ring buffer, so the simulator gets the same drop-oldest
-        # behaviour without the file.
-        self.history_capacity = 1440
+        # behaviour without the file. Capacity and period come from the same
+        # config block the device reads — hardcoding them let the simulator
+        # report a capacity the device would never return.
+        history_cfg = SIM_CONFIG.get("history", {})
+        self.history_capacity = int(history_cfg.get("records", 1440)) or 1
         self.history: deque[dict] = deque(maxlen=self.history_capacity)
-        self.history_period_s = 60
+        self.history_period_s = int(history_cfg.get("periodSec", 60))
         self._history_next = 0.0
 
         # Mirrors config.io.relays. Index 0 is the watering relay, as in the
@@ -346,9 +349,6 @@ class AuthSim:
             return token in self.tokens
 
 
-STATE = DeviceState()
-AUTH = AuthSim()
-
 # Mirror of g_configSecretMask in src/web.cpp. Secrets are replaced by this on
 # GET and restored from the stored document when POSTed back unchanged.
 CONFIG_SECRET_MASK = "********"
@@ -474,6 +474,8 @@ PUBLIC_PATHS = {
     "/config.js",
     "/users.html",
     "/users.js",
+    "/history.html",
+    "/history.js",
     "/jquery.js",
     "/spark-md5.js",
     "/favicon.ico",
@@ -486,6 +488,10 @@ SIM_USERS = [{"username": "admin", "role": 2}]
 # Same cap as g_historyMaxResponse in src/web.cpp: the device cannot render a
 # larger reply without running out of DRAM, so the simulator must not either.
 HISTORY_MAX_RESPONSE = 200
+
+STATE = DeviceState()
+AUTH = AuthSim()
+
 
 
 def users_apply(params: dict) -> tuple[int, str, bool]:
@@ -623,12 +629,20 @@ class Handler(BaseHTTPRequestHandler):
             if raw.isdigit() and int(raw) > 0:
                 limit = int(raw)
             limit = min(limit, HISTORY_MAX_RESPONSE)
+            raw_offset = parse_qs(url.query).get("offset", [""])[0]
             with STATE.lock:
-                records = list(STATE.history)[-limit:]
+                everything = list(STATE.history)
+                if raw_offset.isdigit():
+                    skip = int(raw_offset)
+                    records = everything[skip:skip + limit]
+                else:
+                    skip = max(0, len(everything) - limit)
+                    records = everything[-limit:]
                 payload = {
                     "capacity": STATE.history_capacity,
                     "stored": len(STATE.history),
                     "returned": len(records),
+                    "offset": skip,
                     "records": records,
                 }
             self._send_json(payload)

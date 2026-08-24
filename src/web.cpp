@@ -99,6 +99,10 @@ webUpdateDataCache()
     statusJson["MQTT"] = String((g_mqttEnabled) ? "enabled" : "disabled");
     statusJson["Packages Sent"] = String(g_packagesSent);
     statusJson["Watering Cycles"] = String(g_wateringCycles);
+    // Surfaced because the filesystem is the resource that silently runs out:
+    // the history buffer, the log backups and every web asset share it.
+    statusJson["Filesystem"] = String(SPIFFS.usedBytes() / 1024) + " / " +
+                               String(SPIFFS.totalBytes() / 1024) + " KB";
 
     JSONVar inputsJson;
 #ifdef HAS_MOISTURE_SENSOR
@@ -507,19 +511,27 @@ handleConfigPost(AsyncWebServerRequest* request)
 // holding a large share. Callers page with ?limit=.
 static const size_t g_historyMaxResponse = 200;
 
+// NaN marks a channel this board does not have; JSON has no NaN literal and
+// null is the honest encoding. isfinite() rather than isnan(): an infinity
+// serializes as `inf`, which is not valid JSON, so one bad sample would make
+// the browser throw on the whole response instead of on one field.
+static void
+appendFloatValue(String& out, float value)
+{
+    if (isfinite(value)) {
+        out += String(value, 2);
+    } else {
+        out += "null";
+    }
+}
+
 static void
 appendFloat(String& out, const char* key, float value)
 {
     out += "\"";
     out += key;
     out += "\":";
-    // NaN marks a channel this board does not have; JSON has no NaN literal and
-    // null is the honest encoding.
-    if (isnan(value)) {
-        out += "null";
-    } else {
-        out += String(value, 2);
-    }
+    appendFloatValue(out, value);
 }
 
 static void
@@ -541,8 +553,19 @@ handleHistoryJson(AsyncWebServerRequest* request)
         limit = g_historyMaxResponse;
     }
 
+    // Absent, the newest records are returned. Present, it skips that many of
+    // the oldest, which is the only way the rest of a 1440-record buffer is
+    // reachable at all through a 200-record cap.
+    uint32_t offset = IoHistory::kNewest;
+    if (request->hasParam("offset")) {
+        const long asked = request->getParam("offset")->value().toInt();
+        if (asked >= 0) {
+            offset = (uint32_t)asked;
+        }
+    }
+
     static IoRecord buffer[g_historyMaxResponse];
-    const size_t count = ioHistory.read(buffer, limit);
+    const size_t count = ioHistory.read(buffer, limit, offset);
 
     String out;
     out.reserve(count * 140 + 128);
@@ -552,6 +575,10 @@ handleHistoryJson(AsyncWebServerRequest* request)
     out += String(ioHistory.stored());
     out += ",\"returned\":";
     out += String(count);
+    out += ",\"offset\":";
+    out += String(offset == IoHistory::kNewest
+                    ? (ioHistory.stored() > count ? ioHistory.stored() - count : 0)
+                    : offset);
     out += ",\"records\":[";
 
     for (size_t i = 0; i < count; ++i) {
@@ -568,7 +595,7 @@ handleHistoryJson(AsyncWebServerRequest* request)
             if (m) {
                 out += ",";
             }
-            out += isnan(r.moisture[m]) ? String("null") : String(r.moisture[m], 2);
+            appendFloatValue(out, r.moisture[m]);
         }
         out += "],";
         appendFloat(out, "lum", r.luminosity);
@@ -790,6 +817,8 @@ webSetup()
     servePublicFile("/config.js", "/config.js", "application/javascript");
     servePublicFile("/users.html", "/users.html", "text/html");
     servePublicFile("/users.js", "/users.js", "application/javascript");
+    servePublicFile("/history.html", "/history.html", "text/html");
+    servePublicFile("/history.js", "/history.js", "application/javascript");
     servePublicFile("/update.html", "/update.html", "text/html");
     servePublicFile("/update.js", "/update.js", "application/javascript");
     servePublicFile("/favicon.ico", "/favicon.ico", "image/x-icon");

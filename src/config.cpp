@@ -348,8 +348,14 @@ ConfigFile::loadFile(unsigned deviceID)
         JSONVar history = configJson["history"];
         if (history.hasOwnProperty("records")) {
             const int records = (int)history["records"];
-            // Capped so a typo cannot ask for a file larger than the partition.
-            if (records >= 0 && records <= 20000) {
+            // 6000 records is 240 KB, which fits beside the ~190 KB of web
+            // assets in the 463 KB usable SPIFFS. The previous ceiling of 20000
+            // was 800 KB — half again the whole partition — and a config that
+            // asked for it filled the filesystem, taking the log backup, the
+            // user store and POST /config.json down with it. begin() runs
+            // before webSetup(), so the admin who caused it had no editor left
+            // to undo it.
+            if (records >= 0 && records <= 6000) {
                 historyRecords = records;
             } else {
                 logger.warning("Ignoring out-of-range history.records " +

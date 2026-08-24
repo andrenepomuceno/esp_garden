@@ -4,6 +4,8 @@
 #include "core/ring_index.h"
 #include <Arduino.h>
 #include <FS.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <SPIFFS.h>
 
 // Fixed-size ring buffer of I/O snapshots on SPIFFS.
@@ -55,8 +57,14 @@ class IoHistory
 
     bool append(const IoRecord& record);
 
-    // Copies up to `limit` records into `out`, newest last. Returns how many.
-    size_t read(IoRecord* out, size_t limit) const;
+    // Copies up to `limit` records into `out`, oldest first, skipping the
+    // `offset` oldest. Returns how many. Pass offset = kNewest for the tail.
+    //
+    // Without an offset only the newest `limit` records were ever reachable, so
+    // a 1440-record buffer exposed its final 14 % and the rest was written and
+    // never read.
+    static const uint32_t kNewest = 0xFFFFFFFFUL;
+    size_t read(IoRecord* out, size_t limit, uint32_t offset = kNewest);
 
     uint16_t capacity() const { return header.capacity; }
     uint32_t stored() const { return header.stored; }
@@ -67,8 +75,12 @@ class IoHistory
     FS* fs = nullptr;
     bool initialised = false;
 
-    bool writeHeader();
     bool format(uint16_t capacity);
+
+    // append() runs on loop(); read() runs on the async_tcp task. Both touch
+    // the same header and the same file, so without this a request landing
+    // mid-append reads a half-written record and a head that moved under it.
+    SemaphoreHandle_t mutex = nullptr;
 };
 
 extern IoHistory ioHistory;

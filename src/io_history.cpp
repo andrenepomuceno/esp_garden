@@ -26,16 +26,27 @@ IoHistory::format(uint16_t capacity)
         return false;
     }
 
-    // Preallocate every slot so the file never grows later and a append can
-    // never fail for lack of space halfway through a season.
-    const IoRecord blank = {};
-    for (uint16_t i = 0; i < capacity; ++i) {
-        if (file.write((const uint8_t*)&blank, sizeof(blank)) != sizeof(blank)) {
-            logger.error("io_history: preallocation failed at slot " +
-                         String(i) + " — is SPIFFS full?");
+    // Preallocate every slot so the file never grows later and an append can
+    // never fail for lack of space halfway through a season. Written in blocks:
+    // one VFS call per record meant 1440 round-trips with the web server not
+    // yet up, and 6000 at the configured ceiling.
+    static const size_t kBlockRecords = 16;
+    uint8_t block[kBlockRecords * sizeof(IoRecord)] = {};
+    uint16_t remaining = capacity;
+    while (remaining > 0) {
+        const size_t batch =
+          (remaining < kBlockRecords) ? remaining : kBlockRecords;
+        const size_t bytes = batch * sizeof(IoRecord);
+        if (file.write(block, bytes) != bytes) {
+            logger.error("io_history: preallocation failed with " +
+                         String(remaining) + " records left — is SPIFFS full?");
             file.close();
+            // Leaving the partial file behind would keep the space it already
+            // took and the next boot would try again on a fuller filesystem.
+            fs->remove(IO_HISTORY_FILE);
             return false;
         }
+        remaining -= batch;
     }
 
     file.close();
@@ -51,6 +62,10 @@ IoHistory::begin(uint16_t capacity, FS& filesystem)
 {
     fs = &filesystem;
     initialised = false;
+
+    if (mutex == nullptr) {
+        mutex = xSemaphoreCreateMutex();
+    }
 
     if (capacity == 0) {
         logger.info("io_history: disabled (capacity 0)");
@@ -73,6 +88,11 @@ IoHistory::begin(uint16_t capacity, FS& filesystem)
                     onDisk.recordSize == sizeof(IoRecord) &&
                     onDisk.capacity == capacity &&
                     onDisk.head < onDisk.capacity &&
+                    // Without this a corrupt `stored` (a torn header write, a
+                    // flipped bit) is accepted: read() computes
+                    // skip = stored - wanted and serves arbitrary slots in
+                    // scrambled order, and append() stops counting for good.
+                    onDisk.stored <= onDisk.capacity &&
                     (uint32_t)file.size() == expected) {
                     header = onDisk;
                     needsFormat = false;
@@ -96,67 +116,92 @@ IoHistory::begin(uint16_t capacity, FS& filesystem)
 }
 
 bool
-IoHistory::writeHeader()
-{
-    File file = fs->open(IO_HISTORY_FILE, "r+");
-    if (file == false) {
-        return false;
-    }
-    file.seek(0);
-    const bool ok =
-      file.write((const uint8_t*)&header, sizeof(header)) == sizeof(header);
-    file.close();
-    return ok;
-}
-
-bool
 IoHistory::append(const IoRecord& record)
 {
     if (!initialised) {
         return false;
     }
 
+    if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+
     File file = fs->open(IO_HISTORY_FILE, "r+");
     if (file == false) {
         logger.error("io_history: cannot open for append");
+        xSemaphoreGive(mutex);
         return false;
     }
 
     const uint32_t offset =
       IO_HISTORY_HEADER_SIZE + header.head * (uint32_t)sizeof(IoRecord);
-    file.seek(offset);
-    const bool ok =
-      file.write((const uint8_t*)&record, sizeof(record)) == sizeof(record);
+
+    // An unchecked seek writes the record wherever the handle happened to sit —
+    // offset 0 means straight over the header.
+    bool ok = file.seek(offset);
+    if (ok) {
+        ok = file.write((const uint8_t*)&record, sizeof(record)) == sizeof(record);
+    }
 
     if (ok) {
+        const IoHistoryHeader previous = header;
         header.head = (header.head + 1) % header.capacity;
         if (header.stored < header.capacity) {
             ++header.stored;
         }
-        file.seek(0);
-        file.write((const uint8_t*)&header, sizeof(header));
+
+        // The header write must be checked too. Dropping it leaves RAM ahead of
+        // disk, and the next boot rewinds `head` and overwrites live records
+        // while claiming they are the newest.
+        const bool headerOk =
+          file.seek(0) &&
+          file.write((const uint8_t*)&header, sizeof(header)) == sizeof(header);
+        if (!headerOk) {
+            header = previous;
+            logger.error("io_history: header update failed; record dropped");
+            ok = false;
+        }
     }
 
     file.close();
+    xSemaphoreGive(mutex);
     if (!ok) {
-        logger.error("io_history: record write failed");
+        logger.error("io_history: append failed");
     }
     return ok;
 }
 
 size_t
-IoHistory::read(IoRecord* out, size_t limit) const
+IoHistory::read(IoRecord* out, size_t limit, uint32_t offset)
 {
     if (!initialised || out == nullptr || limit == 0) {
         return 0;
     }
 
+    if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
+        return 0;
+    }
+
     const uint32_t available = header.stored;
-    const size_t wanted = (limit < available) ? limit : available;
-    const uint32_t skip = available - (uint32_t)wanted; // keep the newest
+    uint32_t skip;
+    if (offset == kNewest) {
+        const uint32_t wanted = (limit < available) ? (uint32_t)limit : available;
+        skip = available - wanted;
+    } else {
+        skip = offset;
+    }
+
+    if (skip >= available) {
+        xSemaphoreGive(mutex);
+        return 0;
+    }
+
+    const uint32_t remaining = available - skip;
+    const size_t wanted = (limit < remaining) ? limit : remaining;
 
     File file = fs->open(IO_HISTORY_FILE, FILE_READ);
     if (file == false) {
+        xSemaphoreGive(mutex);
         return 0;
     }
 
@@ -164,7 +209,10 @@ IoHistory::read(IoRecord* out, size_t limit) const
     for (size_t i = 0; i < wanted; ++i) {
         const uint32_t slot = ring::slotOf(
           skip + (uint32_t)i, header.head, header.stored, header.capacity);
-        file.seek(IO_HISTORY_HEADER_SIZE + slot * (uint32_t)sizeof(IoRecord));
+        if (!file.seek(IO_HISTORY_HEADER_SIZE +
+                       slot * (uint32_t)sizeof(IoRecord))) {
+            break;
+        }
         if (file.read((uint8_t*)&out[got], sizeof(IoRecord)) !=
             (int)sizeof(IoRecord)) {
             break;
@@ -173,5 +221,6 @@ IoHistory::read(IoRecord* out, size_t limit) const
     }
 
     file.close();
+    xSemaphoreGive(mutex);
     return got;
 }
