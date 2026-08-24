@@ -900,7 +900,7 @@ Concrete gotchas measured in this tree:
 - Includes are prefixed: `core/`, `network/`. `BuildConfig.h` carries no prefix.
 - Feature flags live in `include/BuildConfig.h` (`FW_VERSION`, `USE_WEBSERVER`, `USE_MQTT`, `USE_OTA`, `USE_TALKBACK`, `USE_WATERING_PWM`), along with the capacity caps `RELAY_MAX` and `MOISTURE_MAX`. **`platformio.ini` carries no hardware flags at all** — what a board has is in its own `config.json`, and the envs differ only by `board`.
 - `FW_VERSION` in `BuildConfig.h` is the version ThingsBoard compares an offered package against and the string `/data.json` reports as `Status.Firmware`. **Bump it in the same commit as the change it names**, or a FOTA of that change is a no-op the broker reports as success.
-- **No AI co-author trailers** in commits. **Never `git add -A`** — stage explicitly. **No commits or pushes without an explicit instruction** from the user; suggest the message and stop.
+- **No AI co-author trailers** in commits. **Never `git add -A`** — stage explicitly. **Commits and pushes no longer need to be asked for** (standing authorization from the repo owner), but the gate does not move: five envs build, `pio test -e native` passes and `python scripts/check_lines.py` is green before a commit exists. Never commit `data/config.json` or anything under `backups/`.
 - Commit format: imperative + conventional tag (`feat | fix | refactor | chore | docs | test | perf | style`), e.g. `fix(tasks): construct DHT after config load`.
 - **Never overwrite `data/config.json`** (gitignored, holds a real device's credentials) and never commit real credentials — only `data/config.template.json` is tracked.
 - Do not create new `.md` files unless asked; update this file or `README.md`.
