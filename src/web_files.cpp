@@ -192,3 +192,71 @@ handleFileUploadRequest(AsyncWebServerRequest* request)
     request->send(response);
     g_uploadTarget = "";
 }
+
+// ---------------------------------------------------------------------------
+// Single-file delete
+// ---------------------------------------------------------------------------
+
+// The counterpart to the upload, and the reason it exists: a test upload of
+// mine (`/probe.js`) sat on the filesystem with no way to remove it short of
+// rewriting the whole partition — which is precisely the operation the per-file
+// upload was built to avoid.
+//
+// Same refusals as the upload, for the same reasons: deleting /users.json locks
+// every account out, /sessions.json signs everyone out, and /config.json makes
+// the device unreachable at its next boot. Nothing here may remove the file
+// that lets you fix a mistake made here.
+void
+handleFileDelete(AsyncWebServerRequest* request)
+{
+    if (!request->hasParam("path", true)) {
+        request->send(400, "application/json",
+                      "{\"ok\":false,\"error\":\"missing path\"}");
+        return;
+    }
+
+    String path = request->getParam("path", true)->value();
+    if (!path.startsWith("/")) {
+        path = "/" + path;
+    }
+
+    String reason;
+    if (!uploadPathIsUsable(path, reason)) {
+        logger.warning("[delete] refused " + path + ": " + reason);
+        request->send(400,
+                      "application/json",
+                      String("{\"ok\":false,\"error\":\"refused ") + path +
+                        ": " + reason + "\"}");
+        return;
+    }
+
+    // Refusing a path that is not there, rather than reporting success, is what
+    // tells a caller their path was wrong instead of leaving them to wonder why
+    // the file is still being served.
+    if (!SPIFFS.exists(path)) {
+        request->send(404,
+                      "application/json",
+                      String("{\"ok\":false,\"error\":\"") + path +
+                        " does not exist\"}");
+        return;
+    }
+
+    if (!SPIFFS.remove(path)) {
+        request->send(500,
+                      "application/json",
+                      String("{\"ok\":false,\"error\":\"could not remove ") +
+                        path + "\"}");
+        return;
+    }
+
+    logger.warning("[delete] removed " + path + " from " +
+                   request->client()->remoteIP().toString());
+
+    AsyncWebServerResponse* response = request->beginResponse(
+      200,
+      "application/json",
+      String("{\"ok\":true,\"path\":\"") + path + "\",\"free\":" +
+        String(SPIFFS.totalBytes() - SPIFFS.usedBytes()) + "}");
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+}

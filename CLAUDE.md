@@ -107,8 +107,18 @@ places. Read the port directly and flush per line when the answer matters.
   269 KB free at boot, ~115 KB in steady state, **76 KB at the low-water mark**.
   Memory is not the constraint it was assumed to be. The number to watch is the
   largest free block: it drifts 53 → 49 KB while free stays flat, which is
-  fragmentation from `/history.json` building a ~28 KB String that
-  `beginResponse` then copies.
+  fragmentation from `/history.json` building its response.
+
+  **`AsyncResponseStream` was tried as the fix and made it worse — withdrawn.**
+  The stream looked obviously right, since `beginResponse` copies the String it
+  is handed and the path therefore costs the payload twice. Measured on the
+  same eight-round parallel load: largest free block **53 KB → 33 KB** (once to
+  16), low-water heap **76 KB → 60 KB**. The stream's buffer grows by
+  reallocation and leaves a hole at every step, while one `reserve()` of the
+  right size is a single allocation. The double copy costs PEAK; the stream
+  costs FRAGMENTATION, and fragmentation is what bites a device that has to
+  stay up for months. If the peak ever does matter, the answer is chunked
+  generation — one record per callback — not a differently-shaped buffer.
 - **Runtime hardware.** Firmware 2.2.0 boots off `config.json` alone and logs
   what it decided: `Sensors: 3 moisture, luminosity, DHT, water level, flow,
   float switch`, `DHT11 on GPIO 23`, `Flow sensor on GPIO 27`. No `HAS_*` flag
@@ -120,6 +130,11 @@ places. Read the port directly and flush per line when the answer matters.
 - **`GET /moisture.json`** — answers on the device, reports the gates and
   `blockedBy: "not trained yet"` for all three probes. The endpoint and the
   refusal path are exercised; the FIT is not (see below).
+- **`POST /spiffs/delete`** (2026-08-24). All four refusals fired on the
+  device: `/users.json` (credential store), `/config.json` (use the validating
+  endpoint), `..` in the path, and a 404 for a path that is not there — the
+  last one deliberately, so a wrong path is reported rather than silently
+  succeeding.
 - **`POST /spiffs/upload`** (2026-08-24). A 48-byte file written and read back
   byte-identical through `/spiffs/`, with 139 KB still free. All four refusals
   fired on the device: wrong MD5, `/config.json`, `/users.json`, and `..` in
@@ -363,6 +378,7 @@ Facts worth knowing before touching it:
 | `/users` | POST | **ADMIN** | `action=upsert\|delete`, `username`, `password`, `role` |
 | `/devices.html`, `/devices.js` | GET | **public** | sensor + actuator management page (data behind it is ADMIN) |
 | `/spiffs/*` | GET | **ADMIN** | file browse, with `users*` / `sessions*` / `config*` shadowed 403 |
+| `/spiffs/delete` | POST | **ADMIN** | remove ONE file, refusing exactly what the upload refuses |
 
 **Auth is nonce + SHA-256, not Basic Auth** (`USE_CUSTOM_LOGIN=1`, `src/custom_login.cpp`, ported from fullbot):
 

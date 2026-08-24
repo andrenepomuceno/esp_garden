@@ -171,6 +171,22 @@ handleHistoryJson(AsyncWebServerRequest* request)
         count = ioHistory.read(buffer, limit, offset);
     }
 
+    // A String with reserve(), NOT an AsyncResponseStream — measured, twice.
+    //
+    // The stream looked like the obvious fix for the peak: beginResponse copies
+    // the String it is handed, so this path costs the payload twice. Replacing
+    // it with a stream made things WORSE on the same eight-round parallel load:
+    // the largest free block fell 53 KB -> 33 KB (once to 16) and the low-water
+    // heap 76 KB -> 60 KB.
+    //
+    // The reason is that the stream's buffer GROWS BY REALLOCATION, leaving a
+    // hole at every step, while one reserve() of the right size is a single
+    // allocation. The double copy costs peak; the stream costs fragmentation,
+    // and fragmentation is what actually bites a device that must stay up for
+    // months.
+    //
+    // If the peak ever does matter, the answer is chunked generation — emitting
+    // one record per callback — not a differently-shaped buffer.
     String out;
     out.reserve(count * 175 + 128);
     out += "{\"capacity\":";
@@ -394,6 +410,8 @@ webSetup()
     g_webServer
       .on("/spiffs/upload", HTTP_POST, handleFileUploadRequest, handleFileUpload)
       .addMiddleware(adminOnly);
+    g_webServer.on("/spiffs/delete", HTTP_POST, handleFileDelete)
+      .addMiddleware(adminOnly);
 
     // MUST be registered BEFORE the serveStatic they shadow: handlers are
     // matched in registration order, and the matcher is a PREFIX, so the
@@ -425,6 +443,7 @@ webSetup()
       "/update", HTTP_POST, handleUpdateRequest, handleUpdateUpload);
     g_webServer.on(
       "/spiffs/upload", HTTP_POST, handleFileUploadRequest, handleFileUpload);
+    g_webServer.on("/spiffs/delete", HTTP_POST, handleFileDelete);
 #endif
 
     g_webServer.onNotFound(

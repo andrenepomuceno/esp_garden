@@ -25,3 +25,9 @@ handleFileUpload(AsyncWebServerRequest* request,
                  uint8_t* data,
                  size_t len,
                  bool final);
+
+// Remove ONE file. Refuses exactly what the upload refuses — the credential
+// stores and the configuration — because nothing here may delete the file that
+// lets you undo a mistake made here.
+void
+handleFileDelete(AsyncWebServerRequest* request);
