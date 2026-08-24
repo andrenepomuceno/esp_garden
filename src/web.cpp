@@ -171,83 +171,119 @@ handleHistoryJson(AsyncWebServerRequest* request)
         count = ioHistory.read(buffer, limit, offset);
     }
 
-    // A String with reserve(), NOT an AsyncResponseStream — measured, twice.
+    // CHUNKED generation: one record per callback, never the whole payload in
+    // RAM at once.
     //
-    // The stream looked like the obvious fix for the peak: beginResponse copies
-    // the String it is handed, so this path costs the payload twice. Replacing
-    // it with a stream made things WORSE on the same eight-round parallel load:
-    // the largest free block fell 53 KB -> 33 KB (once to 16) and the low-water
-    // heap 76 KB -> 60 KB.
+    // Two earlier shapes are recorded here because both were measured and both
+    // were wrong:
     //
-    // The reason is that the stream's buffer GROWS BY REALLOCATION, leaving a
-    // hole at every step, while one reserve() of the right size is a single
-    // allocation. The double copy costs peak; the stream costs fragmentation,
-    // and fragmentation is what actually bites a device that must stay up for
-    // months.
+    //   String + beginResponse — beginResponse COPIES the string, so a
+    //   200-record window needed ~35 KB twice on a heap whose largest free
+    //   block is 53 KB. It did not merely peak: `limit=200` returned 200 OK
+    //   with a Content-Length of ZERO, which is what the history page asks for
+    //   on every load. Silent, and the page just showed nothing.
     //
-    // If the peak ever does matter, the answer is chunked generation — emitting
-    // one record per callback — not a differently-shaped buffer.
-    String out;
-    out.reserve(count * 175 + 128);
-    out += "{\"capacity\":";
-    out += String(ioHistory.capacity());
-    out += ",\"stored\":";
-    out += String(ioHistory.stored());
-    out += ",\"returned\":";
-    out += String(count);
-    out += ",\"offset\":";
-    out += String(offset == IoHistory::kNewest
-                    ? (ioHistory.stored() > count ? ioHistory.stored() - count : 0)
-                    : offset);
+    //   AsyncResponseStream — fixed the double copy and made fragmentation
+    //   worse, because its buffer grows by reallocation: largest free block
+    //   53 KB -> 33 KB, low-water heap 76 KB -> 60 KB on the same load.
+    //
+    // This one holds a header, one serialised record, and nothing else. Peak is
+    // independent of `limit`, which is the only property that makes the 200-
+    // record window safe on a board with 320 KB of DRAM and no PSRAM.
+    String header;
+    header.reserve(160);
+    header += "{\"capacity\":";
+    header += String(ioHistory.capacity());
+    header += ",\"stored\":";
+    header += String(ioHistory.stored());
+    header += ",\"returned\":";
+    header += String(count);
+    header += ",\"offset\":";
+    header += String(offset == IoHistory::kNewest
+                       ? (ioHistory.stored() > count ? ioHistory.stored() - count : 0)
+                       : offset);
     // The page needs the stride to say "1 point per 8 minutes" rather than
     // implying every sample is shown.
-    out += ",\"stride\":";
-    out += String(stride);
-    out += ",\"window\":";
-    out += String(window);
-    out += ",\"records\":[";
+    header += ",\"stride\":";
+    header += String(stride);
+    header += ",\"window\":";
+    header += String(window);
+    header += ",\"records\":[";
 
-    for (size_t i = 0; i < count; ++i) {
-        const IoRecord& r = buffer[i];
-        if (i) {
-            out += ",";
-        }
-        out += "{\"t\":";
-        out += String(r.timestamp);
-        out += ",\"relays\":";
-        out += String(r.relayMask);
-        out += ",\"moisture\":[";
-        for (unsigned m = 0; m < IO_HISTORY_MAX_MOISTURE; ++m) {
-            if (m) {
-                out += ",";
-            }
-            appendFloatValue(out, r.moisture[m]);
-        }
-        out += "],";
-        appendFloat(out, "lum", r.luminosity);
-        out += ",";
-        appendFloat(out, "temp", r.temperature);
-        out += ",";
-        appendFloat(out, "hum", r.airHumidity);
-        out += ",";
-        appendFloat(out, "water", r.waterLevel);
-        out += ",";
-        appendFloat(out, "flow", r.flowRate);
-        out += ",";
-        appendFloat(out, "flowTotal", r.flowTotal);
-        // Three states, not two: null means the board has no float switch, so
-        // the page can leave the row out rather than draw a permanently empty
-        // reservoir.
-        out += ",\"float\":";
-        out += (r.flags & IO_HISTORY_FLAG_FLOAT_VALID)
-                 ? ((r.flags & IO_HISTORY_FLAG_FLOAT_RAISED) ? "1" : "0")
-                 : "null";
-        out += "}";
-    }
-    out += "]}";
+    // Serialisation state, carried across callbacks. One request at a time is
+    // already this handler's contract — `buffer` is a static too — and the
+    // filler runs on async_tcp, the same task that populated both.
+    static String pending;
+    static size_t nextRecord = 0;
+    static size_t emitted = 0;
 
-    AsyncWebServerResponse* response =
-      request->beginResponse(200, "application/json", out);
+    pending = header;
+    nextRecord = 0;
+    emitted = 0;
+
+    const size_t total = count;
+
+    AsyncWebServerResponse* response = request->beginChunkedResponse(
+      "application/json",
+      [total](uint8_t* out, size_t maxLen, size_t) -> size_t {
+          // Top the buffer up one record at a time until it can satisfy this
+          // call. A record is ~155 bytes and maxLen is typically over 1 KB, so
+          // this is a handful of appends, never a full payload.
+          while (pending.length() < maxLen && nextRecord < total) {
+              const IoRecord& r = buffer[nextRecord];
+              if (nextRecord) {
+                  pending += ",";
+              }
+              pending += "{\"t\":";
+              pending += String(r.timestamp);
+              pending += ",\"relays\":";
+              pending += String(r.relayMask);
+              pending += ",\"moisture\":[";
+              for (unsigned m = 0; m < IO_HISTORY_MAX_MOISTURE; ++m) {
+                  if (m) {
+                      pending += ",";
+                  }
+                  appendFloatValue(pending, r.moisture[m]);
+              }
+              pending += "],";
+              appendFloat(pending, "lum", r.luminosity);
+              pending += ",";
+              appendFloat(pending, "temp", r.temperature);
+              pending += ",";
+              appendFloat(pending, "hum", r.airHumidity);
+              pending += ",";
+              appendFloat(pending, "water", r.waterLevel);
+              pending += ",";
+              appendFloat(pending, "flow", r.flowRate);
+              pending += ",";
+              appendFloat(pending, "flowTotal", r.flowTotal);
+              // Three states, not two: null means the board has no float
+              // switch, so the page can leave the row out rather than draw a
+              // permanently empty reservoir.
+              pending += ",\"float\":";
+              pending += (r.flags & IO_HISTORY_FLAG_FLOAT_VALID)
+                           ? ((r.flags & IO_HISTORY_FLAG_FLOAT_RAISED) ? "1" : "0")
+                           : "null";
+              pending += "}";
+              ++nextRecord;
+
+              if (nextRecord == total) {
+                  pending += "]}";
+              }
+          }
+
+          if (pending.length() == 0) {
+              return 0; // done: an empty chunk ends the response
+          }
+
+          const size_t take =
+            (pending.length() < maxLen) ? pending.length() : maxLen;
+          memcpy(out, pending.c_str(), take);
+          pending.remove(0, take);
+          emitted += take;
+          return take;
+      });
+
     response->addHeader("Cache-Control", "no-store");
     request->send(response);
 }

@@ -115,6 +115,15 @@ garbage. An hour went into learning that.
   largest free block: it drifts 53 → 49 KB while free stays flat, which is
   fragmentation from `/history.json` building its response.
 
+  **The String was NOT enough, and the peak did bite — chunked generation is
+  what fixed it.** With 548 records stored, `GET /history.json?limit=200` — the
+  request the history page makes on every load — answered **200 OK with a
+  Content-Length of ZERO**. ~35 KB of String plus the ~35 KB copy
+  `beginResponse` makes do not fit beside a 53 KB largest free block, and the
+  failure is silent: the page just shows nothing. The handler now emits one
+  record per filler callback, so peak is independent of `limit`. Verified on
+  the device at 5 / 100 / 200 records and with `window=86400`.
+
   **`AsyncResponseStream` was tried as the fix and made it worse — withdrawn.**
   The stream looked obviously right, since `beginResponse` copies the String it
   is handed and the path therefore costs the payload twice. Measured on the
