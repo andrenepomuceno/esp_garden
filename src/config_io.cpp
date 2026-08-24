@@ -45,8 +45,14 @@ loadRelays(ConfigFile& cfg, JSONVar& io)
 
             // An absent name keeps the compiled default rather than blanking
             // the label the dashboard renders.
-            if (JSON.typeof(relay["name"]) == "string") {
-                cfg.relayName[i] = (const char*)relay["name"];
+            // Non-empty, like loadSensor(). "" is a string, so without the
+            // length check a row saved with the name cleared blanks the label:
+            // /data.json then emits Outputs keyed by "", two unnamed relays
+            // collide onto one JSON key and one of them vanishes from the
+            // dashboard, and every log line reads "Starting  for 5000 ms".
+            const String label = (const char*)JSONVar(relay["name"]);
+            if (label.length() > 0) {
+                cfg.relayName[i] = label;
             }
         }
         return;

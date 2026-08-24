@@ -141,10 +141,21 @@ telemetryPublish()
 {
     static std::list<String> msgQueue;
 
-    if (!g_mqttEnabled || !g_hasInternet) {
-        logger.info("MQTT skipped.");
-        logger.info("g_mqttEnabled = " + String(g_mqttEnabled) +
-                    " g_hasInternet = " + String(g_hasInternet));
+    // The payload is BUILT AND QUEUED before the connectivity check, not after.
+    //
+    // The early return used to sit above both push_back calls, so a thirty
+    // minute outage produced zero queued payloads and every reading in it was
+    // lost — the queue only ever held messages whose publish failed while
+    // g_hasInternet was still true, a window checkInternet closes within 15 s.
+    // A queue that empties itself the moment connectivity drops is not a queue
+    // for surviving an outage, which is the only reason this one exists.
+    //
+    // g_mqttEnabled is different: it means the operator turned publishing off,
+    // and honouring that by filling RAM with an hour of undelivered payloads
+    // would be the wrong reading of the instruction.
+    const bool offline = !g_hasInternet;
+    if (!g_mqttEnabled) {
+        logger.info("MQTT disabled by configuration; nothing built or queued.");
         return;
     }
 
@@ -192,6 +203,17 @@ telemetryPublish()
 
         msgQueue.push_back(g_mqttMessage);
         g_mqttMessage = "";
+    }
+
+    if (offline) {
+        // Queued above, sent when the link returns. The drain below would only
+        // pile up failed publishes and log noise.
+        logger.info("MQTT: offline, payload queued (" +
+                    String(msgQueue.size()) + " waiting)");
+        while (msgQueue.size() > (60 * 60 * 1000 / g_mqttTaskPeriod)) {
+            msgQueue.pop_front();
+        }
+        return;
     }
 
     digitalWrite(LED_BUILTIN, 1);

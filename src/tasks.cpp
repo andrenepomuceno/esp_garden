@@ -73,6 +73,11 @@ static const unsigned long g_bootWaitMaxMs = 60UL * 1000UL;
 
 AccumulatorV2 g_pingTime(g_mqttTaskPeriod / g_checkInternetTaskPeriod);
 
+// Set by relayStartedHook on any thread, consumed by the io task. A single
+// unsigned written by one producer and cleared by one consumer needs no lock:
+// the worst interleaving loses a duration, not memory.
+static volatile unsigned g_wateringStartedMs = 0;
+
 static float g_moistureBeforeWatering[MOISTURE_MAX] = { 0.0 };
 
 static WiFiClient g_wifiClient;
@@ -126,7 +131,26 @@ publishRelayEvents()
     RelayPendingEvent pending[RELAY_MAX];
     relayTakePendingEvents(pending);
 
+    // The watering bookkeeping relayStartedHook could not do safely from a
+    // request handler. All of it touches state only this task may touch.
+    if (g_wateringStartedMs > 0) {
+        const unsigned duration = g_wateringStartedMs;
+        g_wateringStartedMs = 0;
+        ++g_wateringCycles;
+        g_pendingWateringMs = duration;
+        mqttAddField(g_wateringField, String(duration));
+        g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
+    }
+
     for (unsigned i = 0; i < config.relayCount; ++i) {
+        if (pending[i].refused) {
+            JSONVar refusal;
+            refusal["relayRefused"] = config.relayName[i];
+            refusal["relay"] = (int)i;
+            refusal["reason"] = pending[i].reason;
+            tbPublishEvent(JSON.stringify(refusal));
+        }
+
         if (!pending[i].started && !pending[i].ended) {
             continue;
         }
@@ -180,35 +204,37 @@ publishFloatEvents()
     lastRaised = raised;
 }
 
-void
-relayRefusedHook(unsigned index, const String& reason)
-{
-    if (index >= config.relayCount) {
-        return;
-    }
-
-    JSONVar event;
-    event["relayRefused"] = config.relayName[index];
-    event["relay"] = (int)index;
-    event["reason"] = reason;
-    tbPublishEvent(JSON.stringify(event));
-}
-
 // Seam with src/relays.cpp: startRelay() calls this once the relay is
 // energised, so relay switching itself stays free of the watering bookkeeping.
 void
 relayStartedHook(unsigned index, unsigned int duration)
 {
-    if (index == 0) {
-        ++g_wateringCycles;
-        g_pendingWateringMs = duration;
-        mqttAddField(g_wateringField, String(duration));
-
-        for (unsigned i = 0; i < config.moistureCount; ++i) {
-            g_moistureBeforeWatering[i] = g_soilMoisture[i].getAverage();
-        }
-        g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
+    if (index != 0) {
+        return;
     }
+
+    // This runs on WHICHEVER THREAD asked for the relay — async_tcp for
+    // /control, loop() for TalkBack and schedules. So it does exactly one
+    // thing that is safe from all of them, and everything else waits for the
+    // io task in publishRelayEvents().
+    //
+    // What used to be here and could not stay:
+    //   - g_soilMoisture[i].getAverage(), which walks a list the io task is
+    //     writing and updates a shared member. The documented trap, again.
+    //   - mqttAddField(), which appends to the global String telemetryPublish()
+    //     concurrently reads and clears — an unsynchronised reallocation.
+    //   - g_checkMoistureTask.enableDelayed(), which mutates the scheduler's
+    //     task list while execute() walks it; the library documents that as
+    //     unsafe after start().
+    //
+    // moistureReading() IS safe from any thread — it is the snapshot the io
+    // task publishes under a spinlock — so the pre-watering baseline is taken
+    // here rather than deferred, where it would be a second late and a second
+    // of watering wrong.
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
+        g_moistureBeforeWatering[i] = moistureReading(i).average;
+    }
+    g_wateringStartedMs = duration;
 }
 
 static void

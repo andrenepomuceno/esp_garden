@@ -283,7 +283,17 @@ wsl.exe -e bash -lc 'ls ~/solarbot/fullbot-firmware/docs'
 8. `webSetup()` → `WiFi.begin()`, mDNS, **all routes registered, server listening**.
 9. `tasksSetup()` → pins, TalkBack, **critical runner started**, then **two blocking loops**.
 
-**TRAP — `tasksSetup()` blocks `setup()` indefinitely.** It spins `while (!g_hasInternet)` pinging 8.8.8.8 / 8.8.4.4 / 1.1.1.1 every second, then `while (g_bootTime < g_safeTimestamp)` re-running NTP every 2 s. A device with Wi-Fi but no internet, or with a wrong SSID, **never leaves `setup()`**: no task ever runs, `loop()` is never reached, watering and MQTT never start. The web server *is* up (step 6 precedes it), so `/data.json` answers — with accumulators that have never been fed.
+**TRAP — `tasksSetup()` blocks `setup()`, but no longer forever.** It spins
+`while (!g_hasInternet)` pinging 8.8.8.8 / 8.8.4.4 / 1.1.1.1 every second, then
+`while (g_bootTime < g_safeTimestamp)` re-running NTP every 2 s. **Both are now
+capped at `g_bootWaitMaxMs` = 60 s**, so a device with Wi-Fi but no internet, or
+with a wrong SSID, reaches `loop()` after two minutes instead of never — which
+is what makes watering and MQTT start at all on a box behind a captive portal.
+
+Two minutes of a dead `loop()` is still two minutes: relay timing and the error
+blink survive it only because they are CRITICAL tasks on their own runner. The
+web server is up throughout — `webSetup()` is step 8 and the waits are step 9 —
+so `/data.json` answers, with accumulators that have never been fed.
 
 **TRAP — a bad config is still fatal, it is just visible now.** `ConfigFile::loadFile` returns false when `/config.json` is missing, unparseable, has an `"id"` that does not match this chip's efuse MAC, or has any credential string shorter than 4 chars. `main.cpp` then continues with **compiled defaults** (`ssid = "undefined"`), which cannot associate — so the device wedges in the loop above. The error blink does now run (`ledBlink` is a critical task enabled before the blocking waits, and `g_ledBlinkEnabled` is set before `tasksSetup()`), but the device is still stuck. **A slow-blinking LED means "config did not load".**
 
@@ -326,7 +336,7 @@ Consequences that bite:
 - Background tasks reschedule from **end of callback**, so a slow handler pushes its own next run out; critical tasks reschedule from the tick time and keep a fixed cadence.
 - **A request handler must never call `ESP.restart()` or block.** `request->send()` only *queues* the response and the `async_tcp` task that flushes it is the one the handler runs on, so both kill the connection before the client sees anything. `/control` sets a flag and `requestRestart()` reboots from `loop()` 500 ms later; moving the restart after the `send()` was tried first and was not enough.
 - **`g_relay[]` is touched from three threads** — the critical runner, `loop()` (TalkBack) and `async_tcp` (`/control`). Every access goes through the `g_relayMux` spinlock, and `relayWrite()` is deliberately called *outside* it: a `digitalWrite` inside a `portENTER_CRITICAL` section is exactly the kind of work that must not hold a spinlock.
-- **`Scheduler::addTask()` returns `bool` and every call site ignores it.** The cap is `CRITICALTASKSCHEDULER_MAX_TASKS` = **16** per bucket. This repo registers **10 background and 2 critical** today; one task per relay plus per sensor crosses the cap and tasks are then **silently dropped**. Either check the return value or raise it with `-D CRITICALTASKSCHEDULER_MAX_TASKS=32`.
+- **`Scheduler::addTask()` returns `bool` and every call site ignores it.** The cap is `CRITICALTASKSCHEDULER_MAX_TASKS` = **16** per bucket. This repo registers **11 background and 2 critical** today; one task per relay plus per sensor crosses the cap and tasks are then **silently dropped**. Either check the return value or raise it with `-D CRITICALTASKSCHEDULER_MAX_TASKS=32`.
 
 ---
 

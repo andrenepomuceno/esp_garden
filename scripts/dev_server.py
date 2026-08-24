@@ -373,6 +373,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, b"OK")
         elif path == "/spiffs/upload":
             self._handle_file_upload(raw)
+        elif path == "/spiffs/delete":
+            self._handle_file_delete(raw)
         else:
             self._send(HTTPStatus.NOT_FOUND, b"not found")
 
@@ -383,6 +385,27 @@ class Handler(BaseHTTPRequestHandler):
     # source tree.
     UPLOAD_PROTECTED = ("/users", "/sessions")
 
+    @classmethod
+    def _upload_path_problem(cls, path: str):
+        """One copy of uploadPathIsUsable(), shared by upload and delete.
+
+        Two copies would drift, and the drift would be a path one endpoint
+        refuses and the other accepts.
+        """
+        if len(path) < 2:
+            return "path must start with a slash"
+        if ".." in path:
+            return "path must not contain .."
+        if len(path) > 31:
+            return "path longer than 31 characters"
+        if path == "/upload.tmp":
+            return "reserved path"
+        if path.startswith("/config"):
+            return "use POST /config.json, which validates the document"
+        if path.startswith(cls.UPLOAD_PROTECTED):
+            return "credential store"
+        return None
+
     def _handle_file_upload(self, raw: bytes) -> None:
         filename, body, fields = self._parse_multipart(raw)
         if filename is None:
@@ -392,20 +415,7 @@ class Handler(BaseHTTPRequestHandler):
 
         path = filename if filename.startswith("/") else "/" + filename
 
-        reason = None
-        if len(path) < 2:
-            reason = "path must start with a slash"
-        elif ".." in path:
-            reason = "path must not contain .."
-        elif len(path) > 31:
-            reason = "path longer than 31 characters"
-        elif path == "/upload.tmp":
-            reason = "reserved path"
-        elif path.startswith("/config"):
-            reason = "use POST /config.json, which validates the document"
-        elif path.startswith(self.UPLOAD_PROTECTED):
-            reason = "credential store"
-
+        reason = self._upload_path_problem(path)
         if reason:
             STATE.log("warning", f"[upload] refused {path}: {reason}")
             self._send_json({"ok": False, "error": f"refused {path}: {reason}"},
@@ -425,6 +435,40 @@ class Handler(BaseHTTPRequestHandler):
 
         STATE.log("warning", f"[upload] wrote {path} ({len(body)} B) (simulated)")
         self._send_json({"ok": True, "path": path, "bytes": len(body),
+                         "free": (463 - 165) * 1024})
+
+    def _handle_file_delete(self, raw: bytes) -> None:
+        """Mirrors handleFileDelete in src/web_files.cpp, refusals included.
+
+        Like the upload, it does not touch disk: the simulator serves the
+        repository's data/ directory and a delete that landed would remove a
+        source file.
+        """
+        params = parse_qs(raw.decode("utf-8", errors="replace"))
+        path = params.get("path", [""])[0]
+        if not path:
+            self._send_json({"ok": False, "error": "missing path"},
+                            HTTPStatus.BAD_REQUEST)
+            return
+        if not path.startswith("/"):
+            path = "/" + path
+
+        reason = self._upload_path_problem(path)
+        if reason:
+            STATE.log("warning", f"[delete] refused {path}: {reason}")
+            self._send_json({"ok": False, "error": f"refused {path}: {reason}"},
+                            HTTPStatus.BAD_REQUEST)
+            return
+
+        # A path that is not there answers 404 rather than reporting success —
+        # a wrong path has to be visible, not silently accepted.
+        if not (DATA_DIR / path.lstrip("/")).exists():
+            self._send_json({"ok": False, "error": f"{path} does not exist"},
+                            HTTPStatus.NOT_FOUND)
+            return
+
+        STATE.log("warning", f"[delete] removed {path} (simulated)")
+        self._send_json({"ok": True, "path": path,
                          "free": (463 - 165) * 1024})
 
     @staticmethod

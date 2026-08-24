@@ -169,7 +169,14 @@ handleFileUploadRequest(AsyncWebServerRequest* request)
           String("{\"ok\":false,\"error\":\"") + g_uploadError + "\"}");
         response->addHeader("Cache-Control", "no-store");
         request->send(response);
+        // ALL of it, not just the error. Leaving g_uploadTarget set meant the
+        // next request without a file part — an empty file input, a retry after
+        // a client-side abort — skipped the index==0 reset, found no error and
+        // a non-empty target, and answered 200 {"ok":true,"path":"/users.json"}
+        // for a write to the credential store that had just been refused.
         g_uploadError = "";
+        g_uploadTarget = "";
+        g_uploadBytes = 0;
         return;
     }
 
@@ -191,6 +198,7 @@ handleFileUploadRequest(AsyncWebServerRequest* request)
     response->addHeader("Cache-Control", "no-store");
     request->send(response);
     g_uploadTarget = "";
+    g_uploadBytes = 0;
 }
 
 // ---------------------------------------------------------------------------

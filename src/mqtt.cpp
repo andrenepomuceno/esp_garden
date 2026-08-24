@@ -139,8 +139,16 @@ mqttLoop()
         static unsigned long nextAttempt = 0;
         static unsigned long backoff = g_mqttRetryMinMs;
 
+        // Signed difference, not `now < nextAttempt`. millis() wraps at ~49.7
+        // days, and if the device is in this branch when it does — broker
+        // down, wrong token, stale CA pin, i.e. exactly what the backoff is
+        // for — the naive compare stays true for another 49 days and
+        // mqttConnect() is never called again. Nothing would surface it:
+        // /data.json keeps reporting MQTT enabled and only Packages Sent
+        // stops moving, the same silent signature as the three-year stale-CA
+        // incident. tasksLoop() and relaysTick() already use this form.
         const unsigned long now = millis();
-        if (now < nextAttempt) {
+        if ((long)(now - nextAttempt) < 0) {
             return;
         }
 

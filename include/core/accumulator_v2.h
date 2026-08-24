@@ -26,6 +26,15 @@ class AccumulatorV2
     explicit AccumulatorV2(unsigned windowLength = 120);
     ~AccumulatorV2();
 
+    // Deleted, not implemented. The std::list version was safely copyable and
+    // this one owns a raw buffer, so a copy would delete[] the same pointer
+    // twice — a double free with no compiler warning, found only when it
+    // crashes. Nothing copies one today, which is exactly why the next person
+    // to write `AccumulatorV2 snapshot = g_luminosity;` should get a compile
+    // error instead.
+    AccumulatorV2(const AccumulatorV2&) = delete;
+    AccumulatorV2& operator=(const AccumulatorV2&) = delete;
+
     // Resize the window after construction. Needed because an array of
     // accumulators cannot pass a constructor argument, so array members would
     // otherwise be stuck on the default while every scalar accumulator tracks

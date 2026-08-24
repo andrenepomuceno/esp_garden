@@ -119,10 +119,55 @@ moistureModelLoad()
     }
 }
 
+// Which relay waters which probe, validated against what this board has.
+static int
+probeRelay(unsigned probe)
+{
+    const int relay = config.moistureRelay[probe];
+    return (relay < 0 || relay >= (int)config.relayCount) ? -1 : relay;
+}
+
+// Evidence belongs to a physical probe, not to a slot. Deleting a probe in
+// /devices.html shifts every later index down, and the model that moves into
+// the slot would otherwise describe another pot entirely and say so
+// confidently.
+//
+// Called from setup AND from training. It used to live only inside the
+// training loop, which the "no new watering cycles" early return skips — so a
+// probe deleted on a device watered once a day kept the old pot's Gaussians,
+// usable and confident, until a cycle happened to complete.
+static void
+discardMovedProbes()
+{
+    for (unsigned p = 0; p < config.moistureCount; ++p) {
+        MoistureProbeModel& model = g_state.probe[p];
+        const uint8_t pin = config.soilMoisturePin[p];
+        const int8_t relay = (int8_t)probeRelay(p);
+
+        if (model.sourcePin == pin && model.sourceRelay == relay) {
+            continue;
+        }
+
+        if (model.wateringEvents > 0 || model.usable) {
+            logger.warning("[moisture] probe " + String(p) + " moved (pin " +
+                           String(model.sourcePin) + "->" + String(pin) +
+                           ", relay " + String(model.sourceRelay) + "->" +
+                           String(relay) + "); discarding its model");
+        }
+        memset(&model, 0, sizeof(model));
+        model.sourcePin = pin;
+        model.sourceRelay = relay;
+    }
+}
+
 void
 moistureModelSetup()
 {
     moistureModelLoad();
+
+    // Before anything reports a class: a model loaded off flash for a probe
+    // that has since been moved is worse than no model, because it answers.
+    discardMovedProbes();
 
     if (g_state.trainedAt == 0) {
         return;
@@ -142,14 +187,6 @@ moistureModelSetup()
 // Training
 // ---------------------------------------------------------------------------
 
-// Which relay waters which probe, validated against what this board has.
-static int
-probeRelay(unsigned probe)
-{
-    const int relay = config.moistureRelay[probe];
-    return (relay < 0 || relay >= (int)config.relayCount) ? -1 : relay;
-}
-
 // Every probe is trained in the SAME three passes over the buffer, not three
 // passes each. At 1440 records a pass is a second or two of SPIFFS reads, and
 // this is a background task — one that blocks every other background task for
@@ -160,6 +197,7 @@ struct ScanContext
     // Pass 1: watering edges per probe.
     uint32_t events[MOISTURE_MAX][g_maxEventsPerRun];
     unsigned eventCount[MOISTURE_MAX];
+    unsigned newEventCount[MOISTURE_MAX]; // only those past consumedUntil
     bool relayWasOn[MOISTURE_MAX];
     bool seenAnyRecord[MOISTURE_MAX];
 
@@ -216,6 +254,16 @@ collectEvents(const IoRecord& record, uint32_t, void* ctx)
         if (on && scan.seenAnyRecord[p] && !scan.relayWasOn[p] &&
             scan.eventCount[p] < g_maxEventsPerRun) {
             scan.events[p][scan.eventCount[p]++] = record.timestamp;
+            // Counted separately from the array, because the ARRAY has to hold
+            // events on both sides of the watermark — an already-consumed
+            // watering is still the boundary that labels the cycle after it —
+            // while the COUNTER must only see what is new. Without this the
+            // samples were deduped by consumedUntil and the event counter was
+            // not, so two reboots in a day pushed the six-event gate across on
+            // three real waterings.
+            if (record.timestamp > scan.consumedFrom) {
+                ++scan.newEventCount[p];
+            }
         }
         scan.relayWasOn[p] = on;
         scan.seenAnyRecord[p] = true;
@@ -390,6 +438,10 @@ moistureModelTrain()
         scan->relayOf[p] = (p < scan->probes) ? probeRelay(p) : -1;
     }
 
+    // consumedFrom before pass 1, not after: collectEvents needs it to tell a
+    // watering it has already counted from one it has not.
+    scan->consumedFrom = g_state.consumedUntil;
+
     // Pass 1 — where the waterings were.
     ioHistory.forEach(collectEvents, scan);
 
@@ -398,7 +450,6 @@ moistureModelTrain()
     // bounds it, so everything from it onward waits for a later run. Without
     // that bound a reading would be folded in as HUMID today and be DRY
     // tomorrow, and the first answer is the one that sticks.
-    scan->consumedFrom = g_state.consumedUntil;
     scan->consumeUntil = 0;
     for (unsigned p = 0; p < scan->probes; ++p) {
         if (scan->eventCount[p] > 0) {
@@ -408,6 +459,10 @@ moistureModelTrain()
             }
         }
     }
+
+    // Before the early return, not after: a probe that moved must lose its model
+    // whether or not a watering cycle completed since the last run.
+    discardMovedProbes();
 
     if (scan->consumeUntil <= scan->consumedFrom) {
         // No watering has completed a cycle since the last run. Nothing to
@@ -441,25 +496,6 @@ moistureModelTrain()
     for (unsigned p = 0; p < config.moistureCount; ++p) {
         MoistureProbeModel& model = g_state.probe[p];
 
-        // Evidence belongs to a physical probe, not to a slot. Deleting a probe
-        // in /devices.html shifts every later index down, and the model that
-        // moves into the slot would otherwise describe another pot entirely and
-        // say so confidently.
-        const uint8_t pin = config.soilMoisturePin[p];
-        const int8_t relay = (int8_t)scan->relayOf[p];
-        if (model.sourcePin != pin || model.sourceRelay != relay) {
-            if (model.wateringEvents > 0) {
-                logger.warning("[moisture] probe " + String(p) +
-                               " moved (pin " + String(model.sourcePin) + "->" +
-                               String(pin) + ", relay " +
-                               String(model.sourceRelay) + "->" +
-                               String(relay) + "); discarding its model");
-            }
-            memset(&model, 0, sizeof(model));
-            model.sourcePin = pin;
-            model.sourceRelay = relay;
-        }
-
         if (scan->relayOf[p] < 0) {
             // No pump feeds this probe, so nothing labels its readings. The
             // two-point calibration can still classify it; the model cannot.
@@ -480,7 +516,7 @@ moistureModelTrain()
         }
         model.wateringEvents =
           (uint32_t)(model.wateringEvents * g_moistureDecayPerRun) +
-          scan->eventCount[p];
+          scan->newEventCount[p];
 
         // The watering response: how far this run's wet readings sat above its
         // dry ones. Decayed with the rest of the evidence so it follows a soil
@@ -507,7 +543,7 @@ moistureModelTrain()
 
         logger.info(
           "[moisture] probe " + String(p) + ": +" +
-          String(scan->eventCount[p]) + " events (" +
+          String(scan->newEventCount[p]) + " events (" +
           String(model.wateringEvents) + " total), J=" +
           String(model.separation, 1) + ", dry/humid/wet = " +
           String(gaussianMean(model.classes[MOISTURE_DRY]), 1) + "/" +

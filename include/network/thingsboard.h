@@ -43,9 +43,9 @@ tbLoop();
 // EVENT or as a sticky flag — never sampled. The history record learned that
 // when the sticky mask was added; the telemetry had not.
 //
-// Safe from any task. It only appends to the outbox; the publish happens on
-// the loop task, which is what keeps it out of the critical runner and out of
-// the PubSubClient callback.
+// Safe from any task: the outbox is mutex-guarded. The publish itself happens
+// on the loop task, which keeps it out of the critical runner and out of the
+// PubSubClient callback.
 //
 // A no-op on the ThingSpeak backend, which has eight numbered fields and no
 // way to express an event.

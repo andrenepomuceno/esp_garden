@@ -31,6 +31,18 @@ documentPin(JSONVar node, int& out)
     return true;
 }
 
+// A GPIO number outside the chip's range, rejected BEFORE the predicates.
+//
+// They take uint8_t, so 256 truncates to 0 and every check runs against GPIO 0
+// — a strapping pin — and passes. The document is written, and at boot
+// loadRelays truncates the same way and relayPinsSafeInit() drives GPIO 0 on
+// every boot. This function exists because boot is too late.
+static bool
+pinNumberIsPlausible(int pin)
+{
+    return pin >= 0 && pin <= 39;
+}
+
 // The save-time half of validatePins(). validatePins() logs at boot, which is
 // too late to be useful: by then the document is on flash and the device may
 // be reading noise or driving the SPI flash. Refusing here means the mistake
@@ -61,6 +73,11 @@ documentPinsAreUsable(JSONVar& document, String& problem)
             if (!documentPin(relays[i], pin)) {
                 continue;
             }
+            if (!pinNumberIsPlausible(pin)) {
+                problem = "io.relays[" + String(i) + "] on GPIO " + String(pin) +
+                          " (no such pin on an ESP32)";
+                return false;
+            }
             if (pinIsFlash(pin) || pinIsInputOnly(pin) || !pinIsBonded(pin)) {
                 problem =
                   "io.relays[" + String(i) + "] on GPIO " + String(pin) +
@@ -76,6 +93,11 @@ documentPinsAreUsable(JSONVar& document, String& problem)
     JSONVar probes = io["soilMoisture"];
     if (JSON.typeof(probes) == "array") {
         for (unsigned i = 0; i < (unsigned)probes.length(); ++i) {
+            if (documentPin(probes[i], pin) && !pinNumberIsPlausible(pin)) {
+                problem = "io.soilMoisture[" + String(i) + "] on GPIO " +
+                          String(pin) + " (no such pin on an ESP32)";
+                return false;
+            }
             if (documentPin(probes[i], pin) && !pinIsADC1(pin)) {
                 // pinIsADC1 already excludes 37 and 38, the two ADC1 channels
                 // the module does not bring out, so this covers bonding too.
@@ -95,6 +117,11 @@ documentPinsAreUsable(JSONVar& document, String& problem)
         }
         if (!documentPin(io[checks[i].key], pin)) {
             continue;
+        }
+        if (!pinNumberIsPlausible(pin)) {
+            problem = String("io.") + checks[i].key + " on GPIO " +
+                      String(pin) + " (no such pin on an ESP32)";
+            return false;
         }
         if (pinIsFlash(pin) || !pinIsBonded(pin)) {
             // pinIsBonded was checked at boot but not here, so a save could

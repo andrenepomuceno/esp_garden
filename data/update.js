@@ -73,7 +73,14 @@ function startUpload(file, updateType) {
             type: 'POST',
             success: function () { uploadFile(formData); },
             error: function (jqXHR, textStatus, errorThrown) {
-                setStatus('danger', 'Could not enable OTA: ' + (errorThrown || textStatus));
+                // The BODY, not the status text. The firmware answers 409 with
+                // "Zona 2 is running. Updating reboots the device, and a relay
+                // is energised across a reset." — naming the relay and the
+                // reason. Rendering "Conflict" instead throws that away and
+                // leaves the operator retrying into the same refusal.
+                var msg = jqXHR.responseText || errorThrown || textStatus ||
+                          'Unknown error';
+                setStatus('danger', 'Could not enable OTA: ' + msg);
                 $('#button-upload').html('&#x21A9; Back').prop('disabled', false);
             },
         });

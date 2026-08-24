@@ -52,7 +52,9 @@ struct RelayPendingEvent
 {
     bool started;
     bool ended;
+    bool refused;
     unsigned duration; // ms, from the start that set it
+    String reason;     // why it was refused, empty otherwise
 };
 
 // Moves the pending events out under the lock and returns them. Publishing is
@@ -123,9 +125,7 @@ relayStartAllowed(unsigned index, String& reason);
 void
 relayStartedHook(unsigned index, unsigned int duration);
 
-// Called when a start was REFUSED. A refusal is an event in its own right —
-// "the pump was asked to run and did not" is precisely what an operator needs
-// to see, and until now it existed only as a log line on a device nobody is
-// watching.
+// Records a refusal for the io task to report. Called from whichever thread
+// asked for the relay — including async_tcp — so it does nothing but store.
 void
-relayRefusedHook(unsigned index, const String& reason);
+relayRecordRefusal(unsigned index, const String& reason);

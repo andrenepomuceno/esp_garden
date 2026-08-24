@@ -44,13 +44,40 @@ relayStickyTake(RelayStickyConsumer consumer)
 }
 
 void
+relayRecordRefusal(unsigned index, const String& reason)
+{
+    if (index >= RELAY_MAX) {
+        return;
+    }
+    // The reason is a String, so it is stored OUTSIDE the spinlock — assigning
+    // one allocates, and allocating with interrupts disabled is what panicked
+    // this board once. The flag under the lock is what makes it visible.
+    g_relayPending[index].reason = reason;
+
+    portENTER_CRITICAL(&g_relayMux);
+    g_relayPending[index].refused = true;
+    portEXIT_CRITICAL(&g_relayMux);
+}
+
+void
 relayTakePendingEvents(RelayPendingEvent out[RELAY_MAX])
 {
+    // The String is copied outside the lock for the same reason it is written
+    // outside it. Only the flags need to be atomic with respect to the
+    // producers; a reason belongs to the flag that was set with it.
+    for (unsigned i = 0; i < RELAY_MAX; ++i) {
+        out[i].reason = g_relayPending[i].reason;
+    }
+
     portENTER_CRITICAL(&g_relayMux);
     for (unsigned i = 0; i < RELAY_MAX; ++i) {
-        out[i] = g_relayPending[i];
+        out[i].started = g_relayPending[i].started;
+        out[i].ended = g_relayPending[i].ended;
+        out[i].refused = g_relayPending[i].refused;
+        out[i].duration = g_relayPending[i].duration;
         g_relayPending[i].started = false;
         g_relayPending[i].ended = false;
+        g_relayPending[i].refused = false;
     }
     portEXIT_CRITICAL(&g_relayMux);
 }
@@ -112,7 +139,21 @@ relaysTick()
         portEXIT_CRITICAL(&g_relayMux);
 
         if (expired) {
-            relayWrite(i, false);
+            // Re-checked under the lock, because startRelay() can land in the
+            // gap between the decision above and this write: it would see
+            // on == false, energise the pin and arm a new timer, and then this
+            // write would switch the pump off while g_relay[i].on stayed true.
+            // The dashboard would count down a relay that is not running, the
+            // sticky mask would record a watering that delivered nothing, and
+            // the OTA guard would refuse for its whole phantom duration.
+            bool stillOff = false;
+            portENTER_CRITICAL(&g_relayMux);
+            stillOff = !g_relay[i].on;
+            portEXIT_CRITICAL(&g_relayMux);
+
+            if (stillOff) {
+                relayWrite(i, false);
+            }
         }
 
         if (relayIsOn(i)) {
@@ -182,7 +223,7 @@ startRelay(unsigned index, unsigned int duration)
     String veto;
     if (!relayStartAllowed(index, veto)) {
         logger.warning(config.relayName[index] + " refused: " + veto);
-        relayRefusedHook(index, veto);
+        relayRecordRefusal(index, veto);
         return false;
     }
 

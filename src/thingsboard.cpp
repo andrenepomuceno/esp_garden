@@ -7,6 +7,8 @@
 #include "network/mqtt.h"
 #include <Arduino_JSON.h>
 #include <Update.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -48,7 +50,34 @@ static const unsigned TB_OUTBOX_MAX = 16;
 // State
 // ---------------------------------------------------------------------------
 
+// The outbox has THREE producers on two tasks — tbLoop() and tbHandleMessage()
+// on loop(), and the relay/reservoir events on the io task — plus tbLoop()
+// erasing from the front. A push_back that reallocates while erase is shifting
+// elements corrupts the heap or double-frees a String, and it would surface as
+// an intermittent panic with no relation to the request that caused it.
+//
+// A FreeRTOS mutex and not a spinlock, deliberately: push_back allocates, and
+// allocating with interrupts disabled is what panicked this board once already.
 static std::vector<std::pair<String, String>> g_outbox;
+static SemaphoreHandle_t g_outboxMutex = nullptr;
+
+static bool
+outboxLock()
+{
+    if (g_outboxMutex == nullptr) {
+        g_outboxMutex = xSemaphoreCreateMutex();
+    }
+    return g_outboxMutex != nullptr &&
+           xSemaphoreTake(g_outboxMutex, portMAX_DELAY) == pdTRUE;
+}
+
+static void
+outboxUnlock()
+{
+    if (g_outboxMutex != nullptr) {
+        xSemaphoreGive(g_outboxMutex);
+    }
+}
 
 static unsigned g_attrRequestId = 0;
 static unsigned g_fwRequestId = 0;
@@ -76,14 +105,24 @@ static String g_fotaError;
 static void
 tbQueue(const String& topic, const String& payload)
 {
-    if (g_outbox.size() >= TB_OUTBOX_MAX) {
-        // Loudly: a dropped RPC reply looks to the operator like a device that
-        // ignored the command, and a dropped chunk request stalls the download
-        // until the retry timer fires.
-        logger.error("ThingsBoard outbox full, dropping " + topic);
+    if (!outboxLock()) {
         return;
     }
-    g_outbox.push_back(std::make_pair(topic, payload));
+
+    const bool full = g_outbox.size() >= TB_OUTBOX_MAX;
+    if (!full) {
+        g_outbox.push_back(std::make_pair(topic, payload));
+    }
+    outboxUnlock();
+
+    if (full) {
+        // Logged outside the lock: the logger takes Serial and does its own
+        // work, and holding a mutex across it invites the next deadlock.
+        // Loudly, because a dropped RPC reply looks to the operator like a
+        // device that ignored the command, and a dropped chunk request stalls
+        // the download until the retry timer fires.
+        logger.error("ThingsBoard outbox full, dropping " + topic);
+    }
 }
 
 static void
@@ -687,12 +726,35 @@ tbLoop()
     // Drain the outbox. A failed publish keeps its slot and retries on the next
     // loop rather than being dropped — this is where an RPC reply and the next
     // firmware chunk request live.
-    while (!g_outbox.empty()) {
-        if (!mqttPublishTopic(g_outbox.front().first,
-                              g_outbox.front().second)) {
+    // One entry is taken out under the lock and published outside it: holding
+    // the mutex across a TLS write would block every producer for the length of
+    // a network round trip, including the io task.
+    while (true) {
+        String topic, payload;
+        if (!outboxLock()) {
             break;
         }
-        g_outbox.erase(g_outbox.begin());
+        const bool empty = g_outbox.empty();
+        if (!empty) {
+            topic = g_outbox.front().first;
+            payload = g_outbox.front().second;
+        }
+        outboxUnlock();
+
+        if (empty) {
+            break;
+        }
+
+        if (!mqttPublishTopic(topic, payload)) {
+            break; // leave it queued; the next loop retries
+        }
+
+        if (outboxLock()) {
+            if (!g_outbox.empty()) {
+                g_outbox.erase(g_outbox.begin());
+            }
+            outboxUnlock();
+        }
     }
 
     if (g_updateAnnounced && !g_fotaActive) {
