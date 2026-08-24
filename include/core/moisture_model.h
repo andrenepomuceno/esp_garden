@@ -37,6 +37,14 @@
 // be inspected is a threshold that appeared from nowhere.
 struct MoistureProbeModel
 {
+    // Identifies the physical probe this evidence came from: pin and feeding
+    // relay. Deleting a probe in /devices.html shifts every later index down,
+    // and without this the probe that moves into the slot inherits weeks of
+    // another pot's Gaussians and reports a confident badge for soil the model
+    // has never seen. A mismatch resets that probe's statistics.
+    uint8_t sourcePin;
+    int8_t sourceRelay;
+
     GaussianStats classes[MOISTURE_CLASS_COUNT];
     uint32_t wateringEvents; // cumulative, decayed like the statistics
     bool usable;             // passed the weight, ordering and separation gates
@@ -46,6 +54,17 @@ struct MoistureProbeModel
 struct MoistureModelState
 {
     MoistureProbeModel probe[MOISTURE_MAX];
+
+    // Epoch of the newest watering event already folded in. Records at or
+    // before it are skipped on the next run.
+    //
+    // Without it the whole design is wrong: the buffer holds 24 h and every run
+    // re-scanned all of it, so the decay factor and all three gates — which are
+    // sized for one run per 24 h of NEW history — were fed the same evidence
+    // repeatedly. A device power-cycled six times in a day trains six times
+    // over one buffer and crosses the six-event gate on a single real watering.
+    uint32_t consumedUntil;
+
     uint32_t trainedAt;      // epoch of the last training run, 0 if never
     uint32_t recordsScanned; // from the last run only
     uint32_t samplesUsed;    // from the last run only

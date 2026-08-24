@@ -16,6 +16,24 @@
 
 extern AccumulatorV2 g_soilMoisture[MOISTURE_MAX];
 
+// A probe's latest window mean and sample count, published by the io task and
+// safe to read from ANY thread.
+//
+// This exists because the accumulators must never be touched from a request
+// handler: ESPAsyncWebServer runs those on the async_tcp task while the io task
+// is doing push_back/pop_front on the same std::list at 1 Hz, and iterating a
+// list across a pop_front dereferences a freed node. /data.json avoids it by
+// being rendered from the io task into a cached string; /moisture.json needs
+// live values instead, so it reads this.
+struct MoistureReading
+{
+    float average;
+    uint32_t samples;
+};
+
+MoistureReading
+moistureReading(unsigned index);
+
 // "Dry" / "Humid" / "Wet" for probe `index`, or "" when that probe has no
 // two-point calibration. Bands are thirds of the probe's own physical span, so
 // they are comparable between probes with different gain and offset.

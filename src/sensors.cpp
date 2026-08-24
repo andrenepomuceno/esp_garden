@@ -50,6 +50,24 @@ static double g_flowTotalLitres = 0.0;
 // A contact, not a level: one bit, debounced by requiring two agreeing reads.
 static bool g_floatRaised = false;
 
+// Published by the io task, read by anyone. A spinlock rather than a mutex
+// because both sides are microseconds and one of them is a request handler.
+static portMUX_TYPE g_moistureSnapshotMux = portMUX_INITIALIZER_UNLOCKED;
+static MoistureReading g_moistureSnapshot[MOISTURE_MAX] = {};
+
+MoistureReading
+moistureReading(unsigned index)
+{
+    MoistureReading out = { 0.0f, 0 };
+    if (index >= MOISTURE_MAX) {
+        return out;
+    }
+    portENTER_CRITICAL(&g_moistureSnapshotMux);
+    out = g_moistureSnapshot[index];
+    portEXIT_CRITICAL(&g_moistureSnapshotMux);
+    return out;
+}
+
 String
 moistureState(unsigned index)
 {
@@ -65,9 +83,15 @@ moistureState(unsigned index)
     // two-point anchors know only two readings and split the span in equal
     // thirds. When the model has not earned its gates yet, the anchors are
     // still better than a guess.
+    // The snapshot, not the accumulator: this is called from the /moisture.json
+    // handler on async_tcp as well as from the io task.
+    const MoistureReading reading = moistureReading(index);
+    if (reading.samples == 0) {
+        return String();
+    }
+
     double confidence = 0.0;
-    const int inferred =
-      moistureModelClassify(index, g_soilMoisture[index].getAverage(), &confidence);
+    const int inferred = moistureModelClassify(index, reading.average, &confidence);
     if (inferred != MOISTURE_UNKNOWN) {
         return String(moistureClassName(inferred));
     }
@@ -84,7 +108,7 @@ moistureState(unsigned index)
 
     // Ordering is not assumed: with the 100-ADC% conversion the air reading is
     // the smaller number, but a different probe or conversion can invert that.
-    float fraction = (g_soilMoisture[index].getAverage() - dry) / span;
+    float fraction = (reading.average - dry) / span;
     if (fraction < 0.0) {
         fraction = 0.0;
     } else if (fraction > 1.0) {
@@ -181,6 +205,15 @@ sensorsReadIo()
         g_flowTotalLitres += litres;
         g_flowRate.add((float)(litres * 60000.0 / (double)g_ioTaskPeriod));
     }
+
+    // Publish the snapshot for readers on other threads. Last, so it reflects
+    // this tick's samples.
+    portENTER_CRITICAL(&g_moistureSnapshotMux);
+    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
+        g_moistureSnapshot[i].average = g_soilMoisture[i].getAverage();
+        g_moistureSnapshot[i].samples = g_soilMoisture[i].getSamples();
+    }
+    portEXIT_CRITICAL(&g_moistureSnapshotMux);
 
     if (config.floatFitted) {
         // Two agreeing reads a tick apart: a float bobbing on the surface

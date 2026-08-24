@@ -83,11 +83,22 @@ buildThingsBoardPayload()
     // while the relay is off — cannot be asked afterwards. ThingsBoard has no
     // field limit, which is what makes this free here and impossible on the
     // ThingSpeak side.
-    if (g_flowRate.getSamples() > 0) {
-        telemetry["flowRate"] = (double)g_flowRate.getAverage();
+    if (config.flowFitted) {
+        if (g_flowRate.getSamples() > 0) {
+            telemetry["flowRate"] = (double)g_flowRate.getAverage();
+        }
+        // Guarded, unlike the rate: a running total has no getSamples() to say
+        // "never fed", so an unfitted meter would publish a perfectly real
+        // 0 litres that no dashboard can tell from a line that delivered
+        // nothing. Same reason the history record guards it.
+        telemetry["flowTotalLitres"] = (double)flowTotalLitres();
     }
-    telemetry["flowTotalLitres"] = (double)flowTotalLitres();
-    telemetry["reservoirRaised"] = floatRaised();
+    if (config.floatFitted) {
+        // Without the guard every board publishes reservoirRaised:false, which
+        // is indistinguishable from a genuinely empty tank — the exact case
+        // IO_HISTORY_FLAG_FLOAT_VALID exists for.
+        telemetry["reservoirRaised"] = floatRaised();
+    }
 
     uint16_t mask = 0;
     for (unsigned i = 0; i < config.relayCount && i < 16; ++i) {

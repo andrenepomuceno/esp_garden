@@ -13,6 +13,7 @@
   var REQUEST_TIMEOUT_MS = 1500;
   var pollTimer = null;
   var polling = false;
+  var pollGeneration = 0;
   var pageVisible = true;
 
   // ---------- helpers ----------
@@ -145,8 +146,12 @@
     // Both requests must land before the next tick is armed, so the page can
     // never have more in flight than it started.
     var pending = 2;
+    var generation = pollGeneration;
     function finish() {
-      if (--pending > 0 || !polling) return;
+      // `generation` is what stops a request that was still in flight across a
+      // stopPolling()/startPolling() from arming a tick for a chain that no
+      // longer owns the page.
+      if (--pending > 0 || !polling || generation !== pollGeneration) return;
       pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
     }
 
@@ -185,11 +190,13 @@
   function startPolling() {
     if (polling) return;
     polling = true;
+    ++pollGeneration;
     poll();
   }
 
   function stopPolling() {
     polling = false;
+    ++pollGeneration;
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   }
 
@@ -209,7 +216,15 @@
 
     document.addEventListener('visibilitychange', function () {
       pageVisible = !document.hidden;
-      if (pageVisible) poll();
+      // Cancel the armed tick and start ONE new chain, rather than calling
+      // poll() alongside a timer that is still pending. Calling it directly
+      // forked a second chain on every hide/show, doubling the request rate
+      // each time — the exact stacking the setTimeout rewrite exists to
+      // prevent, reintroduced three lines away from the comment explaining it.
+      if (pageVisible && polling) {
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        poll();
+      }
     });
 
     // Delegated: the buttons are generated from /data.json after this runs.

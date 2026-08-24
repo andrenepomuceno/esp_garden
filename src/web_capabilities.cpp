@@ -49,6 +49,10 @@ handleCapabilitiesJson(AsyncWebServerRequest* request)
             doc["analogPins"][analog++] = (int)pin;
         }
         if (!pinIsInputOnly(pin)) {
+            // digitalPins is the same predicate and kept only because
+            // devices_model.js asks for it by name: an input that needs a
+            // pull-up and an output both require a pin that is not input-only.
+            // If those rules ever diverge, this is the place they diverge.
             doc["outputPins"][output++] = (int)pin;
             doc["digitalPins"][digital++] = (int)pin;
         }

@@ -152,6 +152,7 @@ struct ScanContext
     uint32_t events[MOISTURE_MAX][g_maxEventsPerRun];
     unsigned eventCount[MOISTURE_MAX];
     bool relayWasOn[MOISTURE_MAX];
+    bool seenAnyRecord[MOISTURE_MAX];
 
     // Passes 2 and 3: the fit in progress.
     GaussianStats fit[MOISTURE_MAX][MOISTURE_CLASS_COUNT];
@@ -163,6 +164,11 @@ struct ScanContext
     uint32_t samplesUsed;
     uint32_t outliersDropped;
 
+    // The half-open window of history this run is allowed to consume.
+    uint32_t consumedFrom; // exclusive: everything at or before is spent
+    uint32_t consumeUntil; // exclusive: the newest watering, whose own cycle
+                           // is not complete until the NEXT one arrives
+
     int relayOf[MOISTURE_MAX];
     unsigned probes;
 };
@@ -172,19 +178,32 @@ collectEvents(const IoRecord& record, uint32_t, void* ctx)
 {
     ScanContext& scan = *(ScanContext*)ctx;
 
+    if (record.timestamp == 0) {
+        return true;
+    }
+
     for (unsigned p = 0; p < scan.probes; ++p) {
         const int relay = scan.relayOf[p];
         if (relay < 0) {
             continue;
         }
         const bool on = (record.relayMask & (uint16_t)(1u << relay)) != 0;
+
         // Rising edge only. The mask is sticky across a whole record period,
         // so one long watering spans several records and must count once.
-        if (on && !scan.relayWasOn[p] && record.timestamp > 0 &&
+        //
+        // `seenAnyRecord` is what keeps a watering that was ALREADY RUNNING at
+        // the oldest surviving record from looking like a rising edge. The
+        // buffer wraps, so its first record is an arbitrary moment, and a
+        // watering straddling that boundary would otherwise register as an
+        // event that never started — poisoning the DRY class with mid-watering
+        // samples and advancing the six-event gate on a phantom.
+        if (on && scan.seenAnyRecord[p] && !scan.relayWasOn[p] &&
             scan.eventCount[p] < g_maxEventsPerRun) {
             scan.events[p][scan.eventCount[p]++] = record.timestamp;
         }
         scan.relayWasOn[p] = on;
+        scan.seenAnyRecord[p] = true;
     }
     return true;
 }
@@ -213,7 +232,13 @@ accumulate(const IoRecord& record, uint32_t, void* ctx)
 {
     ScanContext& scan = *(ScanContext*)ctx;
 
-    if (record.timestamp == 0) {
+    // Already folded into the statistics on an earlier run, or beyond the last
+    // complete cycle this run can label. Both bounds matter: the first stops
+    // the same evidence being counted twice, the second stops a reading being
+    // labelled HUMID now when the watering that would make it DRY has not
+    // happened yet.
+    if (record.timestamp <= scan.consumedFrom ||
+        record.timestamp >= scan.consumeUntil) {
         return true;
     }
 
@@ -292,6 +317,34 @@ moistureModelTrain()
     // Pass 1 — where the waterings were.
     ioHistory.forEach(collectEvents, scan);
 
+    // The window this run may consume. `consumeUntil` is the NEWEST watering
+    // across all probes: its own cycle is not finished until the next watering
+    // bounds it, so everything from it onward waits for a later run. Without
+    // that bound a reading would be folded in as HUMID today and be DRY
+    // tomorrow, and the first answer is the one that sticks.
+    scan->consumedFrom = g_state.consumedUntil;
+    scan->consumeUntil = 0;
+    for (unsigned p = 0; p < scan->probes; ++p) {
+        if (scan->eventCount[p] > 0) {
+            const uint32_t newest = scan->events[p][scan->eventCount[p] - 1];
+            if (newest > scan->consumeUntil) {
+                scan->consumeUntil = newest;
+            }
+        }
+    }
+
+    if (scan->consumeUntil <= scan->consumedFrom) {
+        // No watering has completed a cycle since the last run. Nothing to
+        // learn, and — critically — nothing to decay: ageing the evidence on a
+        // run that adds none would quietly drain the model on a device that is
+        // rebooted often.
+        logger.info("[moisture] no new watering cycles since the last run");
+        free(scan);
+        g_state.trainedAt = (uint32_t)time(NULL);
+        moistureModelSave();
+        return;
+    }
+
     // Pass 2 — fit with everything, so pass 3 has a mean to measure against.
     resetFit(*scan);
     scan->reference = nullptr;
@@ -311,6 +364,25 @@ moistureModelTrain()
 
     for (unsigned p = 0; p < config.moistureCount; ++p) {
         MoistureProbeModel& model = g_state.probe[p];
+
+        // Evidence belongs to a physical probe, not to a slot. Deleting a probe
+        // in /devices.html shifts every later index down, and the model that
+        // moves into the slot would otherwise describe another pot entirely and
+        // say so confidently.
+        const uint8_t pin = config.soilMoisturePin[p];
+        const int8_t relay = (int8_t)scan->relayOf[p];
+        if (model.sourcePin != pin || model.sourceRelay != relay) {
+            if (model.wateringEvents > 0) {
+                logger.warning("[moisture] probe " + String(p) +
+                               " moved (pin " + String(model.sourcePin) + "->" +
+                               String(pin) + ", relay " +
+                               String(model.sourceRelay) + "->" +
+                               String(relay) + "); discarding its model");
+            }
+            memset(&model, 0, sizeof(model));
+            model.sourcePin = pin;
+            model.sourceRelay = relay;
+        }
 
         if (scan->relayOf[p] < 0) {
             // No pump feeds this probe, so nothing labels its readings. The
@@ -351,8 +423,10 @@ moistureModelTrain()
           (model.usable ? " -> usable" : " -> not usable yet"));
     }
 
+    const uint32_t consumed = scan->consumeUntil;
     free(scan);
 
+    g_state.consumedUntil = consumed;
     g_state.trainedAt = (uint32_t)time(NULL);
     moistureModelSave();
 

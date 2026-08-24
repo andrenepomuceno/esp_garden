@@ -63,8 +63,13 @@ handleMoistureJson(AsyncWebServerRequest* request)
         // The live inference, so the page shows the classification and the
         // parameters that produced it in one place rather than asking the
         // reader to trust that they match.
-        const double reading = g_soilMoisture[p].getAverage();
-        const bool sampled = g_soilMoisture[p].getSamples() > 0;
+        // moistureReading(), never the accumulator: this handler runs on the
+        // async_tcp task while the io task pushes into that std::list at 1 Hz,
+        // and walking a list across a pop_front dereferences a freed node.
+        // CLAUDE.md calls this out by name and I did it anyway.
+        const MoistureReading snapshot = moistureReading(p);
+        const double reading = snapshot.average;
+        const bool sampled = snapshot.samples > 0;
         if (sampled) {
             doc["probes"][p]["reading"] = reading;
         }

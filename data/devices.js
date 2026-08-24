@@ -328,6 +328,21 @@
         return;
       }
       model.relays.splice(row, 1);
+
+      // Every probe fed by a relay BELOW the deleted one now points at the
+      // wrong pump, and the one fed by the deleted relay points at nothing.
+      // Left unremapped, the classifier keeps training probe N against
+      // waterings of a zone it is not in — silently, because the model is a
+      // slow average and nothing about it looks broken.
+      $.each(model.probes, function (_, probe) {
+        if (typeof probe.relay !== 'number' || probe.relay < 0) return;
+        if (probe.relay === row) {
+          probe.relay = -1;
+        } else if (probe.relay > row) {
+          probe.relay -= 1;
+        }
+      });
+
       render();
     });
 

@@ -302,16 +302,48 @@ IoHistory::forEach(Visitor visit, void* ctx)
         return 0;
     }
 
+    // The lock is RELEASED every chunk, not held for the whole walk.
+    //
+    // A full walk is thousands of SPIFFS seek+reads — seconds. Holding the
+    // mutex across it blocks readWindow(), which runs on the async_tcp task,
+    // and blocking that task stalls every HTTP connection on the device rather
+    // than just the one asking for history. The daily training run would take
+    // the dashboard down with it.
+    //
+    // The trade is that an append during the walk can shift logical indices
+    // once the ring has wrapped, so a visitor may see one record twice or miss
+    // one. readWindow() cannot tolerate that — it would return a window
+    // starting at the wrong place — which is why it keeps the single-lock
+    // guarantee. The only caller here is the moisture trainer, fitting
+    // Gaussians over thousands of samples, where one duplicated or dropped
+    // record is far below the noise it is already modelling.
+    static const uint32_t kChunk = 64;
+
     size_t visited = 0;
     IoRecord record;
-    for (uint32_t i = 0; i < header.stored; ++i) {
-        if (!readAt(file, i, record)) {
+    bool stop = false;
+
+    for (uint32_t i = 0; !stop; ++i) {
+        if (i > 0 && (i % kChunk) == 0) {
+            file.close();
+            xSemaphoreGive(mutex);
+            // Somebody else gets the lock here, by design.
+            taskYIELD();
+            if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
+                return visited;
+            }
+            file = fs->open(IO_HISTORY_FILE, FILE_READ);
+            if (file == false) {
+                xSemaphoreGive(mutex);
+                return visited;
+            }
+        }
+
+        if (i >= header.stored || !readAt(file, i, record)) {
             break;
         }
         ++visited;
-        if (!visit(record, i, ctx)) {
-            break;
-        }
+        stop = !visit(record, i, ctx);
     }
 
     file.close();

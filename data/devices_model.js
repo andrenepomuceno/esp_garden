@@ -383,6 +383,19 @@
   // failing, and the log that says so is only reachable once the device is back
   // up on the pin that broke it.
 
+  // A probe with no pump gets no model at all — nothing labels its readings.
+  // Worth saying out loud, because the page can produce that state with one
+  // click on a relay's delete button.
+  function warnOrphanedProbes(model, warnings) {
+    $.each(model.probes, function (i, probe) {
+      if (typeof probe.relay === 'number' && probe.relay < 0) {
+        warnings.push('Probe ' + (i + 1) + ' has no feeding relay, so the ' +
+                      'moisture model cannot be trained for it. It falls back ' +
+                      'to the two-point calibration.');
+      }
+    });
+  }
+
   function validate() {
     var caps = ctx.caps();
     var doc = ctx.doc();
@@ -498,6 +511,8 @@
                     'legacy /control watering parameter and ThingSpeak field 2 ' +
                     'address, and schedules target relays by index.');
     }
+
+    warnOrphanedProbes(model, warnings);
 
     var schedules = (doc && isArray(doc.schedules)) ? doc.schedules : [];
     $.each(schedules, function (i, s) {

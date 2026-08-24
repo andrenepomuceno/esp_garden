@@ -198,9 +198,17 @@ class Handler(BaseHTTPRequestHandler):
             def is_adc1(p): return 32 <= p <= 39 and p not in (37, 38)
             def is_input_only(p): return 34 <= p <= 39
             def is_strapping(p): return p in (0, 2, 5, 12, 15)
-            pins = [p for p in range(40) if not is_flash(p)]
+            def is_bonded(p):
+                return not (p == 20 or p == 24 or 28 <= p <= 31) and p not in (37, 38)
+            def is_serial(p):
+                return p in (1, 3)
+            # Mirrors web_capabilities.cpp: unbonded pins are never offered and
+            # the serial console is listed separately. Without this the page
+            # validated a relay on GPIO 28 here and got a 400 from the device.
+            pins = [p for p in range(40)
+                    if not is_flash(p) and is_bonded(p) and not is_serial(p)]
             self._send_json({
-                "firmware": "2.1.0",
+                "firmware": "2.2.0",
                 "relayMax": 8,
                 "moistureMax": 4,
                 "kinds": ["relays", "soilMoisture", "dht", "luminosity",
@@ -209,6 +217,7 @@ class Handler(BaseHTTPRequestHandler):
                 "outputPins": [p for p in pins if not is_input_only(p)],
                 "digitalPins": [p for p in pins if not is_input_only(p)],
                 "strappingPins": [p for p in pins if is_strapping(p)],
+                "reservedPins": [p for p in range(40) if is_serial(p)],
             })
         elif path == "/history.json":
             if not STATE.history_enabled:

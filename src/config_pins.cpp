@@ -95,6 +95,14 @@ ConfigFile::validatePins() const
     used[count++] = { buttonPin, "button", ROLE_DIGITAL };
 
     for (unsigned i = 0; i < relayCount; ++i) {
+        // A declared relay with no pin is a state the rest of the firmware
+        // treats as valid — relayWrite() and startRelay() both refuse it
+        // explicitly. Auditing it here reported "GPIO 255 is not bonded out",
+        // which turns the one diagnostic meant to name a wrong pin assignment
+        // into a fault report for a correct configuration.
+        if (relayPin[i] == kNoPin) {
+            continue;
+        }
         snprintf(relayLabel[i], sizeof(relayLabel[i]), "relay%u", i);
         used[count++] = { relayPin[i], relayLabel[i], ROLE_OUTPUT };
     }

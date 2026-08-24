@@ -142,8 +142,10 @@ class DeviceState:
         if not 0 <= index < len(self.relays):
             self.log("error", f"Invalid relay index: {index}")
             return
-        # The firmware caps a relay at 20 s (g_relayMaxTime) and rejects 0.
-        if duration_ms <= 0 or duration_ms > 20_000:
+        # g_relayMaxTime in src/relays.cpp, raised from 20 s in 545643a. A stale
+        # ceiling here refuses activations the device accepts, so UI work on the
+        # watering-time field is validated against a limit that does not exist.
+        if duration_ms <= 0 or duration_ms > 30_000:
             self.log("error", f"Invalid relay time: {duration_ms}")
             return
         # self.log() takes the same non-reentrant lock, so every log call has to
