@@ -9,3 +9,6 @@ backups/
 
 # dev_server.py imports its sim_* siblings now, so Python caches them here.
 __pycache__/
+
+# deploy/.env holds the real VPS credentials; deploy/.env.example is the tracked template.
+deploy/.env

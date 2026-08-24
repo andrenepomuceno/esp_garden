@@ -1,0 +1,6 @@
+# Real deployment state — never committed.
+.env                    # the actual secrets; .env.example is the tracked doc
+backups/                # database dumps contain every device credential
+traefik/dynamic/        # rendered from dynamic.yml.in; a build product, not a source
+.tb-installed-version   # per-VPS state written by tbctl install/upgrade
+*.pem                   # ca-export output; regenerate with ./tbctl ca-export

@@ -1,0 +1,56 @@
+# Traefik dynamic configuration — TEMPLATE.
+#
+# `./tbctl render` substitutes the @...@ tokens from .env and writes the result
+# to traefik/dynamic/dynamic.yml (gitignored: it is a build product, and two
+# copies of the domain is how they drift apart). Traefik watches that
+# directory and picks up changes without a restart.
+#
+# Why tokens instead of Traefik's own Go templating: template evaluation
+# happens inside the container where it can only fail at runtime, in a log
+# line nobody is watching. A render step on the host fails before anything
+# starts, in the operator's face.
+
+http:
+  routers:
+    tb-ui:
+      rule: "Host(`@DOMAIN@`)"
+      entryPoints:
+        - websecure
+      service: tb-http
+      tls:
+        certResolver: le
+  services:
+    tb-http:
+      loadBalancer:
+        servers:
+          # Plain HTTP, but only across the Docker bridge network on this one
+          # host — it never touches a wire. Stated because it is a real
+          # boundary of the design, not an oversight.
+          - url: "http://tb:@TB_HTTP_PORT@"
+
+tcp:
+  routers:
+    tb-mqtt:
+      # HostSNI(`*`), not HostSNI(`@DOMAIN@`): an MQTT client that omits SNI
+      # would otherwise be refused at the TLS layer with nothing useful in
+      # any log. The certificate served is still the one for @DOMAIN@
+      # (tls.domains below), so a verifying client — the ESP32 pins the CA
+      # and checks the hostname — loses nothing.
+      rule: "HostSNI(`*`)"
+      entryPoints:
+        - mqtts
+      service: tb-mqtt
+      tls:
+        certResolver: le
+        # HostSNI(`*`) gives the resolver no domain to issue for, so it is
+        # named explicitly. Same resolver, same certificate, same renewal as
+        # the web UI — the property the whole TLS design exists for.
+        domains:
+          - main: "@DOMAIN@"
+  services:
+    tb-mqtt:
+      loadBalancer:
+        servers:
+          # TLS ends here; ThingsBoard speaks plaintext MQTT on the internal
+          # network only. That port is not published anywhere.
+          - address: "tb:@TB_MQTT_PORT@"

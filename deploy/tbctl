@@ -1,0 +1,611 @@
+#!/usr/bin/env bash
+#
+# tbctl — the single operator entry point for the esp-garden ThingsBoard
+# deployment. Run it from deploy/ on the VPS (it cd's itself there).
+#
+#   ./tbctl help
+#
+# One entry point instead of a directory of scripts, because near-identical
+# scripts are where the env loading, the safety checks and the compose
+# invocation quietly stop agreeing with each other.
+#
+# STATUS: written and syntax-checked; NOT yet executed against a real VPS.
+# Where a step follows ThingsBoard's or Docker's own documented procedure,
+# a comment says which. Treat the first real run as the test it is.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+ENV_FILE=".env"
+STATE_FILE=".tb-installed-version" # written after install/upgrade; gitignored
+BACKUP_ROOT="backups"
+LE_ROOT_URL="https://letsencrypt.org/certs/isrgrootx1.pem"
+TB_DEFAULT_USER="sysadmin@thingsboard.org"
+TB_DEFAULT_PASS="sysadmin"
+
+# ---------------------------------------------------------------------------
+# Plumbing
+# ---------------------------------------------------------------------------
+
+die()  { echo "tbctl: ERROR: $*" >&2; exit 1; }
+warn() { echo "tbctl: WARNING: $*" >&2; }
+info() { echo "tbctl: $*"; }
+
+compose() { docker compose "$@"; }
+
+need_cmd() { command -v "$1" >/dev/null 2>&1 || die "'$1' not found — $2"; }
+
+check_prereqs() {
+    need_cmd docker "install it first: apt-get install docker.io docker-compose-v2 (see README)"
+    docker compose version >/dev/null 2>&1 \
+        || die "'docker compose' (v2 plugin) not available — apt-get install docker-compose-v2"
+    need_cmd curl "apt-get install curl"
+    need_cmd openssl "apt-get install openssl"
+}
+
+load_env() {
+    [ -f "$ENV_FILE" ] || die "$ENV_FILE not found. Run: cp .env.example .env && chmod 600 .env — then edit it."
+    # Secrets live in this file; make sure other local users cannot read it.
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
+    set -a
+    # shellcheck disable=SC1090
+    . "./$ENV_FILE"
+    set +a
+}
+
+# Refuse to run on an empty or still-default secret. A deploy that comes up
+# with a placeholder password looks identical to a healthy one from the
+# outside, which is exactly why it must never come up at all.
+check_env() {
+    local err=0
+    req() { # var-name human-hint
+        if [ -z "${!1:-}" ]; then
+            echo "tbctl:   $1 is empty — $2" >&2
+            err=1
+        fi
+    }
+    req DOMAIN "the public DNS name of this VPS"
+    req ACME_EMAIL "where Let's Encrypt sends expiry warnings"
+    req TB_VERSION "the pinned thingsboard/tb-node tag"
+    req POSTGRES_PASSWORD "generate one: openssl rand -base64 24"
+    req TB_SYSADMIN_PASSWORD "replaces ThingsBoard's default sysadmin password"
+    req COMPOSE_PROJECT_NAME "fixes the Docker volume names backup/restore rely on"
+    [ "$err" -eq 0 ] || die "fix $ENV_FILE (see .env.example) and re-run"
+
+    # DOMAIN is substituted into the Traefik config by sed and into shell
+    # command lines; restricting it to hostname characters prevents both
+    # injection and a typo'd URL pasted in place of a hostname.
+    [[ "$DOMAIN" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] \
+        || die "DOMAIN '$DOMAIN' is not a bare hostname (no scheme, no slash, no port)"
+    case "$DOMAIN" in
+        *example.com|*example.org) die "DOMAIN is still the documentation placeholder" ;;
+    esac
+    case "$ACME_EMAIL" in
+        *@*.*) : ;;
+        *) die "ACME_EMAIL '$ACME_EMAIL' does not look like an email address" ;;
+    esac
+    case "$POSTGRES_PASSWORD" in
+        changeme|password|postgres|thingsboard)
+            die "POSTGRES_PASSWORD is a known placeholder — generate a real one" ;;
+    esac
+    [ "${#POSTGRES_PASSWORD}" -ge 16 ] || die "POSTGRES_PASSWORD shorter than 16 chars"
+    [ "$TB_SYSADMIN_PASSWORD" != "$TB_DEFAULT_PASS" ] \
+        || die "TB_SYSADMIN_PASSWORD is ThingsBoard's default — the whole point is to replace it"
+    [ "${#TB_SYSADMIN_PASSWORD}" -ge 12 ] || die "TB_SYSADMIN_PASSWORD shorter than 12 chars"
+    # tbctl embeds this password in JSON bodies without a JSON encoder on
+    # board; these two characters would silently corrupt the request.
+    case "$TB_SYSADMIN_PASSWORD" in
+        *'"'*|*'\'*) die 'TB_SYSADMIN_PASSWORD must not contain " or \' ;;
+    esac
+}
+
+# Render traefik/dynamic/dynamic.yml from the template. sed with @TOKENS@
+# instead of envsubst: sed is guaranteed present, and an explicit token
+# cannot accidentally swallow a legitimate $variable in the YAML.
+render() {
+    mkdir -p traefik/dynamic
+    sed -e "s/@DOMAIN@/${DOMAIN}/g" \
+        -e "s/@TB_HTTP_PORT@/${TB_HTTP_PORT:-8080}/g" \
+        -e "s/@TB_MQTT_PORT@/${TB_MQTT_PORT:-1883}/g" \
+        traefik/dynamic.yml.in > traefik/dynamic/dynamic.yml
+    # A token that survives substitution means a template/renderer mismatch;
+    # Traefik would serve it literally and every route would 404 at runtime.
+    if grep -q '@[A-Z_]\+@' traefik/dynamic/dynamic.yml; then
+        die "unsubstituted token left in traefik/dynamic/dynamic.yml — template and render() disagree"
+    fi
+    info "rendered traefik/dynamic/dynamic.yml for $DOMAIN"
+}
+
+tbdata_volume() { echo "${COMPOSE_PROJECT_NAME}_tbdata"; }
+acme_volume()   { echo "${COMPOSE_PROJECT_NAME}_acme"; }
+
+# ---------------------------------------------------------------------------
+# ThingsBoard REST helpers (used to retire the default sysadmin credential)
+# ---------------------------------------------------------------------------
+
+# POST /api/auth/login; prints HTTP code, body goes to the file in $2.
+# Not `curl ... || echo 000`: curl prints "000" via -w AND exits nonzero on a
+# connect failure, so that pattern emits "000000" and every comparison
+# downstream silently stops matching.
+tb_login_code() { # password body-file
+    local code
+    if ! code="$(curl -sS -o "$2" -w '%{http_code}' -X POST "https://${DOMAIN}/api/auth/login" \
+        -H 'Content-Type: application/json' \
+        -d "{\"username\":\"${TB_DEFAULT_USER}\",\"password\":\"$1\"}" 2>/dev/null)"; then
+        code=000
+    fi
+    echo "$code"
+}
+
+extract_token() { sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$1"; }
+
+# Change sysadmin's password away from the factory default, over the REST
+# API, so the step cannot be skipped by closing a browser tab. Idempotent.
+# (Endpoint shape from ThingsBoard's REST docs — unverified against a live
+# instance; on failure it says so loudly instead of pretending.)
+cmd_secure_admin() {
+    load_env; check_env
+    local body; body="$(mktemp)"; trap 'rm -f "$body"' RETURN
+    local code
+    code="$(tb_login_code "$TB_DEFAULT_PASS" "$body")"
+    if [ "$code" = "200" ]; then
+        local token; token="$(extract_token "$body")"
+        [ -n "$token" ] || die "login succeeded but no token in response — API shape changed?"
+        if ! code="$(curl -sS -o "$body" -w '%{http_code}' -X POST "https://${DOMAIN}/api/auth/changePassword" \
+            -H 'Content-Type: application/json' \
+            -H "X-Authorization: Bearer $token" \
+            -d "{\"currentPassword\":\"${TB_DEFAULT_PASS}\",\"newPassword\":\"${TB_SYSADMIN_PASSWORD}\"}" 2>/dev/null)"; then
+            code=000
+        fi
+        [ "$code" = "200" ] \
+            || die "changePassword returned HTTP $code — the DEFAULT sysadmin credential is still live. Fix this before anything else: log in at https://${DOMAIN} as ${TB_DEFAULT_USER} and change it by hand. Response: $(cat "$body")"
+        info "sysadmin password changed away from the factory default."
+    else
+        # Default refused — good, but prove the configured one works before
+        # declaring victory, or a typo in .env reads as "secured".
+        code="$(tb_login_code "$TB_SYSADMIN_PASSWORD" "$body")"
+        if [ "$code" = "200" ]; then
+            info "sysadmin already secured (default refused, configured password accepted)."
+        else
+            die "neither the default nor TB_SYSADMIN_PASSWORD can log in (HTTP $code). Someone changed it to something else — resolve manually at https://${DOMAIN}"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
+
+wait_for_postgres() {
+    info "waiting for postgres to accept connections..."
+    local i
+    for i in $(seq 1 60); do
+        if compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+    done
+    die "postgres not ready after 120 s — 'docker compose logs postgres' has the reason"
+}
+
+wait_for_ui() {
+    # Loops until HTTPS answers WITH a valid certificate (-f, no -k): during
+    # first boot Traefik serves its self-signed default until ACME finishes,
+    # and declaring success on that cert would hide a broken issuance —
+    # which the ESP32 would then discover as -9984, silently.
+    info "waiting for https://${DOMAIN}/login (ThingsBoard start + ACME issuance; a few minutes on first boot)..."
+    local i
+    for i in $(seq 1 90); do
+        if curl -sf -o /dev/null "https://${DOMAIN}/login"; then
+            return 0
+        fi
+        sleep 5
+    done
+    die "UI not answering with a valid certificate after 450 s. Check: 'docker compose logs traefik' (ACME errors — is the DNS A record for ${DOMAIN} pointing here? is port 80 reachable?) and 'docker compose logs tb'"
+}
+
+cmd_install() {
+    check_prereqs; load_env; check_env; render
+    info "pulling images..."
+    compose pull
+    compose up -d postgres
+    wait_for_postgres
+
+    # Skip the schema install if the DB already has tables: re-running the
+    # installer on a populated database is undefined behaviour we never
+    # want, e.g. after an aborted first attempt.
+    local tables
+    tables="$(compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
+        "select count(*) from pg_catalog.pg_tables where schemaname='public'" 2>/dev/null || echo 0)"
+    if [ "${tables:-0}" -gt 0 ]; then
+        warn "database already has ${tables} tables — skipping schema install"
+    else
+        # Same invocation as ThingsBoard's own docker-install-tb.sh
+        # (INSTALL_TB=true, LOAD_DEMO=false, run --no-deps --rm). No demo
+        # data: demo tenants ship demo credentials, and demo credentials on
+        # a public host are an open door.
+        info "running ThingsBoard schema install (this takes a while)..."
+        compose run --no-deps --rm -e INSTALL_TB=true -e LOAD_DEMO=false tb
+        printf '%s\n' "$TB_VERSION" > "$STATE_FILE"
+    fi
+
+    compose up -d
+    wait_for_ui
+    cmd_secure_admin
+    [ -f "$STATE_FILE" ] || printf '%s\n' "$TB_VERSION" > "$STATE_FILE"
+
+    cat <<EOF
+
+Install finished. Do these now, in order:
+  1. sudo ./tbctl harden        # firewall + SSH; do not leave for later
+  2. sudo ./tbctl backup-cron   # nightly backups
+  3. ./tbctl ca-export          # the CA file the ESP32 pins — README "ESP32 side"
+  4. Log in at https://${DOMAIN} as ${TB_DEFAULT_USER} (password from .env),
+     create the tenant, the device, and its MQTT Basic credentials.
+  5. ./tbctl backup && ./tbctl restore <that backup>   # a restore you have
+     never run is not a restore path — rehearse it while there is nothing to lose.
+EOF
+}
+
+cmd_up() {
+    check_prereqs; load_env; check_env; render
+    compose up -d
+    info "stack up. './tbctl status' to verify."
+}
+
+cmd_down() {
+    load_env
+    compose down
+    info "stack stopped. Volumes (database, certificates) are kept; 'docker volume ls' shows them."
+}
+
+cmd_logs() {
+    load_env
+    compose logs -f --tail=200 "$@"
+}
+
+cmd_status() {
+    load_env; check_env
+    compose ps
+    echo
+
+    # Certificate on the MQTT port — the one the ESP32 actually dials.
+    # Checking 443 instead would miss an 8883-only failure by construction.
+    local end
+    end="$(echo | openssl s_client -connect "${DOMAIN}:8883" -servername "$DOMAIN" 2>/dev/null \
+        | openssl x509 -noout -enddate 2>/dev/null || true)"
+    if [ -n "$end" ]; then
+        echo "MQTT (8883) certificate: ${end#notAfter=}"
+    else
+        echo "MQTT (8883): could not read a certificate — devices cannot connect. 'docker compose logs traefik'"
+    fi
+
+    local code
+    code="$(curl -s -o /dev/null -w '%{http_code}' "https://${DOMAIN}/login" 2>/dev/null || echo 000)"
+    echo "UI (443): HTTP $code on /login"
+
+    # The factory credential probe. Runs on every status on purpose: an
+    # operator who restored an old backup has silently resurrected
+    # sysadmin/sysadmin, and this is the line that tells them.
+    local body; body="$(mktemp)"; trap 'rm -f "$body"' RETURN
+    code="$(tb_login_code "$TB_DEFAULT_PASS" "$body")"
+    if [ "$code" = "200" ]; then
+        echo
+        echo "!!! THE FACTORY sysadmin CREDENTIAL LOGS IN. Run ./tbctl secure-admin NOW. !!!"
+    elif [ "$code" = "000" ]; then
+        echo "default-credential probe: server unreachable"
+    else
+        echo "default-credential probe: refused (HTTP $code) — good"
+    fi
+
+    if [ -d "$BACKUP_ROOT" ]; then
+        echo "latest backup: $(ls -1 "$BACKUP_ROOT" 2>/dev/null | tail -n 1 || echo none)"
+    else
+        echo "latest backup: NONE — run ./tbctl backup and sudo ./tbctl backup-cron"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Backup / restore
+# ---------------------------------------------------------------------------
+
+cmd_backup() {
+    check_prereqs; load_env; check_env
+    local ts dir
+    ts="$(date +%Y%m%d-%H%M%S)"
+    dir="$BACKUP_ROOT/$ts"
+    mkdir -p "$dir"
+    # Backups contain every device credential and the ACME private key.
+    chmod 700 "$BACKUP_ROOT"
+
+    info "dumping postgres..."
+    # set -o pipefail above makes a failed pg_dump abort instead of leaving a
+    # truncated-but-valid-looking .gz that only fails on restore day.
+    compose exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        | gzip > "$dir/postgres.sql.gz"
+    [ -s "$dir/postgres.sql.gz" ] || die "pg_dump produced an empty file"
+
+    info "archiving ThingsBoard data volume..."
+    docker run --rm \
+        -v "$(tbdata_volume):/data:ro" \
+        -v "$PWD/$dir:/backup" \
+        alpine:3 tar czf /backup/tbdata.tar.gz -C /data .
+
+    info "archiving ACME state (certificates + account key)..."
+    # Losing acme.json on a rebuild means re-issuing against Let's Encrypt
+    # rate limits — possibly a multi-day lockout at the worst moment.
+    docker run --rm \
+        -v "$(acme_volume):/acme:ro" \
+        -v "$PWD/$dir:/backup" \
+        alpine:3 tar czf /backup/acme.tar.gz -C /acme .
+
+    # Retention: an unbounded backups/ dir fills the disk, and a full disk
+    # takes down the database being backed up.
+    find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d \
+        -mtime +"${BACKUP_RETENTION_DAYS:-14}" -print -exec rm -rf {} + \
+        | sed 's/^/tbctl: retention: removed /' || true
+
+    info "backup written to $dir:"
+    ls -lh "$dir"
+    info "these live on the SAME disk as the database — copy them off-host (see README)."
+}
+
+cmd_restore() {
+    check_prereqs; load_env; check_env
+    local dir="${1:-}"
+    [ -n "$dir" ] || die "usage: ./tbctl restore backups/<timestamp> [--yes]"
+    [ -f "$dir/postgres.sql.gz" ] || die "$dir/postgres.sql.gz not found"
+    [ -f "$dir/tbdata.tar.gz" ]   || die "$dir/tbdata.tar.gz not found"
+
+    if [ "${2:-}" != "--yes" ]; then
+        echo "This DESTROYS the current database and ThingsBoard data and replaces"
+        echo "them with $dir. There is no undo except another backup."
+        printf "Type 'restore' to continue: "
+        local answer; read -r answer
+        [ "$answer" = "restore" ] || die "aborted"
+    fi
+
+    compose stop tb
+    compose up -d postgres
+    wait_for_postgres
+
+    info "recreating database..."
+    compose exec -T postgres psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 \
+        -c "DROP DATABASE IF EXISTS \"$POSTGRES_DB\";" \
+        -c "CREATE DATABASE \"$POSTGRES_DB\" OWNER \"$POSTGRES_USER\";"
+
+    info "restoring postgres dump..."
+    gunzip -c "$dir/postgres.sql.gz" \
+        | compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q -v ON_ERROR_STOP=1
+
+    info "restoring ThingsBoard data volume..."
+    docker run --rm \
+        -v "$(tbdata_volume):/data" \
+        -v "$PWD/$dir:/backup:ro" \
+        alpine:3 sh -c 'find /data -mindepth 1 -delete && tar xzf /backup/tbdata.tar.gz -C /data'
+
+    compose up -d
+    info "restore done. Run './tbctl status' — and note the default-credential"
+    info "probe there: restoring an old backup can resurrect old passwords."
+}
+
+# ---------------------------------------------------------------------------
+# Upgrade
+# ---------------------------------------------------------------------------
+
+cmd_upgrade() {
+    check_prereqs; load_env; check_env
+    [ -f "$STATE_FILE" ] || die "$STATE_FILE missing — was 'install' ever run here? For a manual override: echo <running-version> > $STATE_FILE"
+    local from to
+    from="$(cat "$STATE_FILE")"
+    to="$TB_VERSION"
+    if [ "$from" = "$to" ]; then
+        info "TB_VERSION in .env ($to) equals the installed version — edit .env first, then re-run."
+        return 0
+    fi
+    info "upgrading ThingsBoard $from -> $to"
+    info "backing up first — this backup is the rollback path if the upgrade goes wrong."
+    cmd_backup
+
+    compose pull tb
+    compose stop tb
+    # Same invocation as ThingsBoard's own docker-upgrade-tb.sh
+    # (UPGRADE_TB=true, FROM_VERSION=<old>). Unverified against a live
+    # instance; if it fails, the database is untouched by design — the
+    # schema upgrade runs before the new version ever serves traffic.
+    compose run --no-deps --rm -e UPGRADE_TB=true -e FROM_VERSION="$from" tb
+    printf '%s\n' "$to" > "$STATE_FILE"
+    compose up -d
+    wait_for_ui
+    info "upgrade finished. './tbctl status', then check a device still publishes."
+    info "If it went wrong: README 'When an upgrade goes wrong' — set TB_VERSION back, restore the backup just taken."
+}
+
+# ---------------------------------------------------------------------------
+# CA export — the file the ESP32 pins
+# ---------------------------------------------------------------------------
+
+cmd_ca_export() {
+    check_prereqs; load_env; check_env
+    local out="${1:-thingsboard.pem}"
+    local tmp; tmp="$(mktemp)"; trap 'rm -f "$tmp"' RETURN
+
+    info "fetching ISRG Root X1 (the root of every Let's Encrypt chain)..."
+    curl -fsSL "$LE_ROOT_URL" -o "$tmp"
+    openssl x509 -in "$tmp" -noout -subject 2>/dev/null | grep -q "ISRG Root X1" \
+        || die "downloaded file is not the ISRG Root X1 certificate"
+
+    # The check that earns this command its existence: prove that THIS
+    # broker's chain, on THE port the device dials, verifies against THE
+    # file being emitted. The firmware pins this CA with setCACert(); a
+    # mismatch fails every connect with -9984 and nothing surfaces it —
+    # this project lost 2023-2026 telemetry to exactly that. No bypass flag
+    # on purpose: an unverified export is the bug, not a convenience.
+    info "verifying the live chain on ${DOMAIN}:8883 against it..."
+    local verify_out
+    verify_out="$(echo | openssl s_client -connect "${DOMAIN}:8883" \
+        -servername "$DOMAIN" -CAfile "$tmp" 2>/dev/null || true)"
+    echo "$verify_out" | grep -Eq 'Verify return code: 0 \(ok\)|Verification: OK' \
+        || die "the live chain on ${DOMAIN}:8883 does NOT verify against ISRG Root X1. Refusing to emit a CA file the device would reject on every connect. Is the stack up ('./tbctl status')? Did ACME issuance succeed ('docker compose logs traefik')?"
+
+    mv "$tmp" "$out"
+    trap - RETURN
+    info "verified CA written to $out"
+    openssl x509 -in "$out" -noout -enddate | sed 's/^/tbctl:   root /'
+    cat <<EOF
+
+On the ESP32 (see deploy/README.md, 'The ESP32 side'):
+  1. Copy $out into the repo as data/thingsboard.pem.
+  2. Put it on the device as /thingsboard.pem — POST /spiffs/upload replaces
+     one file without the uploadfs step that would clobber the device's
+     /config.json.
+  3. In the device's config.json:  "mqtt": { "backend": "thingsboard",
+     "server": "${DOMAIN}", "port": 8883, "useTLS": true,
+     "cacert": "/thingsboard.pem", ... }
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Host hardening — a command, not a README paragraph
+# ---------------------------------------------------------------------------
+
+cmd_harden() {
+    [ "$(id -u)" -eq 0 ] || die "run as root: sudo ./tbctl harden"
+    command -v apt-get >/dev/null 2>&1 || die "not an apt-based system — this step targets Ubuntu (a Hostinger VPS is plain Ubuntu over SSH)"
+
+    info "installing ufw + unattended-upgrades..."
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ufw unattended-upgrades >/dev/null
+
+    # Firewall: default-deny, then exactly the service ports. Idempotent —
+    # ufw treats a repeated rule as a no-op.
+    info "configuring ufw..."
+    ufw default deny incoming   # anything not listed below does not exist to the internet
+    ufw default allow outgoing
+    ufw limit 22/tcp    comment 'SSH, rate-limited: 6 conn/30s per IP blunts brute force'
+    ufw allow 80/tcp    comment 'ACME challenge + HTTPS redirect only'
+    ufw allow 443/tcp   comment 'ThingsBoard UI'
+    ufw allow 8883/tcp  comment 'MQTT over TLS (the ESP32)'
+    ufw --force enable
+
+    # SSH: keys only. Guard first — disabling password auth with no key
+    # installed locks the operator out of their own VPS permanently.
+    # (Captured into a variable, not `find | grep -q` — under pipefail an
+    # unmatched /home/*/.ssh glob makes find exit nonzero and would fail the
+    # pipeline even when /root/.ssh holds a perfectly good key.)
+    local keys
+    keys="$(find /root/.ssh /home/*/.ssh -maxdepth 1 -name authorized_keys -size +0c 2>/dev/null || true)"
+    if [ -z "$keys" ]; then
+        die "no non-empty authorized_keys found — refusing to disable SSH password auth (it would lock you out). Install your key (ssh-copy-id) and re-run."
+    fi
+    info "hardening sshd..."
+    # Comments on their own lines only: sshd_config has no inline comments —
+    # "PasswordAuthentication no  # note" is a parse error that sshd -t
+    # rejects, taking the whole hardening step with it.
+    cat > /etc/ssh/sshd_config.d/90-espgarden-hardening.conf <<'EOF'
+# Written by `tbctl harden`. Each block names the attack it removes.
+
+# Keys only: credential stuffing against SSH becomes impossible, not just unlikely.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+
+# Root logs in with a key or not at all.
+PermitRootLogin prohibit-password
+
+# Fewer guesses per connection; pairs with ufw's per-IP rate limit on 22.
+MaxAuthTries 3
+
+# No X11 on a headless VPS; one less forwarding channel to abuse.
+X11Forwarding no
+EOF
+    # Validate before reload: a bad sshd config applied blind kills the only
+    # way into the box.
+    sshd -t || die "sshd config validation failed — NOT reloading; fix /etc/ssh/sshd_config.d/90-espgarden-hardening.conf"
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd
+
+    info "enabling unattended security upgrades..."
+    cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+
+    cat <<'EOF'
+
+Hardening applied. Two things this does NOT cover — read them:
+  * Docker-published ports BYPASS ufw (Docker writes its own iptables rules).
+    The rules above are defence in depth for host services; what actually
+    keeps Postgres off the internet is that the compose file never publishes
+    it. Never "temporarily" add a ports: line to postgres.
+  * KEEP your current SSH session open and verify a NEW ssh login works
+    before disconnecting. Password logins are now off.
+EOF
+}
+
+cmd_backup_cron() {
+    [ "$(id -u)" -eq 0 ] || die "run as root: sudo ./tbctl backup-cron"
+    mkdir -p "$SCRIPT_DIR/$BACKUP_ROOT"
+    # /etc/cron.d entry instead of a user crontab: it survives user changes,
+    # is visible in one known place, and rewriting the file is idempotent.
+    cat > /etc/cron.d/esp-garden-tb-backup <<EOF
+# Written by tbctl backup-cron. Nightly ThingsBoard backup with retention.
+17 3 * * * root cd $SCRIPT_DIR && ./tbctl backup >> $SCRIPT_DIR/$BACKUP_ROOT/cron.log 2>&1
+EOF
+    chmod 644 /etc/cron.d/esp-garden-tb-backup
+    info "nightly backup installed (/etc/cron.d/esp-garden-tb-backup, 03:17)."
+    info "check $BACKUP_ROOT/cron.log after the first night — a cron job nobody has seen succeed is a hope, not a backup."
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+cmd_help() {
+    cat <<'EOF'
+tbctl — ThingsBoard CE deployment control (run from deploy/ on the VPS)
+
+  install        First deploy: pull, DB schema install, start, wait for TLS,
+                 retire the default sysadmin credential. Idempotent-ish: safe
+                 to re-run after a failed attempt.
+  up             (Re)start the stack; re-renders the Traefik config from .env.
+  down           Stop the stack (volumes are kept).
+  status         Containers, MQTT certificate expiry, UI reachability, and a
+                 probe that screams if the factory sysadmin credential works.
+  logs [svc]     Follow logs (tb | postgres | traefik).
+  backup         pg_dump + data volume + ACME state into backups/<ts>, with
+                 retention from BACKUP_RETENTION_DAYS.
+  restore <dir>  Destructive restore from a backup directory. Asks first
+                 (append --yes to skip, e.g. from a runbook).
+  upgrade        After editing TB_VERSION in .env: backup, pull, run the
+                 schema upgrade, restart.
+  ca-export [f]  Emit the CA file the ESP32 pins (default ./thingsboard.pem),
+                 REFUSING unless the live broker chain verifies against it.
+  secure-admin   Re-run the default-credential retirement (idempotent).
+  harden         (sudo) ufw + SSH keys-only + unattended upgrades.
+  backup-cron    (sudo) install the nightly backup cron job.
+EOF
+}
+
+main() {
+    local cmd="${1:-help}"
+    shift || true
+    case "$cmd" in
+        install)      cmd_install "$@" ;;
+        up)           cmd_up "$@" ;;
+        down)         cmd_down "$@" ;;
+        status)       cmd_status "$@" ;;
+        logs)         cmd_logs "$@" ;;
+        backup)       cmd_backup "$@" ;;
+        restore)      cmd_restore "$@" ;;
+        upgrade)      cmd_upgrade "$@" ;;
+        ca-export)    cmd_ca_export "$@" ;;
+        secure-admin) cmd_secure_admin "$@" ;;
+        harden)       cmd_harden "$@" ;;
+        backup-cron)  cmd_backup_cron "$@" ;;
+        help|--help|-h) cmd_help ;;
+        *) die "unknown command '$cmd' — ./tbctl help" ;;
+    esac
+}
+
+main "$@"
