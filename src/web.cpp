@@ -2,6 +2,7 @@
 #include "BuildConfig.h"
 #include "core/accumulator_v2.h"
 #include "core/config.h"
+#include "core/io_history.h"
 #include "core/logger.h"
 #include "core/role.h"
 #include "core/tasks.h"
@@ -501,6 +502,92 @@ handleConfigPost(AsyncWebServerRequest* request)
     request->send(response);
 }
 
+// Hard cap on one response. 1440 records is 57 KB of raw struct and roughly
+// 170 KB rendered as JSON — more than half this chip's DRAM, with WiFi already
+// holding a large share. Callers page with ?limit=.
+static const size_t g_historyMaxResponse = 200;
+
+static void
+appendFloat(String& out, const char* key, float value)
+{
+    out += "\"";
+    out += key;
+    out += "\":";
+    // NaN marks a channel this board does not have; JSON has no NaN literal and
+    // null is the honest encoding.
+    if (isnan(value)) {
+        out += "null";
+    } else {
+        out += String(value, 2);
+    }
+}
+
+static void
+handleHistoryJson(AsyncWebServerRequest* request)
+{
+    if (!ioHistory.ready()) {
+        request->send(503, "text/plain", "history buffer not available");
+        return;
+    }
+
+    size_t limit = 100;
+    if (request->hasParam("limit")) {
+        const long asked = request->getParam("limit")->value().toInt();
+        if (asked > 0) {
+            limit = (size_t)asked;
+        }
+    }
+    if (limit > g_historyMaxResponse) {
+        limit = g_historyMaxResponse;
+    }
+
+    static IoRecord buffer[g_historyMaxResponse];
+    const size_t count = ioHistory.read(buffer, limit);
+
+    String out;
+    out.reserve(count * 140 + 128);
+    out += "{\"capacity\":";
+    out += String(ioHistory.capacity());
+    out += ",\"stored\":";
+    out += String(ioHistory.stored());
+    out += ",\"returned\":";
+    out += String(count);
+    out += ",\"records\":[";
+
+    for (size_t i = 0; i < count; ++i) {
+        const IoRecord& r = buffer[i];
+        if (i) {
+            out += ",";
+        }
+        out += "{\"t\":";
+        out += String(r.timestamp);
+        out += ",\"relays\":";
+        out += String(r.relayMask);
+        out += ",\"moisture\":[";
+        for (unsigned m = 0; m < IO_HISTORY_MAX_MOISTURE; ++m) {
+            if (m) {
+                out += ",";
+            }
+            out += isnan(r.moisture[m]) ? String("null") : String(r.moisture[m], 2);
+        }
+        out += "],";
+        appendFloat(out, "lum", r.luminosity);
+        out += ",";
+        appendFloat(out, "temp", r.temperature);
+        out += ",";
+        appendFloat(out, "hum", r.airHumidity);
+        out += ",";
+        appendFloat(out, "water", r.waterLevel);
+        out += "}";
+    }
+    out += "]}";
+
+    AsyncWebServerResponse* response =
+      request->beginResponse(200, "application/json", out);
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+}
+
 static size_t
 countAdmins()
 {
@@ -726,6 +813,8 @@ webSetup()
 
     g_webServer.on("/data.json", HTTP_GET, handleDataJson)
       .addMiddleware(&authenticated);
+    g_webServer.on("/history.json", HTTP_GET, handleHistoryJson)
+      .addMiddleware(&authenticated);
     g_webServer.on("/control", HTTP_POST, handleControl)
       .addMiddleware(operatorOnly);
     g_webServer.on("/logs", HTTP_GET, handleLogs).addMiddleware(adminOnly);
@@ -762,6 +851,7 @@ webSetup()
     g_webServer.serveStatic("/spiffs", SPIFFS, "/").addMiddleware(adminOnly);
 #else
     g_webServer.on("/data.json", HTTP_GET, handleDataJson);
+    g_webServer.on("/history.json", HTTP_GET, handleHistoryJson);
     g_webServer.on("/control", HTTP_POST, handleControl);
     g_webServer.on("/logs", HTTP_GET, handleLogs);
     g_webServer.on("/updateEnable", HTTP_POST, handleUpdateEnable);

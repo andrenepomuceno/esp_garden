@@ -76,5 +76,9 @@
             "dry": 0,
             "wet": 0
         }
-    ]
+    ],
+    "history": {
+        "records": 1440,
+        "periodSec": 60
+    }
 }

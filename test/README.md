@@ -22,8 +22,10 @@ environment.
 ## What can be tested here, and what cannot
 
 `[env:native]` has no Arduino core, so only code that compiles standalone is in
-scope. Today that is `AccumulatorV2` — every other module reaches WiFi, SPIFFS,
-`Arduino_JSON` or FreeRTOS.
+scope. Today that is `AccumulatorV2` and `core/ring_index.h`. The latter exists as a
+separate header precisely so it can be tested: the ring arithmetic behind
+`/history.json` reorders records rather than failing when it is wrong, and the
+rest of `IoHistory` is inseparable from SPIFFS.
 
 `fullbot-firmware` covers the rest with a stub layer in
 `test/support/native_includes/` (in-memory SPIFFS/SD, a `JSONVar`

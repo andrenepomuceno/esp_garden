@@ -103,6 +103,10 @@ ConfigFile::ConfigFile()
 
     // log
     logLevel = LOG_INFO;
+
+    // ~24 h at one record per minute, 57.6 KB of the 512 KB SPIFFS.
+    historyRecords = 1440;
+    historyPeriodSec = 60;
 }
 
 // Reads `io.relays` (array of {pin, on, name}) when present, otherwise falls
@@ -336,6 +340,29 @@ ConfigFile::loadFile(unsigned deviceID)
             } else {
                 logger.warning("Ignoring out-of-range log level " +
                                String(level));
+            }
+        }
+    }
+
+    if (JSON.typeof(configJson["history"]) != "undefined") {
+        JSONVar history = configJson["history"];
+        if (history.hasOwnProperty("records")) {
+            const int records = (int)history["records"];
+            // Capped so a typo cannot ask for a file larger than the partition.
+            if (records >= 0 && records <= 20000) {
+                historyRecords = records;
+            } else {
+                logger.warning("Ignoring out-of-range history.records " +
+                               String(records));
+            }
+        }
+        if (history.hasOwnProperty("periodSec")) {
+            const int period = (int)history["periodSec"];
+            if (period >= 1 && period <= 3600) {
+                historyPeriodSec = period;
+            } else {
+                logger.warning("Ignoring out-of-range history.periodSec " +
+                               String(period));
             }
         }
     }

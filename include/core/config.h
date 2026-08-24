@@ -63,6 +63,13 @@ class ConfigFile
     // log
     int logLevel;
 
+    // I/O history ring buffer. `historyRecords` is the file capacity — 0
+    // disables it entirely. `historyPeriodSec` paces the appends: SPIFFS
+    // rewrites a whole page per record, so a 1 s period would burn flash for
+    // data nobody reads at that resolution.
+    int historyRecords;
+    int historyPeriodSec;
+
     ConfigFile();
 
     bool loadFile(unsigned deviceID);

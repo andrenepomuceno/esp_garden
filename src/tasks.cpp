@@ -1,5 +1,6 @@
 #include "core/tasks.h"
 #include "BuildConfig.h"
+#include "core/io_history.h"
 #include "core/logger.h"
 #include "network/mqtt.h"
 #include "network/talkback.h"
@@ -39,6 +40,9 @@ DECLARE_TASK(io, 1000);                         // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
 DECLARE_TASK(checkInternet, 15 * 1000);         // 15 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
+// Period comes from config.historyPeriodSec; this is only the fallback used
+// until tasksSetup() calls setPeriod().
+DECLARE_TASK(history, 60 * 1000);               // 1 min
 DECLARE_TASK(mqtt, 1 * 60 * 1000);              // 1 min
 DECLARE_TASK(talkBack, 1 * 60 * 1000);          // 1 min
 #ifdef HAS_MOISTURE_SENSOR
@@ -586,6 +590,51 @@ ledBlinkTaskHandler()
     }
 }
 
+// One snapshot of every input and output, written to the ring buffer. Fields
+// the board does not have stay NaN, so a reader can tell "not fitted" from
+// "read zero".
+static void
+historyTaskHandler()
+{
+    IoRecord record = {};
+    record.timestamp = (uint32_t)time(NULL);
+
+    uint16_t mask = 0;
+    for (unsigned i = 0; i < RELAY_COUNT && i < 16; ++i) {
+        if (relayIsOn(i)) {
+            mask |= (uint16_t)(1u << i);
+        }
+    }
+    record.relayMask = mask;
+
+    for (unsigned i = 0; i < IO_HISTORY_MAX_MOISTURE; ++i) {
+        record.moisture[i] = NAN;
+    }
+    record.luminosity = NAN;
+    record.temperature = NAN;
+    record.airHumidity = NAN;
+    record.waterLevel = NAN;
+
+#ifdef HAS_MOISTURE_SENSOR
+    for (unsigned i = 0; i < MOISTURE_SENSOR_COUNT && i < IO_HISTORY_MAX_MOISTURE;
+         ++i) {
+        record.moisture[i] = g_soilMoisture[i].getAverage();
+    }
+#endif
+#ifdef HAS_LUMINOSITY_SENSOR
+    record.luminosity = g_luminosity.getAverage();
+#endif
+#ifdef HAS_DHT_SENSOR
+    record.temperature = g_temperature.getAverage();
+    record.airHumidity = g_airHumidity.getAverage();
+#endif
+#ifdef HAS_WATER_LEVEL_SENSOR
+    record.waterLevel = g_waterLevel.getAverage();
+#endif
+
+    ioHistory.append(record);
+}
+
 static void
 logBackupTaskHandler()
 {
@@ -603,6 +652,7 @@ tasksSetup()
     g_taskScheduler.addTask(&g_clockUpdateTask);
     g_taskScheduler.addTask(&g_checkInternetTask);
     g_taskScheduler.addTask(&g_logBackupTask);
+    g_taskScheduler.addTask(&g_historyTask);
     g_taskScheduler.addTask(&g_mqttTask);
     g_taskScheduler.addTask(&g_talkBackTask);
 #ifdef HAS_MOISTURE_SENSOR
@@ -671,6 +721,16 @@ tasksSetup()
     g_mqttTask.enableDelayed(g_mqttTaskPeriod);
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
     g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
+
+    // Enabled only when the buffer actually opened: an append into a file that
+    // failed to format would log an error every period, forever.
+    if (ioHistory.ready()) {
+        const unsigned period = (unsigned)config.historyPeriodSec * 1000u;
+        g_historyTask.setPeriod(period);
+        g_historyTask.enableDelayed(period);
+        logger.info("io_history: logging every " +
+                    String(config.historyPeriodSec) + " s");
+    }
 
     logger.info("Tasks setup done!");
     logger.backup();

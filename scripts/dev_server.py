@@ -65,6 +65,14 @@ class DeviceState:
         self.dht_read_errors = 0
         self.logs: deque[str] = deque(maxlen=self.LOG_CAPACITY)
 
+        # Mirrors the on-device ring buffer in src/io_history.cpp. A deque with
+        # maxlen IS a ring buffer, so the simulator gets the same drop-oldest
+        # behaviour without the file.
+        self.history_capacity = 1440
+        self.history: deque[dict] = deque(maxlen=self.history_capacity)
+        self.history_period_s = 60
+        self._history_next = 0.0
+
         # Mirrors config.io.relays. Index 0 is the watering relay, as in the
         # firmware — TalkBack and the legacy `watering` control target it.
         self.relay_names = ["Watering", "Relay 2", "Relay 3", "Relay 4"]
@@ -156,6 +164,28 @@ class DeviceState:
             self.dht_total_reads += 1
             if random.random() < 0.02:
                 self.dht_read_errors += 1
+
+            if now >= self._history_next:
+                self._history_next = now + self.history_period_s
+                mask = 0
+                for i, relay in enumerate(self.relays):
+                    if relay["on"]:
+                        mask |= 1 << i
+                # Absent channels are null, not 0 — the device writes NaN and
+                # the reader has to tell "not fitted" from "read zero".
+                self.history.append({
+                    "t": int(now),
+                    "relays": mask,
+                    "moisture": [
+                        round(self._sensors["Soil Moisture 1"].average, 2),
+                        round(self._sensors["Soil Moisture 2"].average, 2),
+                        None, None,
+                    ],
+                    "lum": round(self._sensors["Luminosity"].average, 2),
+                    "temp": round(self._sensors["Temperature"].average, 2),
+                    "hum": round(self._sensors["Air Humidity"].average, 2),
+                    "water": None,
+                })
 
         # Logging takes the same lock, so it cannot happen inside the block.
         for name in finished:
@@ -453,6 +483,10 @@ PUBLIC_PATHS = {
 # device never serves them, so neither does the simulator.
 SIM_USERS = [{"username": "admin", "role": 2}]
 
+# Same cap as g_historyMaxResponse in src/web.cpp: the device cannot render a
+# larger reply without running out of DRAM, so the simulator must not either.
+HISTORY_MAX_RESPONSE = 200
+
 
 def users_apply(params: dict) -> tuple[int, str, bool]:
     """Mirrors handleUsersPost in src/web.cpp. Returns (status, message, reauth)."""
@@ -583,6 +617,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(config_masked())
         elif path == "/users.json":
             self._send_json(SIM_USERS)
+        elif path == "/history.json":
+            limit = 100
+            raw = parse_qs(url.query).get("limit", [""])[0]
+            if raw.isdigit() and int(raw) > 0:
+                limit = int(raw)
+            limit = min(limit, HISTORY_MAX_RESPONSE)
+            with STATE.lock:
+                records = list(STATE.history)[-limit:]
+                payload = {
+                    "capacity": STATE.history_capacity,
+                    "stored": len(STATE.history),
+                    "returned": len(records),
+                    "records": records,
+                }
+            self._send_json(payload)
         elif path == "/logs":
             body = STATE.logs_text().encode("utf-8")
             self._send(HTTPStatus.OK, body, "text/plain; charset=utf-8")

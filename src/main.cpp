@@ -1,6 +1,7 @@
 #include "SPIFFS.h"
 #include "BuildConfig.h"
 #include "core/config.h"
+#include "core/io_history.h"
 #include "core/logger.h"
 #include "core/tasks.h"
 #include "core/user_store.h"
@@ -53,6 +54,10 @@ setup(void)
     // the compiled WiFi defaults cannot associate. Assigning it afterwards left
     // the only failure indicator unreachable in exactly the case it exists for.
     g_ledBlinkEnabled = error;
+
+    // After the config load so the capacity is the configured one, and before
+    // webSetup() so /history.json never sees a half-open buffer.
+    ioHistory.begin((uint16_t)config.historyRecords);
 
     logger.backupSetup();
     webSetup();

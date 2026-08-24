@@ -11,7 +11,9 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
   from the device with no CDN dependency (jQuery is bundled)
 - **Per-probe moisture classification** — Dry / Humid / Wet from a two-point
   calibration, shown on the dashboard
-- **Cloud logging** — sensor data published to ThingSpeak over MQTT every 2 minutes
+- **Cloud logging** — sensor data published to ThingSpeak over MQTT
+- **On-device history** — a fixed-size ring buffer keeps the last N I/O snapshots
+  across reboots, served as JSON
 - **Internet watchdog** — pings Google/Cloudflare DNS and reports connectivity losses
 - **NTP time sync** — clock synchronized daily via Brazilian NTP pool
 - **Authenticated web UI** — nonce + SHA-256 login with OPERATOR/ADMIN roles, per-IP lockout and persistent sessions
@@ -125,6 +127,10 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
     "log": {
         "level": 4               // 0 disable .. 4 info (default) .. 6 trace
     },
+    "history": {                 // on-device ring buffer of I/O snapshots
+        "records": 1440,         // file capacity; 0 disables. 1440 = 24 h at 60 s
+        "periodSec": 60          // one record per this many seconds
+    },
     "moisture": [                // two-point calibration, one entry per probe
         { "dry": 0, "wet": 0 },  // dry = reading in air, wet = submerged
         { "dry": 0, "wet": 0 }   // equal values disable classification
@@ -177,7 +183,7 @@ username that is not stored yet.
 
 | Route | Role |
 |---|---|
-| `/data.json` | any signed-in user |
+| `/data.json`, `/history.json` | any signed-in user |
 | `/control` | OPERATOR |
 | `/config.json`, `/logs`, `/updateEnable`, `/update`, `/spiffs/*` | ADMIN |
 
