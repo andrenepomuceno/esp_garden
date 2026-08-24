@@ -22,6 +22,7 @@ import json
 import math
 import os
 import random
+import re
 import secrets
 import threading
 import time
@@ -910,8 +911,95 @@ class Handler(BaseHTTPRequestHandler):
             # Pretend to accept; do nothing real.
             STATE.log("info", f"[OTA] Received {length} bytes (simulated)")
             self._send(HTTPStatus.OK, b"OK")
+        elif path == "/spiffs/upload":
+            self._handle_file_upload(raw)
         else:
             self._send(HTTPStatus.NOT_FOUND, b"not found")
+
+    # ---------- single-file upload ----------
+    # Mirrors src/web_files.cpp, refusals included. It deliberately does NOT
+    # write anything: the simulator serves the repository's data/ directory, so
+    # an upload that landed on disk would turn a UI test into an edit of the
+    # source tree.
+    UPLOAD_PROTECTED = ("/users", "/sessions")
+
+    def _handle_file_upload(self, raw: bytes) -> None:
+        filename, body, fields = self._parse_multipart(raw)
+        if filename is None:
+            self._send_json({"ok": False, "error": "no file in request"},
+                            HTTPStatus.BAD_REQUEST)
+            return
+
+        path = filename if filename.startswith("/") else "/" + filename
+
+        reason = None
+        if len(path) < 2:
+            reason = "path must start with a slash"
+        elif ".." in path:
+            reason = "path must not contain .."
+        elif len(path) > 31:
+            reason = "path longer than 31 characters"
+        elif path == "/upload.tmp":
+            reason = "reserved path"
+        elif path.startswith("/config"):
+            reason = "use POST /config.json, which validates the document"
+        elif path.startswith(self.UPLOAD_PROTECTED):
+            reason = "credential store"
+
+        if reason:
+            STATE.log("warning", f"[upload] refused {path}: {reason}")
+            self._send_json({"ok": False, "error": f"refused {path}: {reason}"},
+                            HTTPStatus.BAD_REQUEST)
+            return
+
+        expected = fields.get("MD5")
+        if expected:
+            actual = hashlib.md5(body).hexdigest()
+            if actual.lower() != expected.lower():
+                self._send_json(
+                    {"ok": False,
+                     "error": f"checksum mismatch: expected {expected}, "
+                              f"got {actual}"},
+                    HTTPStatus.BAD_REQUEST)
+                return
+
+        STATE.log("warning", f"[upload] wrote {path} ({len(body)} B) (simulated)")
+        self._send_json({"ok": True, "path": path, "bytes": len(body),
+                         "free": (463 - 165) * 1024})
+
+    @staticmethod
+    def _parse_multipart(raw: bytes):
+        """Returns (filename, file bytes, {other form fields}).
+
+        Deliberately minimal: enough for the one shape data/update.js sends.
+        The point is to exercise the client and the refusals, not to be a
+        multipart implementation.
+        """
+        crlf = b"\r\n"
+        boundary = raw.partition(crlf)[0].strip()
+        if not boundary.startswith(b"--"):
+            return None, b"", {}
+
+        filename, file_body, fields = None, b"", {}
+        for part in raw.split(boundary):
+            header, sep, content = part.partition(crlf + crlf)
+            if not sep:
+                continue
+            # EXACTLY the one CRLF that separates this part from the next
+            # boundary. rstrip() would strip any trailing newline, including
+            # the file's own — which is a checksum mismatch on every text file
+            # that ends the way text files end.
+            if content.endswith(crlf):
+                content = content[:-2]
+            disposition = header.decode("utf-8", "replace")
+            match = re.search(r'filename="([^"]*)"', disposition)
+            if match:
+                filename, file_body = match.group(1), content
+                continue
+            match = re.search(r'name="([^"]+)"', disposition)
+            if match:
+                fields[match.group(1)] = content.decode("utf-8", "replace").strip()
+        return filename, file_body, fields
 
     # ---------- control parser ----------
     def _handle_control(self, params: dict[str, str]) -> None:

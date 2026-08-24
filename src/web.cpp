@@ -9,6 +9,7 @@
 #include "network/web.h"
 #include "network/web_config.h"
 #include "network/web_data.h"
+#include "network/web_files.h"
 #include "network/web_ota.h"
 #include "network/web_users.h"
 #include <AsyncTCP.h>
@@ -364,6 +365,13 @@ webSetup()
       .on("/update", HTTP_POST, handleUpdateRequest, handleUpdateUpload)
       .addMiddleware(adminOnly);
 
+    // Registered above the /spiffs prefix handlers below, which are GET-only
+    // and would not match a POST anyway — but keeping every /spiffs route
+    // together is what makes the shadow ordering readable.
+    g_webServer
+      .on("/spiffs/upload", HTTP_POST, handleFileUploadRequest, handleFileUpload)
+      .addMiddleware(adminOnly);
+
     // MUST be registered BEFORE the serveStatic they shadow: handlers are
     // matched in registration order, and the matcher is a PREFIX, so the
     // rotated users.bak.json variants are covered too. /config.json carries the
@@ -390,6 +398,8 @@ webSetup()
     g_webServer.on("/updateEnable", HTTP_POST, handleUpdateEnable);
     g_webServer.on(
       "/update", HTTP_POST, handleUpdateRequest, handleUpdateUpload);
+    g_webServer.on(
+      "/spiffs/upload", HTTP_POST, handleFileUploadRequest, handleFileUpload);
 #endif
 
     g_webServer.onNotFound(

@@ -41,6 +41,30 @@
             </div>
         </div>
 
+        <div class="card mb-3">
+            <div class="card-header py-2 fw-semibold">Replace a single file</div>
+            <div class="card-body">
+                <p class="small text-secondary mb-3">
+                    A filesystem update rewrites the whole partition, including
+                    <code>/config.json</code> &mdash; which is how a device loses its
+                    Wi-Fi and broker credentials over a one-line change to a stylesheet.
+                    Use this to change one web asset instead. The configuration and the
+                    credential stores are refused here on purpose.
+                </p>
+
+                <label for="file-single" class="form-label fw-semibold small">Select file</label>
+                <input type="file" id="file-single" class="form-control mb-3">
+
+                <label for="path-single" class="form-label fw-semibold small">Destination path</label>
+                <input type="text" id="path-single" class="form-control mb-1" placeholder="/index.js.gz">
+                <div class="form-text mb-3">Max 31 characters, including the leading slash.</div>
+
+                <button type="button" id="button-single" class="btn btn-outline-primary w-100 fw-semibold py-2">
+                    &#x1F4C4; Upload file
+                </button>
+            </div>
+        </div>
+
         <div class="card" id="progress-card" style="display:none;">
             <div class="card-body">
                 <label class="form-label small fw-semibold mb-1">Upload Progress</label>
