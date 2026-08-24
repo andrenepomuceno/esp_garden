@@ -34,6 +34,24 @@ tbHandleMessage(const char* topic, const uint8_t* payload, unsigned length);
 void
 tbLoop();
 
+// Queue one telemetry object for the NEXT tbLoop(), i.e. within milliseconds
+// rather than at the next periodic publish.
+//
+// This exists because a relay that runs for five seconds is invisible to a
+// payload built once a minute: the sample lands between the events. Anything
+// whose duration is shorter than the publish period has to be recorded as an
+// EVENT or as a sticky flag — never sampled. The history record learned that
+// when the sticky mask was added; the telemetry had not.
+//
+// Safe from any task. It only appends to the outbox; the publish happens on
+// the loop task, which is what keeps it out of the critical runner and out of
+// the PubSubClient callback.
+//
+// A no-op on the ThingSpeak backend, which has eight numbered fields and no
+// way to express an event.
+void
+tbPublishEvent(const String& json);
+
 // True while a cloud firmware download is running. The web OTA endpoints check
 // this — both drive the same single Update object, and letting a browser upload
 // start mid-download corrupts whichever finishes second.

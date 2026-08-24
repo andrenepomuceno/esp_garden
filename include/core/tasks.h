@@ -44,3 +44,8 @@ mqttEnable(bool enable);
 // failure.
 void
 requestRestart();
+
+// Why the last boot happened, as a readable string. A panic, a watchdog and a
+// power cut are three different investigations and the enum alone hides that.
+const char*
+resetReasonName();

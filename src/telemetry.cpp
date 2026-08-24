@@ -100,16 +100,28 @@ buildThingsBoardPayload()
         telemetry["reservoirRaised"] = floatRaised();
     }
 
+    // relayN is what the relay is doing RIGHT NOW; relayNRan says whether it
+    // ran at any point in the period just published. Both are needed and they
+    // answer different questions: the first drives a live indicator, the second
+    // is the only one that can see a five-second watering between two
+    // one-minute publishes.
+    const uint16_t fired = relayStickyTake(RELAY_STICKY_TELEMETRY);
     uint16_t mask = 0;
     for (unsigned i = 0; i < config.relayCount && i < 16; ++i) {
-        const String key = "relay" + String(i + 1);
         const bool on = relayIsOn(i);
+        const bool ran = (fired & (uint16_t)(1u << i)) != 0;
+
+        const String key = "relay" + String(i + 1);
         telemetry[key.c_str()] = on;
+        const String ranKey = key + "Ran";
+        telemetry[ranKey.c_str()] = ran;
+
         if (on) {
             mask |= (uint16_t)(1u << i);
         }
     }
     telemetry["relayMask"] = (int)mask;
+    telemetry["relayRanMask"] = (int)fired;
 
     if (g_pendingWateringMs > 0) {
         telemetry["wateringMs"] = (int)g_pendingWateringMs;

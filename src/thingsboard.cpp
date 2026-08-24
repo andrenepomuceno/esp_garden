@@ -39,7 +39,10 @@ static const unsigned TB_CHUNK_MAX_RETRIES = 5;
 // The outbox exists because publishing is forbidden inside the callback (see
 // the header). It only ever holds an RPC reply, an fw_state line or a chunk
 // request, so the cap is generous.
-static const unsigned TB_OUTBOX_MAX = 8;
+// Raised from 8 when relay and reservoir events joined the RPC replies and the
+// fw_state lines. A watering start, its stop and a refusal can land in the same
+// second, and a dropped event is worse than a late one.
+static const unsigned TB_OUTBOX_MAX = 16;
 
 // ---------------------------------------------------------------------------
 // State
@@ -102,6 +105,15 @@ tbPublishState(const String& state)
         telemetry["fw_error"] = g_fotaError;
     }
     tbQueue(TB_TELEMETRY, JSON.stringify(telemetry));
+}
+
+void
+tbPublishEvent(const String& json)
+{
+    if (!mqttIsThingsBoard()) {
+        return;
+    }
+    tbQueue(TB_TELEMETRY, json);
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +590,25 @@ tbOnConnect()
     attributes["current_fw_version"] = FW_VERSION;
     attributes["hostname"] = config.hostname;
     tbQueue(TB_ATTRIBUTES, JSON.stringify(attributes));
+
+    // A reboot as a TELEMETRY event, once per connection, so the cloud gets a
+    // timeline of them instead of a counter nobody reads. It is not the same
+    // question as "is it up now": this device restarts on a marginal supply
+    // (`flash read err` on the first flash read of every boot), and the shape
+    // that matters is how OFTEN, which only a timestamped series shows.
+    //
+    // Deliberately not a client attribute: attributes are current state and
+    // overwrite, and every reboot overwriting the last one is exactly the
+    // information being thrown away.
+    static bool bootReported = false;
+    if (!bootReported) {
+        bootReported = true;
+        JSONVar boot;
+        boot["bootReason"] = resetReasonName();
+        boot["bootFreeHeapKB"] = (int)(ESP.getFreeHeap() / 1024);
+        boot["firmware"] = FW_VERSION;
+        tbQueue(TB_TELEMETRY, JSON.stringify(boot));
+    }
 
     if (config.mqttRpc) {
         mqttSubscribeTopic(String(TB_RPC_REQUEST) + "+");

@@ -17,7 +17,43 @@ static RelayState g_relay[RELAY_MAX] = {};
 
 portMUX_TYPE g_relayMux = portMUX_INITIALIZER_UNLOCKED;
 
-uint16_t g_relaySticky = 0;
+static uint16_t g_relaySticky[RELAY_STICKY_CONSUMERS] = { 0, 0 };
+static RelayPendingEvent g_relayPending[RELAY_MAX] = {};
+
+// Marks a relay as having fired, for every consumer at once. Called with
+// g_relayMux already held.
+static void
+relayMarkSticky(unsigned index)
+{
+    for (unsigned c = 0; c < RELAY_STICKY_CONSUMERS; ++c) {
+        g_relaySticky[c] |= (uint16_t)(1u << index);
+    }
+}
+
+uint16_t
+relayStickyTake(RelayStickyConsumer consumer)
+{
+    if (consumer >= RELAY_STICKY_CONSUMERS) {
+        return 0;
+    }
+    portENTER_CRITICAL(&g_relayMux);
+    const uint16_t mask = g_relaySticky[consumer];
+    g_relaySticky[consumer] = 0;
+    portEXIT_CRITICAL(&g_relayMux);
+    return mask;
+}
+
+void
+relayTakePendingEvents(RelayPendingEvent out[RELAY_MAX])
+{
+    portENTER_CRITICAL(&g_relayMux);
+    for (unsigned i = 0; i < RELAY_MAX; ++i) {
+        out[i] = g_relayPending[i];
+        g_relayPending[i].started = false;
+        g_relayPending[i].ended = false;
+    }
+    portEXIT_CRITICAL(&g_relayMux);
+}
 
 unsigned g_wateringCycles = 0;
 
@@ -67,6 +103,11 @@ relaysTick()
             (millis() - g_relay[i].startTime >= g_relay[i].duration)) {
             g_relay[i].on = false;
             expired = true;
+            // A bit, and nothing more. This runs on the critical runner with a
+            // 50 ms deadline; building the message here is how that deadline
+            // becomes a watchdog reset. The io task turns it into telemetry a
+            // second later.
+            g_relayPending[i].ended = true;
         }
         portEXIT_CRITICAL(&g_relayMux);
 
@@ -76,7 +117,7 @@ relaysTick()
 
         if (relayIsOn(i)) {
             portENTER_CRITICAL(&g_relayMux);
-            g_relaySticky |= (uint16_t)(1u << i);
+            relayMarkSticky(i);
             portEXIT_CRITICAL(&g_relayMux);
         }
     }
@@ -141,6 +182,7 @@ startRelay(unsigned index, unsigned int duration)
     String veto;
     if (!relayStartAllowed(index, veto)) {
         logger.warning(config.relayName[index] + " refused: " + veto);
+        relayRefusedHook(index, veto);
         return false;
     }
 
@@ -163,7 +205,9 @@ startRelay(unsigned index, unsigned int duration)
     logger.info("Starting " + config.relayName[index] + " for " +
                 String(duration) + " ms");
     portENTER_CRITICAL(&g_relayMux);
-    g_relaySticky |= (uint16_t)(1u << index);
+    relayMarkSticky(index);
+    g_relayPending[index].started = true;
+    g_relayPending[index].duration = duration;
     portEXIT_CRITICAL(&g_relayMux);
     relayWrite(index, true);
 
@@ -192,6 +236,7 @@ stopRelay(unsigned index)
     if (g_relay[index].on) {
         g_relay[index].on = false;
         wasOn = true;
+        g_relayPending[index].ended = true;
     }
     portEXIT_CRITICAL(&g_relayMux);
 

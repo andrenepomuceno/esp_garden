@@ -27,7 +27,38 @@ extern portMUX_TYPE g_relayMux;
 // lets a producer store a stale word back over the clear, or the clear discard
 // an activation that arrived mid-sequence. portENTER_CRITICAL masks the current
 // core, so it excludes nothing unless both sides take it.
-extern uint16_t g_relaySticky;
+// Which relays fired since each consumer last looked.
+//
+// One mask per consumer, deliberately. It is a TAKE-AND-CLEAR flag, so a single
+// shared mask means whichever reader gets there first steals the event from the
+// other — the history record would silently lose every watering the telemetry
+// happened to report first.
+enum RelayStickyConsumer
+{
+    RELAY_STICKY_HISTORY = 0,
+    RELAY_STICKY_TELEMETRY = 1,
+    RELAY_STICKY_CONSUMERS = 2
+};
+
+// Reads and clears one consumer's mask. Safe from any task.
+uint16_t
+relayStickyTake(RelayStickyConsumer consumer);
+
+// One pending start/stop per relay, recorded by whoever switches it and drained
+// by the io task. The critical runner sets a bit and nothing more: building a
+// String or touching a queue from there is how a 50 ms deadline becomes a
+// watchdog reset.
+struct RelayPendingEvent
+{
+    bool started;
+    bool ended;
+    unsigned duration; // ms, from the start that set it
+};
+
+// Moves the pending events out under the lock and returns them. Publishing is
+// the caller's job, and must happen outside it.
+void
+relayTakePendingEvents(RelayPendingEvent out[RELAY_MAX]);
 
 // Longest a relay may stay energised in one activation. Every path to a pump
 // — the web UI, TalkBack, a schedule, a ThingsBoard RPC — goes through
@@ -91,3 +122,10 @@ relayStartAllowed(unsigned index, String& reason);
 // knows nothing about.
 void
 relayStartedHook(unsigned index, unsigned int duration);
+
+// Called when a start was REFUSED. A refusal is an event in its own right —
+// "the pump was asked to run and did not" is precisely what an operator needs
+// to see, and until now it existed only as a log line on a device nobody is
+// watching.
+void
+relayRefusedHook(unsigned index, const String& reason);

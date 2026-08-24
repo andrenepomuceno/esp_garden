@@ -2,6 +2,7 @@
 #include "BuildConfig.h"
 #include "core/io_history.h"
 #include "core/moisture_model.h"
+#include "network/thingsboard.h"
 #include "core/logger.h"
 #include "core/relays.h"
 #include "core/sensors.h"
@@ -111,6 +112,88 @@ relayStartAllowed(unsigned index, String& reason)
     return true;
 }
 
+// Turns the bits the switching code recorded into telemetry, once a second.
+//
+// The device used to report relays by SAMPLING them into the 1-minute payload,
+// so a five-second watering was invisible: the sample landed between the
+// events. The history record solved this with a sticky mask long ago and the
+// telemetry never got it. Now there are both — an immediate event for the
+// transition, and a sticky mask so the periodic payload says "this ran during
+// the period" rather than "it happens to be on right now".
+static void
+publishRelayEvents()
+{
+    RelayPendingEvent pending[RELAY_MAX];
+    relayTakePendingEvents(pending);
+
+    for (unsigned i = 0; i < config.relayCount; ++i) {
+        if (!pending[i].started && !pending[i].ended) {
+            continue;
+        }
+
+        JSONVar event;
+        const String key = "relay" + String(i + 1) + "Event";
+        // Both flags can be set in the same second — a 500 ms activation
+        // starts and finishes between two drains. Reporting "ended" then is
+        // right: what the operator needs to know is that it ran and is done.
+        event[key.c_str()] = pending[i].started
+                               ? (pending[i].ended ? "ran" : "started")
+                               : "stopped";
+        event["relay"] = (int)i;
+        event["relayName"] = config.relayName[i];
+        if (pending[i].started) {
+            event["durationMs"] = (int)pending[i].duration;
+        }
+        tbPublishEvent(JSON.stringify(event));
+    }
+}
+
+// The float switch has exactly the relay's problem and a worse consequence: a
+// reservoir that runs empty and is refilled between two publishes never
+// happened, as far as the cloud is concerned — and "the tank ran dry" is the
+// one event an operator most needs to see. So the TRANSITION is published, not
+// the level.
+static void
+publishFloatEvents()
+{
+    if (!config.floatFitted) {
+        return;
+    }
+
+    static bool known = false;
+    static bool lastRaised = false;
+
+    const bool raised = floatRaised();
+    if (known && raised == lastRaised) {
+        return;
+    }
+
+    // The first reading after boot is reported too: an operator coming back to
+    // a device needs to know the current state, not only the next change.
+    JSONVar event;
+    event["reservoirRaised"] = raised;
+    event["reservoirEvent"] = known ? (raised ? "refilled" : "emptied")
+                                    : "initial reading";
+    tbPublishEvent(JSON.stringify(event));
+
+    known = true;
+    lastRaised = raised;
+}
+
+void
+relayRefusedHook(unsigned index, const String& reason)
+{
+    if (index >= config.relayCount) {
+        return;
+    }
+
+    JSONVar event;
+    event["relayRefused"] = config.relayName[index];
+    event["relay"] = (int)index;
+    event["reason"] = reason;
+    tbPublishEvent(JSON.stringify(event));
+}
+
 // Seam with src/relays.cpp: startRelay() calls this once the relay is
 // energised, so relay switching itself stays free of the watering bookkeeping.
 void
@@ -142,6 +225,12 @@ ioTaskHandler()
     // Same task, same thread as the accumulator writes above — the request
     // handler must never walk these lists itself.
     webUpdateDataCache();
+
+    // Relay transitions, at 1 Hz rather than at the 1-minute publish. The
+    // critical runner and startRelay() only set bits; this is where they become
+    // messages, on a background task where building a String is allowed.
+    publishRelayEvents();
+    publishFloatEvents();
 }
 
 static void
@@ -315,10 +404,7 @@ historyTaskHandler()
 
     // Everything that fired during the period, not just what happens to be on
     // at this instant.
-    portENTER_CRITICAL(&g_relayMux);
-    uint16_t mask = g_relaySticky;
-    g_relaySticky = 0;
-    portEXIT_CRITICAL(&g_relayMux);
+    uint16_t mask = relayStickyTake(RELAY_STICKY_HISTORY);
 
     for (unsigned i = 0; i < config.relayCount && i < 16; ++i) {
         if (relayIsOn(i)) {

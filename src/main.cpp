@@ -11,8 +11,10 @@
 #include <esp_system.h>
 
 // esp_reset_reason() returns an enum; the names are worth spelling out because
-// the number alone sends the reader to a header.
-static const char*
+// the number alone sends the reader to a header. Not static: the ThingsBoard
+// connect publishes it too, so the cloud gets a timeline of reboots rather than
+// a line in an 8 KB log that rotates.
+const char*
 resetReasonName()
 {
     switch (esp_reset_reason()) {

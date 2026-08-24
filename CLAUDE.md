@@ -727,6 +727,56 @@ boot, `documentPinsAreUsable()` refuses a bad map at **save** time (boot is too
 late: the document is already on flash), and `/capabilities.json` derives the
 UI's pin lists by walking every GPIO through the same predicates.
 
+## Sampling vs events — the rule, and where it was broken
+
+**Anything whose duration is shorter than the publish period must be recorded as
+an EVENT or as a sticky flag. Never sampled.** A watering lasts five seconds and
+the payload is built once a minute, so an instantaneous read of `relayIsOn()`
+misses roughly eleven activations in twelve. The history record learned this
+when `g_relaySticky` was added; the telemetry kept sampling for months longer.
+
+Three mechanisms, and which to use:
+
+| | Use for | Example |
+|---|---|---|
+| **Event** | A transition an operator needs timestamped | relay started/stopped/refused, reservoir emptied, reboot, `fw_state` |
+| **Sticky flag** | "Did this happen at all during the period" | `relayNRan`, `relayRanMask`, `IO_HISTORY_FLAG_FLOAT_RAISED` |
+| **Accumulator** | A quantity, where the mean or total is the answer | moisture, luminosity, flow rate, `flowTotalLitres`, ping |
+
+Events reach the broker through `tbPublishEvent()`, which appends to the same
+outbox `tbLoop()` drains every `loop()` iteration — so latency is milliseconds,
+not a minute.
+
+**The critical runner never builds one.** `relaysTick()` sets a bit in
+`g_relayPending[]` under `g_relayMux` and nothing else; the io task turns bits
+into messages at 1 Hz, where allocating a String is allowed. A 50 ms deadline
+and a JSON serialiser do not belong in the same function — that is the same
+mistake that panicked this board with an interrupt watchdog.
+
+**The sticky mask is per CONSUMER.** It is take-and-clear, so one shared mask
+means whichever reader arrives first steals the event from the other: the
+history record would silently lose every watering the telemetry happened to
+report first. `relayStickyTake(RELAY_STICKY_HISTORY | _TELEMETRY)`.
+
+**`relayN` and `relayNRan` answer different questions** and both are published.
+The first drives a live indicator; the second is the only one that can see a
+watering that started and finished between two publishes.
+
+### Still sampled, and whether that is fine
+
+- **Moisture, luminosity, temperature, water level** — accumulated over the
+  publish interval. Correct: the question is the mean, and these move slowly.
+- **`Min Free Heap`** — already a low-water mark, which is the sticky form of a
+  quantity. A spike between publishes is caught. `Free Heap` alone would not.
+- **The moisture CLASS** (Dry/Humid/Wet) — sampled. Defensible while the soil
+  moves slowly, but a watering causes a fast transition, so a class-change
+  event is the obvious next one if a badge is ever seen to skip a state.
+- **Login failures and per-IP lockouts** — only in the 8 KB rolling log, which
+  a busy device overwrites within hours. These are security events on a device
+  exposed to a LAN and they have no durable record anywhere.
+- **Config writes and restarts** — same: an audit trail that lives only in a
+  log that rotates.
+
 ## Relay seams — why `startRelay()` is the only door
 
 `src/relays.cpp` owns switching and nothing else. Two seams connect it to the
