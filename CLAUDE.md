@@ -34,7 +34,8 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | History | `src/io_history.cpp`, `include/core/segment_index.h` | Append-only segments of I/O snapshots on LittleFS, served by `/history.json` |
 | Moisture model | `src/moisture_classifier.cpp` (pure maths, host-tested), `src/moisture_model.cpp` (training, persistence) | Gaussian naive Bayes per probe, labelled by watering events. See [Soil moisture](#soil-moisture-a-classifier-trained-on-watering-events) |
 | Stats | `src/accumulator_v2.cpp` | Rolling window mean + variance over a `std::list<float>` |
-| Filesystem image | `data/` | `index.*`, `login.*`, `config.*`, `users.*`, `update.*`, `auth.js`; vendored `jquery.js`, `sha256.js`, `spark-md5.js` (all MIT); `favicon.ico`, `thingspeak.pem`, `config.template.json`; vendored `bootstrap.css.gz` |
+| Web sources | `data/` | Plain, diffable, served as-is by the simulator. `index.*`, `login.*`, `config.*`, `users.*`, `update.*`, `auth.js`; vendored `jquery.js`, `sha256.js`, `spark-md5.js`, `bootstrap.css` (all MIT, shipped `.gz`); `favicon.ico`, `*.pem`, `config.template.json` |
+| Filesystem image | `scripts/build_assets.py` → `.pio/assets/` | Bundles each page's scripts into one file and gzips everything the web server serves. `data_dir` points the image here, so `-t buildfs` cannot pack the unbundled sources |
 | Partitions | `partitions/esp_garden_4mb.csv` | 1.69 MB per OTA slot, 512 KB LittleFS. **Cannot be changed over OTA** |
 | Filesystem | `include/core/filesystem.h` | The one line naming the driver. Everything else says `FILESYSTEM`, never `LittleFS` |
 | Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `feeds_plot.py` |
@@ -244,6 +245,22 @@ garbage. An hour went into learning that.
   and were read back byte-identical, so `data/` changes no longer cost a
   partition rewrite.
 
+- **The page-load fix, measured on the device** (2026-08-25). Before:
+  `devices.html` pulled 7 requests and **1 of 3 loads** came back with a
+  truncated asset, the largest free block collapsing 45 → 1 KB under the load.
+  After bundling and gzipping: **4 requests, 10/10 clean loads, largest free
+  block steady at 53 KB.** Every asset was verified byte-identical after upload
+  and again after gzip round-trip. Nine pages were deployed one file at a time
+  through `/spiffs/upload`, so `/config.json` was never at risk, and the
+  filesystem went 392 → 320 KB.
+
+  **Two reboots were self-inflicted and are recorded as such.** Hammering the
+  device with eight parallel requests in back-to-back rounds tripped an
+  **interrupt watchdog** once; a second reboot logged `software (ESP.restart)`,
+  whose only paths are `/control reset` and a finished OTA. Between them the
+  board had run **15 hours** unattended with no reboot at all. Load-testing an
+  active-low relay board is not free: every reset pulses every pump.
+
 **Unverified — written, compiles, never run on hardware:**
 
 - **The history boot-loop interlock.** The RTC strike counter compiles and
@@ -330,13 +347,14 @@ PlatformIO is **not on `PATH`** on Windows. Use the penv binary; in WSL `pio` is
 $pio = "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe"
 & $pio run -e espgarden1                      # compile only  (~9 s, verified)
 & $pio run -e espgarden1 -t upload            # flash APP ONLY
-& $pio run -e espgarden1 -t buildfs           # -> .pio/build/espgarden1/littlefs.bin
+& $pio run -e espgarden1 -t buildfs           # builds .pio/assets first, then littlefs.bin
 & $pio run -e espgarden1 -t uploadfs          # TRAP: overwrites the device's /config.json
 & $pio device monitor -b 115200               # serial @115200
 & $pio run -t clean -e espgarden1
 ```
 
 - Envs: `espgarden1` (NodeMCU-32S — moisture + luminosity + DHT), `espgarden2`, `espgarden3`, `espgarden4`, `espgarden5` (hardware v2 — 2 probes + LDR + DHT + 4 relays). CI builds all five in a matrix.
+- **The filesystem image is BUILT from `data/`, never packed from it.** `[platformio] data_dir = .pio/assets` and a `pre:` hook run `scripts/build_assets.py` on every invocation, so there is no step to forget. Run it by hand with `python scripts/build_assets.py --list` to see what it would produce.
 - **`pio run` does not need `data/config.json`**; `-t buildfs` / `-t uploadfs` do. `data/config.json` is gitignored. CI does `cp data/config.template.json data/config.json` — **never replicate that locally**, it destroys the real Wi-Fi/ThingSpeak/OTA credentials of a physical device.
 - The ESP32 currently attached is on **COM7** (Silicon Labs CP210x). `upload_port`/`monitor_port` are unset, so PlatformIO auto-detects; pass `--upload-port COM7` when several boards are attached.
 - **Host tests:** `pio test -e native` (CI gates the firmware build on them). `native` is the env; `test_*` is a filter, so `pio test -e test_accumulator` fails.
@@ -775,6 +793,63 @@ why they cannot share a threshold.
   extrapolated a 0.2-day window into "704 points/day".
 
 ---
+
+## Web assets — bundled and gzipped, because requests are the scarce resource
+
+`devices.html` stopped loading, and the browser said
+`ERR_CONTENT_LENGTH_MISMATCH` on `devices_render.js`. It was not a corrupt file:
+**served one at a time, every asset came back byte-identical.** Under the six
+parallel requests a browser makes for one page, the largest contiguous free heap
+block collapsed from ~45 KB to as little as 1 KB and ESPAsyncWebServer truncated
+whichever response it was filling — so the victim changed on every reload, which
+is what a resource ceiling looks like from outside.
+
+LittleFS is what pushed it over: every open file carries a 4 KB cache where
+SPIFFS used 256 B pages. CLAUDE.md's own 2.2.1 load test — six endpoints in
+parallel, eight rounds, zero failures, largest block never below 49 KB — was
+measured on SPIFFS and does not carry over.
+
+**Gzip alone was not enough.** Compressing the five assets the page loads cut
+them ~70 % and took it from failing every load to failing one in three, because
+the pressure scales with the NUMBER of open files, not their size. What fixed it
+was going from 7 requests to 4: **10/10 clean page loads, and the largest free
+block stayed at 53 KB instead of collapsing.**
+
+`scripts/build_assets.py` produces `.pio/assets/` from `data/`:
+
+- **The scripts a page loads are read from its HTML, in order**, and
+  concatenated into the LAST one's name. Deriving the order from the markup
+  rather than from a manifest is what stops the two drifting apart, and reusing
+  the last name means **the route table does not change** — `/devices.js` was
+  already a route and now carries `auth + model + render + devices`.
+- **A script that exists only as `<name>.gz` in `data/` is vendored** (jQuery,
+  sha256, SparkMD5, Bootstrap) and stays a separate file: it is shared across
+  nine pages, and bundling one into each would cost 30 KB of flash per copy.
+- **A script shared by several pages is also emitted standalone.** `auth.js` is
+  in all nine bundles, so a browser holding cached markup still asks for it by
+  name — and a 404 there takes out the login page. One kilobyte closes that
+  window.
+- **`.json`, `.pem`, `.txt` and `.bin` are copied verbatim, never compressed.**
+  The firmware opens those itself through `FILESYSTEM.open()`, which has no
+  gzip fallback. Compressing `/config.json` or `/thingspeak.pem` bricks the
+  device at the next boot.
+- Measured: 250 KB of sources become **143 KB** on flash, and every page drops
+  from 6–7 requests to 4.
+
+`data/` stays plain: diffable in git, counted by `check_lines.py`, and served
+as-is by `scripts/dev_server.py`, so the simulator needs no build step and shows
+the unbundled files a developer is actually editing.
+
+**The upload guard had to become exact.** `uploadPathIsProtected()` was
+`startsWith("/config")` and friends, which also refused `/config.html`,
+`/config.js`, `/users.html` and `/users.js` — ordinary web assets. It surfaced
+the moment assets started being deployed one at a time instead of by rewriting
+the partition: four files answered 400 for no reason but their name, and the
+only remaining way to update them was the whole-image path that wipes
+`/config.json`. A guard that pushes you toward the more destructive tool is
+worse than the one it replaced. The `/spiffs` BROWSE shadows stay prefix matches
+deliberately — refusing to read `/spiffs/config.html.gz` costs nothing, since
+the same bytes are served from its own public route.
 
 ## Filesystem — LittleFS, and why the name appears once
 

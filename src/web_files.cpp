@@ -25,11 +25,27 @@ static String g_uploadError;
 // validates the document, checks the device id and restores masked secrets. A
 // raw upload bypasses all three, and an invalid config only fails at the next
 // boot — on a device that then cannot reach the network to be fixed.
+// EXACT, not a prefix. The three files this protects are the credential store,
+// the live bearer tokens and the validated config document — and nothing else.
+//
+// It used to be startsWith(), which reads as the cautious choice and is not: it
+// also refused /config.html, /config.js, /users.html and /users.js, which are
+// ordinary web assets. That surfaced the moment the assets started being
+// deployed one at a time instead of by rewriting the whole partition — the
+// upload answered 400 for four files whose only sin was their name, and the
+// only way to update them became the whole-image path that wipes /config.json.
+// A guard that pushes you toward the more destructive tool is worse than the
+// one it replaced.
+//
+// The /spiffs BROWSE shadows stay prefix matches deliberately. Refusing to read
+// /spiffs/config.html.gz costs nothing — the same bytes are served from its own
+// public route — while a prefix there is one less thing to get exactly right on
+// the side where a mistake exposes WiFi passwords and live session tokens.
 static bool
 uploadPathIsProtected(const String& path)
 {
-    return path.startsWith("/users") || path.startsWith("/sessions") ||
-           path.startsWith("/config");
+    return path == "/users.json" || path == "/sessions.json" ||
+           path == "/config.json";
 }
 
 static bool
@@ -56,7 +72,7 @@ uploadPathIsUsable(const String& path, String& reason)
         return false;
     }
     if (uploadPathIsProtected(path)) {
-        reason = path.startsWith("/config")
+        reason = (path == "/config.json")
                    ? "use POST /config.json, which validates the document"
                    : "credential store";
         return false;
