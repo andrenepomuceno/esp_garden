@@ -384,10 +384,13 @@ webSetup()
     servePublicFile("/history.html", "/history.html", "text/html");
     servePublicFile("/history.js", "/history.js", "application/javascript");
     servePublicFile("/devices.html", "/devices.html", "text/html");
-    // Load order matters: devices.js calls into both modules from its ready
-    // handler, and the page loads them as plain <script> tags with no module
-    // system. Registering them is not optional — the allow-list is exhaustive,
-    // so a file that is not here 404s.
+    // The bundled image no longer CONTAINS these two: build_assets.py folds
+    // devices_model.js and devices_render.js into devices.js, and the markup it
+    // ships loads only the bundle. The routes stay for a device whose
+    // filesystem predates the bundling — where the files are still there and
+    // the old devices.html still asks for them by name — and cost nothing on
+    // one where they are not: the allow-list is exhaustive, so an unregistered
+    // path 404s just as an absent file does.
     servePublicFile("/devices_model.js", "/devices_model.js", "application/javascript");
     servePublicFile("/devices_render.js", "/devices_render.js", "application/javascript");
     servePublicFile("/devices.js", "/devices.js", "application/javascript");

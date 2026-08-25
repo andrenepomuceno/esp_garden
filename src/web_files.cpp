@@ -59,6 +59,17 @@ uploadPathIsUsable(const String& path, String& reason)
         reason = "path must not contain ..";
         return false;
     }
+    // LittleFS collapses repeated slashes and resolves "." segments, so
+    // "//config.json" and "/./config.json" both land on /config.json — while
+    // an exact-string guard sees three different paths and lets two of them
+    // through. Refused rather than normalised: rewriting the caller's path and
+    // then writing somewhere else is its own surprise, and nothing legitimate
+    // spells an asset this way.
+    if (path.indexOf("//") >= 0 || path.indexOf("/./") >= 0 ||
+        path.endsWith("/") || path.endsWith("/.")) {
+        reason = "path must not contain empty or . segments";
+        return false;
+    }
     // SPIFFS_OBJ_NAME_LEN is 32 including the terminator. A longer name is
     // truncated silently, so the file lands somewhere the caller did not ask
     // for and every later read misses it.
@@ -182,6 +193,19 @@ handleFileUpload(AsyncWebServerRequest* request,
         logger.error("[upload] " + g_uploadError);
         FILESYSTEM.remove(g_uploadTempPath);
         return;
+    }
+
+    // An asset and its compressed twin must never both exist: AsyncFileResponse
+    // prefers the uncompressed one, so a device still holding the plain file
+    // from an older whole-image deploy would keep serving THAT after a
+    // per-file upload of the .gz — reporting {"ok":true} while the page stays
+    // broken. Whichever was just written wins, in both directions.
+    const String twin = g_uploadTarget.endsWith(".gz")
+                          ? g_uploadTarget.substring(0, g_uploadTarget.length() - 3)
+                          : (g_uploadTarget + ".gz");
+    if (FILESYSTEM.exists(twin)) {
+        FILESYSTEM.remove(twin);
+        logger.info("[upload] removed the superseded " + twin);
     }
 
     logger.warning("[upload] wrote " + g_uploadTarget + " (" +
