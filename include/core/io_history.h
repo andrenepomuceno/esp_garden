@@ -6,9 +6,9 @@
 #include <FS.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
-#include <SPIFFS.h>
+#include "core/filesystem.h"
 
-// Fixed-size ring buffer of I/O snapshots on SPIFFS.
+// Fixed-size ring buffer of I/O snapshots on FILESYSTEM.
 //
 // The file is preallocated to `capacity` records and never grows: the oldest
 // record is overwritten in place. That bounds flash usage exactly — a full
@@ -76,7 +76,7 @@ class IoHistory
     // Opens the file, or creates it when missing. Any disagreement about
     // magic, record size or capacity discards the file and starts over: a
     // half-understood binary log is worse than none.
-    bool begin(uint16_t capacity, FS& filesystem = SPIFFS);
+    bool begin(uint16_t capacity, FS& filesystem = FILESYSTEM);
 
     bool append(const IoRecord& record);
 

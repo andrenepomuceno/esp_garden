@@ -1,4 +1,4 @@
-#include "SPIFFS.h"
+#include "core/filesystem.h"
 #include "BuildConfig.h"
 #include "core/accumulator_v2.h"
 #include "core/config.h"
@@ -119,8 +119,8 @@ webUpdateDataCache()
 
     // Surfaced because the filesystem is the resource that silently runs out:
     // the history buffer, the log backups and every web asset share it.
-    statusJson["Filesystem"] = String(SPIFFS.usedBytes() / 1024) + " / " +
-                               String(SPIFFS.totalBytes() / 1024) + " KB";
+    statusJson["Filesystem"] = String(FILESYSTEM.usedBytes() / 1024) + " / " +
+                               String(FILESYSTEM.totalBytes() / 1024) + " KB";
 
     JSONVar inputsJson;
     for (unsigned i = 0; i < config.moistureCount; ++i) {

@@ -2,7 +2,7 @@
 
 #include "core/role.h"
 #include <FS.h>
-#include <SPIFFS.h>
+#include "core/filesystem.h"
 #include <WString.h>
 #include <vector>
 
@@ -27,11 +27,11 @@ class UserStore
     // (config.json's ota.* pair) and that user is not stored yet, they are
     // migrated in as ADMIN — this is how an existing device gets its first
     // account without a hardcoded password baked into the firmware.
-    bool load(FS& filesystem = SPIFFS,
+    bool load(FS& filesystem = FILESYSTEM,
               const String& legacyUsername = String(),
               const String& legacyPassword = String());
 
-    bool save(FS& filesystem = SPIFFS);
+    bool save(FS& filesystem = FILESYSTEM);
 
     // Index of `username`, or -1.
     int find(const String& username) const;

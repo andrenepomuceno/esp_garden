@@ -2,7 +2,7 @@
 #include "core/config.h"
 #include "core/io_history.h"
 #include "core/logger.h"
-#include <SPIFFS.h>
+#include "core/filesystem.h"
 #include <math.h>
 #include <string.h>
 
@@ -72,7 +72,7 @@ struct ModelFileHeader
 static void
 moistureModelSave()
 {
-    File file = SPIFFS.open(g_modelPath, FILE_WRITE);
+    File file = FILESYSTEM.open(g_modelPath, FILE_WRITE);
     if (file == false) {
         logger.error("[moisture] cannot write " + String(g_modelPath));
         return;
@@ -91,11 +91,11 @@ moistureModelLoad()
 {
     memset(&g_state, 0, sizeof(g_state));
 
-    if (!SPIFFS.exists(g_modelPath)) {
+    if (!FILESYSTEM.exists(g_modelPath)) {
         return;
     }
 
-    File file = SPIFFS.open(g_modelPath, FILE_READ);
+    File file = FILESYSTEM.open(g_modelPath, FILE_READ);
     if (file == false) {
         return;
     }
@@ -115,7 +115,7 @@ moistureModelLoad()
         // wrong band is to notice.
         logger.warning("[moisture] stored model unreadable; starting over");
         memset(&g_state, 0, sizeof(g_state));
-        SPIFFS.remove(g_modelPath);
+        FILESYSTEM.remove(g_modelPath);
     }
 }
 

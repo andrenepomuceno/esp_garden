@@ -89,7 +89,7 @@ pio run -e espgarden1
 # Upload firmware
 pio run -e espgarden1 --target upload
 
-# Upload filesystem (SPIFFS — config + web assets)
+# Upload filesystem (LittleFS — config + web assets)
 pio run -e espgarden1 --target uploadfs
 
 # Open serial monitor
@@ -615,7 +615,7 @@ Set `mqtt.fwUpdate = false` to switch the whole path off.
 
 The filesystem image is **not** distributable this way — `handleUpdateUpload`
 picks `U_SPIFFS` from the uploaded filename, and the FOTA path always writes
-`U_FLASH`. Use `/update.html` for `spiffs.bin`.
+`U_FLASH`. Use `/update.html` for `littlefs.bin`.
 
 ## Task Schedule
 
@@ -636,7 +636,7 @@ TalkBack, an MQTT drain) stalls every other background task for its duration.
 | `talkBack` | 1 min | Poll ThingSpeak TalkBack for remote commands |
 | `clockUpdate` | 24 h | Re-sync NTP clock |
 | `moistureModel` | 24 h | Decay the stored moisture evidence and fold in the day's watering cycles |
-| `logBackup` | 1 h | Flush serial log to SPIFFS |
+| `logBackup` | 1 h | Flush serial log to LittleFS |
 | `checkMoisture` | 4 h | Check soil moisture delta after watering |
 
 ## Dependencies

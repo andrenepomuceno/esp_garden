@@ -2,7 +2,7 @@
 #include "network/web_files.h"
 #include <ESPAsyncWebServer.h>
 #include <MD5Builder.h>
-#include <SPIFFS.h>
+#include "core/filesystem.h"
 
 // Written to first, moved into place only once the whole body arrived and the
 // checksum matched. Writing straight to the target would let a dropped Wi-Fi
@@ -85,7 +85,7 @@ handleFileUpload(AsyncWebServerRequest* request,
 
         // Both files exist at once until the rename, so the check has to cover
         // the incoming size on top of everything already stored.
-        const size_t freeBytes = SPIFFS.totalBytes() - SPIFFS.usedBytes();
+        const size_t freeBytes = FILESYSTEM.totalBytes() - FILESYSTEM.usedBytes();
         const size_t incoming = request->contentLength();
         if (incoming > freeBytes) {
             g_uploadError = "not enough space: " + String(incoming) +
@@ -94,8 +94,8 @@ handleFileUpload(AsyncWebServerRequest* request,
             return;
         }
 
-        SPIFFS.remove(g_uploadTempPath);
-        g_uploadFile = SPIFFS.open(g_uploadTempPath, FILE_WRITE);
+        FILESYSTEM.remove(g_uploadTempPath);
+        g_uploadFile = FILESYSTEM.open(g_uploadTempPath, FILE_WRITE);
         if (g_uploadFile == false) {
             g_uploadError = "could not open " + String(g_uploadTempPath);
             logger.error("[upload] " + g_uploadError);
@@ -116,7 +116,7 @@ handleFileUpload(AsyncWebServerRequest* request,
             g_uploadError = "write failed at byte " + String(g_uploadBytes);
             logger.error("[upload] " + g_uploadError);
             g_uploadFile.close();
-            SPIFFS.remove(g_uploadTempPath);
+            FILESYSTEM.remove(g_uploadTempPath);
             return;
         }
         g_uploadMD5.add(data, len);
@@ -137,20 +137,20 @@ handleFileUpload(AsyncWebServerRequest* request,
             g_uploadError =
               "checksum mismatch: expected " + expected + ", got " + actual;
             logger.error("[upload] " + g_uploadError);
-            SPIFFS.remove(g_uploadTempPath);
+            FILESYSTEM.remove(g_uploadTempPath);
             return;
         }
     }
 
-    // Only now is the old file replaced. SPIFFS.rename refuses an existing
+    // Only now is the old file replaced. FILESYSTEM.rename refuses an existing
     // destination, so the remove has to come first — that is the one window
     // where the target is missing, and it lasts microseconds rather than the
     // length of an upload.
-    SPIFFS.remove(g_uploadTarget);
-    if (!SPIFFS.rename(g_uploadTempPath, g_uploadTarget)) {
+    FILESYSTEM.remove(g_uploadTarget);
+    if (!FILESYSTEM.rename(g_uploadTempPath, g_uploadTarget)) {
         g_uploadError = "could not move into place as " + g_uploadTarget;
         logger.error("[upload] " + g_uploadError);
-        SPIFFS.remove(g_uploadTempPath);
+        FILESYSTEM.remove(g_uploadTempPath);
         return;
     }
 
@@ -194,7 +194,7 @@ handleFileUploadRequest(AsyncWebServerRequest* request)
       "application/json",
       String("{\"ok\":true,\"path\":\"") + g_uploadTarget +
         "\",\"bytes\":" + String(g_uploadBytes) +
-        ",\"free\":" + String(SPIFFS.totalBytes() - SPIFFS.usedBytes()) + "}");
+        ",\"free\":" + String(FILESYSTEM.totalBytes() - FILESYSTEM.usedBytes()) + "}");
     response->addHeader("Cache-Control", "no-store");
     request->send(response);
     g_uploadTarget = "";
@@ -241,7 +241,7 @@ handleFileDelete(AsyncWebServerRequest* request)
     // Refusing a path that is not there, rather than reporting success, is what
     // tells a caller their path was wrong instead of leaving them to wonder why
     // the file is still being served.
-    if (!SPIFFS.exists(path)) {
+    if (!FILESYSTEM.exists(path)) {
         request->send(404,
                       "application/json",
                       String("{\"ok\":false,\"error\":\"") + path +
@@ -249,7 +249,7 @@ handleFileDelete(AsyncWebServerRequest* request)
         return;
     }
 
-    if (!SPIFFS.remove(path)) {
+    if (!FILESYSTEM.remove(path)) {
         request->send(500,
                       "application/json",
                       String("{\"ok\":false,\"error\":\"could not remove ") +
@@ -264,7 +264,7 @@ handleFileDelete(AsyncWebServerRequest* request)
       200,
       "application/json",
       String("{\"ok\":true,\"path\":\"") + path + "\",\"free\":" +
-        String(SPIFFS.totalBytes() - SPIFFS.usedBytes()) + "}");
+        String(FILESYSTEM.totalBytes() - FILESYSTEM.usedBytes()) + "}");
     response->addHeader("Cache-Control", "no-store");
     request->send(response);
 }

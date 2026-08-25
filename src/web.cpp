@@ -1,4 +1,4 @@
-#include "SPIFFS.h"
+#include "core/filesystem.h"
 #include "BuildConfig.h"
 #include "core/config.h"
 #include "core/io_history.h"
@@ -302,7 +302,7 @@ servePublicFile(const char* route, const char* path, const char* contentType)
     g_webServer.on(
       route, HTTP_GET, [path, contentType](AsyncWebServerRequest* request) {
           digitalWrite(LED_BUILTIN, 1);
-          request->send(SPIFFS, path, contentType);
+          request->send(FILESYSTEM, path, contentType);
           digitalWrite(LED_BUILTIN, 0);
       });
 }
@@ -466,7 +466,7 @@ webSetup()
     g_webServer
       .on(AsyncURIMatcher::prefix("/spiffs/config"), HTTP_GET, handleForbidden)
       .addMiddleware(adminOnly);
-    g_webServer.serveStatic("/spiffs", SPIFFS, "/").addMiddleware(adminOnly);
+    g_webServer.serveStatic("/spiffs", FILESYSTEM, "/").addMiddleware(adminOnly);
 #else
     g_webServer.on("/data.json", HTTP_GET, handleDataJson);
     g_webServer.on("/history.json", HTTP_GET, handleHistoryJson);

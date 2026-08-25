@@ -39,7 +39,7 @@ IoHistory::format(uint16_t capacity)
         const size_t bytes = batch * sizeof(IoRecord);
         if (file.write(block, bytes) != bytes) {
             logger.error("io_history: preallocation failed with " +
-                         String(remaining) + " records left — is SPIFFS full?");
+                         String(remaining) + " records left — is the filesystem full?");
             file.close();
             // Leaving the partial file behind would keep the space it already
             // took and the next boot would try again on a fuller filesystem.

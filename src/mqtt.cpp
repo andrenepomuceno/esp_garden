@@ -3,7 +3,7 @@
 #include "core/logger.h"
 #include "network/thingsboard.h"
 #include <PubSubClient.h>
-#include <SPIFFS.h>
+#include "core/filesystem.h"
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 
@@ -112,7 +112,7 @@ mqttSetup()
         return true;
     }
 
-    File cacert = SPIFFS.open(g_mqttCACert, FILE_READ);
+    File cacert = FILESYSTEM.open(g_mqttCACert, FILE_READ);
     if (cacert == false) {
         logger.error("Failed to open MQTT CA certificate " + g_mqttCACert);
         return false;

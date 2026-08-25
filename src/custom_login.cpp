@@ -3,7 +3,7 @@
 #include "core/logger.h"
 #include "core/user_store.h"
 #include <Arduino_JSON.h>
-#include <SPIFFS.h>
+#include "core/filesystem.h"
 #include <esp_random.h>
 #include <mbedtls/sha256.h>
 #include <string.h>
@@ -474,7 +474,7 @@ CustomLogin::savePersistentSessions()
     }
     json += "]";
 
-    File file = SPIFFS.open(kSessionFile, FILE_WRITE);
+    File file = FILESYSTEM.open(kSessionFile, FILE_WRITE);
     if (file == false) {
         logger.error("savePersistentSessions: failed to open " +
                      String(kSessionFile));
@@ -487,11 +487,11 @@ CustomLogin::savePersistentSessions()
 void
 CustomLogin::loadPersistentSessions()
 {
-    if (!SPIFFS.exists(kSessionFile)) {
+    if (!FILESYSTEM.exists(kSessionFile)) {
         return;
     }
 
-    File file = SPIFFS.open(kSessionFile, FILE_READ);
+    File file = FILESYSTEM.open(kSessionFile, FILE_READ);
     if (file == false) {
         logger.error("loadPersistentSessions: failed to open " +
                      String(kSessionFile));

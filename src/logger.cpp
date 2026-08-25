@@ -1,5 +1,5 @@
 #include "core/logger.h"
-#include "SPIFFS.h"
+#include "core/filesystem.h"
 
 #define MAX_LOG_FILES 4
 
@@ -108,11 +108,11 @@ Logger::backupSetup()
     const String currentFilename("/current.txt");
     File currentFile;
 
-    if (!SPIFFS.exists(currentFilename)) {
+    if (!FILESYSTEM.exists(currentFilename)) {
         logger.info(String(currentFilename) +
                     " do not exists. Creating one...");
 
-        currentFile = SPIFFS.open(currentFilename, FILE_WRITE, true);
+        currentFile = FILESYSTEM.open(currentFilename, FILE_WRITE, true);
         if (currentFile == false) {
             logger.error("Failed to create " + String(currentFilename));
             return;
@@ -123,12 +123,12 @@ Logger::backupSetup()
 
         currentLog = 0;
     } else {
-        currentFile = SPIFFS.open(currentFilename, FILE_READ);
+        currentFile = FILESYSTEM.open(currentFilename, FILE_READ);
         currentLog = (currentFile.readString().toInt() + 1) % MAX_LOG_FILES;
         currentFile.close();
 
         logger.info("Updating " + String(currentFilename));
-        currentFile = SPIFFS.open(currentFilename, FILE_WRITE);
+        currentFile = FILESYSTEM.open(currentFilename, FILE_WRITE);
         currentFile.print(String(currentLog));
         currentFile.close();
     }
@@ -147,7 +147,7 @@ Logger::backup()
     }
 
     if (logOffset == 0) {
-        auto logFile = SPIFFS.open(logFilename, FILE_WRITE, true);
+        auto logFile = FILESYSTEM.open(logFilename, FILE_WRITE, true);
         if (logFile == false) {
             xSemaphoreGive(mutex);
             logger.error("Failed to open " + String(logFilename));
@@ -160,7 +160,7 @@ Logger::backup()
         logOffset = buffer.length();
         bufferOffset = logOffset;
     } else {
-        auto logFile = SPIFFS.open(logFilename, FILE_APPEND);
+        auto logFile = FILESYSTEM.open(logFilename, FILE_APPEND);
         if (logFile == false) {
             xSemaphoreGive(mutex);
             logger.error("failed to open " + String(logFilename));

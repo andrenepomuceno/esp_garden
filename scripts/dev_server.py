@@ -127,7 +127,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         # Mirrors AsyncFileResponse: when the plain file is absent, serve the
         # .gz beside it with Content-Encoding. Vendored assets ship compressed
-        # so the SPIFFS has room for the history buffer.
+        # so the filesystem has room for the history buffer.
         gz = target.with_name(target.name + ".gz")
         if not target.is_file() and gz.is_file():
             ctype = CONTENT_TYPES.get(target.suffix.lower(), "application/octet-stream")

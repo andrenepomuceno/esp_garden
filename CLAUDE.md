@@ -14,7 +14,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 
 | Layer | Path | Role |
 |---|---|---|
-| Entry point | `src/main.cpp` (108 lines) | Relay safe-init, device id, SPIFFS, config, logger backup, `webSetup()`, `tasksSetup()` |
+| Entry point | `src/main.cpp` (108 lines) | Relay safe-init, device id, filesystem, config, logger backup, `webSetup()`, `tasksSetup()` |
 | Orchestration | `src/tasks.cpp` (707) | **The single task-registration site.** Every `DECLARE_TASK`, every handler body, `tasksSetup()`, `tasksLoop()`, schedules, connectivity |
 | Relays | `src/relays.cpp` (259) | Relay state under `g_relayMux`, `startRelay`/`stopRelay`/`startWatering`, the 50 ms critical tick |
 | Sensors | `src/sensors.cpp` (285) | Every ADC read, the flow ISR, the float switch, the DHT, `moistureState()` |
@@ -23,7 +23,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | Config — pins | `src/config_pins.cpp` | What a WROOM-32 GPIO can do, and the boot-time audit that applies it. One place, three consumers |
 | Config — `io` | `src/config_io.cpp` | Parsers for the `io` block, where every entry accepts several shapes so a field device keeps loading after a firmware update |
 | Config — save | `src/config_document.cpp` | Whole-document validation before a write: the save-time counterpart of `loadFile()` |
-| Logging | `src/logger.cpp` | Level-filtered singleton, 8 KB rolling RAM buffer, SPIFFS backup rotating over 4 files |
+| Logging | `src/logger.cpp` | Level-filtered singleton, 8 KB rolling RAM buffer, LittleFS backup rotating over 4 files |
 | Web | `src/web.cpp` (455) | WiFi events, mDNS, `AsyncWebServer`, **the route table**, `/control`, `/logs`, `/history.json` |
 | Web handlers | `src/web_data.cpp`, `web_config.cpp`, `web_ota.cpp`, `web_users.cpp` | `/data.json` cache · masked `GET`/`POST /config.json` · browser OTA · `/users.json` |
 | Auth | `src/custom_login.cpp`, `src/user_store.cpp` | Nonce + SHA-256 login, role middleware, per-IP lockout, `/users.json`, `/sessions.json` — ported from fullbot |
@@ -31,11 +31,12 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | ThingsBoard | `src/thingsboard.cpp` (729) | The downlink half: client/shared attributes, two-way RPC, the chunked `v2/fw` firmware stream |
 | Versions | `src/fw_version.cpp` | Semantic-version compare — the check deciding whether a cloud image is flashed. Host-tested |
 | TalkBack | `src/talkback.cpp` | Hand-rolled HTTP/1.1 POST to `api.thingspeak.com` (**plain HTTP, port 80**) |
-| History | `src/io_history.cpp`, `include/core/ring_index.h` | Fixed-size ring buffer of I/O snapshots on SPIFFS, served by `/history.json` |
+| History | `src/io_history.cpp`, `include/core/ring_index.h` | Fixed-size ring buffer of I/O snapshots on LittleFS, served by `/history.json` |
 | Moisture model | `src/moisture_classifier.cpp` (pure maths, host-tested), `src/moisture_model.cpp` (training, persistence) | Gaussian naive Bayes per probe, labelled by watering events. See [Soil moisture](#soil-moisture-a-classifier-trained-on-watering-events) |
 | Stats | `src/accumulator_v2.cpp` | Rolling window mean + variance over a `std::list<float>` |
 | Filesystem image | `data/` | `index.*`, `login.*`, `config.*`, `users.*`, `update.*`, `auth.js`; vendored `jquery.js`, `sha256.js`, `spark-md5.js` (all MIT); `favicon.ico`, `thingspeak.pem`, `config.template.json`; vendored `bootstrap.css.gz` |
-| Partitions | `partitions/esp_garden_4mb.csv` | 1.69 MB per OTA slot, 512 KB SPIFFS. **Cannot be changed over OTA** |
+| Partitions | `partitions/esp_garden_4mb.csv` | 1.69 MB per OTA slot, 512 KB LittleFS. **Cannot be changed over OTA** |
+| Filesystem | `include/core/filesystem.h` | The one line naming the driver. Everything else says `FILESYSTEM`, never `LittleFS` |
 | Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `feeds_plot.py` |
 
 **No source file exceeds 1000 lines, and `python scripts/check_lines.py` is what
@@ -46,7 +47,7 @@ split is expensive, and the useful signal is the file three commits away from
 crossing. `tasks.cpp` (1123), `web.cpp` (1004), `config.cpp` (1125) and
 `devices.js` (1155) were all split at that threshold. `tasks.cpp` kept every `DECLARE_TASK` and every handler and `web.cpp` kept `webSetup()`, in both cases because the ordering *inside* those functions is load-bearing — see the boot sequence and the route-order note below.
 
-Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history ring arithmetic and firmware-version comparison — everything else reaches WiFi, SPIFFS, `Arduino_JSON` or FreeRTOS. See [test/README.md](test/README.md), including why the JSON logic must not be trusted to a hand-written stub.
+Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history ring arithmetic and firmware-version comparison — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. See [test/README.md](test/README.md), including why the JSON logic must not be trusted to a hand-written stub.
 
 ---
 
@@ -180,6 +181,28 @@ garbage. An hour went into learning that.
   the header check and the buffer reformatted rather than being misread:
   `io_history: incompatible or corrupt file, recreating` →
   `formatted /io_history.bin for 1440 records (69136 bytes)`.
+- **The SPIFFS → LittleFS migration** (2026-08-24, firmware 2.5.0, over USB).
+  Both images flashed back to back on COM7, and after it: `/config.json`
+  intact at 1219 masked bytes with `id 9e7c` and `mqtt.backend thingsboard`,
+  all six credentials still present, the admin login working against the
+  migrated `/users.json`, every asset serving from the device (`index.html`
+  5776 B, `bootstrap.css` 29 899 B, `jquery.js` 30 451 B, both `.pem` files),
+  `/history.json` answering, and the three `/spiffs/` 403 shadows —
+  `config.json`, `users.json`, `sessions.json` — still firing under an ADMIN
+  token. The history ring and the moisture model were reformatted, as expected.
+
+  **A one-off panic on the FIRST boot after the migration, not reproduced
+  since.** `Core 1 panic'ed (LoadProhibited)`, `EXCVADDR 0x00000028`, return
+  address `0x400933ac` = `multi_heap_internal_lock` — a heap allocation with a
+  null heap handle, i.e. heap corruption, raised inside `webSetup()`. The board
+  rebooted itself and came up clean, and **five deliberate resets afterwards
+  produced zero panics**. It is recorded here rather than dismissed because a
+  boot panic on an active-low relay board pulses every pump for the length of a
+  reset. What is NOT established is a cause: one sample, corrupted backtrace,
+  and a board that already prints `flash read err, 1000` on every boot from a
+  marginal supply. If it recurs, the next step is a core dump
+  (`esptool read_flash 0x3F0000 0x10000`) against
+  `backups/elf/firmware-2.5.0-littlefs.elf`, which is kept for exactly that.
 
 **Unverified — written, compiles, never run on hardware:**
 
@@ -233,7 +256,7 @@ Hard constraints that shaped it, and that still apply to any change:
 - **ADC2 is unusable while WiFi is on** (ESP32 silicon limitation). Every analog channel **must** land on ADC1: GPIO 32–39. GPIO 34–39 are input-only and have no internal pull-up — fine for analog, useless for a relay or the DHT.
 - **ADC1 is the scarce resource, and on a WROOM-32 it has six usable channels**: 32, 33, 34, 35, 36, 39. GPIO 37 and 38 are ADC1 on the die but are not bonded out on the module. `espgarden1` now spends five of the six (3 probes + luminosity + water level), leaving GPIO 33. **GPIO 32/33 double as XTAL_32K_P/N** — free on a WROOM-32, which ships without that crystal, but unavailable on a module that has one fitted.
 - **Relay pins must avoid the strapping pins** (0, 2, 5, 12, 15) and GPIO 6–11 (SPI flash). The legacy watering relay sits on **GPIO 15**, a strapping pin (MTDO), and stays there so boards in the field are unaffected; `espgarden5` moves relay 0 to GPIO 19. Other free output-capable pins: 13, 14, 21, 22, 25, 26, 27.
-- **Relays are active-low** (`relayPinOn = 0`) and a floating pin reads as "energise". `relayPinsSafeInit()` is therefore the **first statement of `setup()`**, and `loadConfigFile()` calls it again once the real pin assignment is known. Do not move either call later — everything between them (SPIFFS mount, config load, WiFi association) takes seconds, which is long enough to run a pump dry.
+- **Relays are active-low** (`relayPinOn = 0`) and a floating pin reads as "energise". `relayPinsSafeInit()` is therefore the **first statement of `setup()`**, and `loadConfigFile()` calls it again once the real pin assignment is known. Do not move either call later — everything between them (filesystem mount, config load, WiFi association) takes seconds, which is long enough to run a pump dry.
 - **A ThingSpeak channel has only 8 fields**, and the numbering is a permanent contract with the history already in channel 1348790. Map: `1` moisture0, `2` watering duration, `3` ping, `4` water level, `5` luminosity, `6` temperature, `7` air humidity, `8` boot time. **Relays 1–3 have no field and are local-only.**
 - **The second soil probe's field is explicit configuration, not an implicit reuse.** `thingSpeak.moisture2Field` defaults to 0 (off), and `validateThingSpeakFields()` **refuses a number a fitted sensor already publishes** rather than letting the payload carry the field twice — one silently wins and the loser's history is overwritten with the winner's units. Renumbering rewrites the meaning of everything already stored, so the choice belongs to whoever owns the channel. Field 8 is the least destructive candidate: `bootTime` is published once at startup and is empty in nearly every record.
 - **Flash sits at ~63 % of the 1.69 MB app slot** since `partitions/esp_garden_4mb.csv` replaced the stock table (it was 83.8 % of 1.31 MB before). Roughly 640 KB of headroom remain for the rest of the fullbot port — see [Porting](#porting-from-fullbot-firmware).
@@ -249,7 +272,7 @@ PlatformIO is **not on `PATH`** on Windows. Use the penv binary; in WSL `pio` is
 $pio = "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe"
 & $pio run -e espgarden1                      # compile only  (~9 s, verified)
 & $pio run -e espgarden1 -t upload            # flash APP ONLY
-& $pio run -e espgarden1 -t buildfs           # -> .pio/build/espgarden1/spiffs.bin
+& $pio run -e espgarden1 -t buildfs           # -> .pio/build/espgarden1/littlefs.bin
 & $pio run -e espgarden1 -t uploadfs          # TRAP: overwrites the device's /config.json
 & $pio device monitor -b 115200               # serial @115200
 & $pio run -t clean -e espgarden1
@@ -285,7 +308,7 @@ wsl.exe -e bash -lc 'ls ~/solarbot/fullbot-firmware/docs'
 1. **`relayPinsSafeInit()`** — parks every relay at its idle level using the compiled defaults. Must stay first; see the relay constraint above.
 2. `LED_BUILTIN` output; `logger` is constructed on first use and its constructor calls `Serial.begin(115200)`.
 3. `id = ESP.getEfuseMac() % 0x10000`, printed as hex — this is the value that must appear in `config.json`'s `"id"`.
-4. `SPIFFS.begin(true)` (formats on failure).
+4. `FILESYSTEM.begin(true)` (LittleFS; formats on failure).
 5. `loadConfigFile(id)` → applies `log.level` and re-parks the relays on their configured pins.
 6. `g_ledBlinkEnabled = error` — set here, not after `tasksSetup()`.
 7. `logger.backupSetup()` → rotates `/log0..3.txt` via `/current.txt`.
@@ -373,7 +396,7 @@ Facts worth knowing before touching it:
 - **Sensor and relay names are LABELS, not identifiers.** `/data.json` keys `Inputs` and `Outputs` by them, so renaming changes the dashboard immediately — but the `Relays` array stays index-addressed, the history record is positional, and the ThingsBoard telemetry keys stay `moisture1..N`. Renaming therefore never rewrites stored history. A name on `io.dht` is a *prefix*, because one pin produces two channels.
 - **`"version"` in the JSON is still never read** — the template says `2` but nothing enforces or migrates on it. `log.level` *is* read now (clamped to `LOG_DISABLE..LOG_TRACE`) and applied in `loadConfigFile()`.
 - **`loadFile()` mutates fields as it parses and only returns `false` at the end**, so a rejected config leaves a half-populated object behind.
-- **`GET /config.json` is reachable** (matched by the trailing `serveStatic("/", SPIFFS, "/")`) and returns Wi-Fi, MQTT and OTA passwords in plaintext. It is behind HTTP Basic auth; nothing else protects it. `fullbot-firmware` fixed the equivalent by moving credentials into a salted-hash `UserStore` and shadowing the path with an explicit 403 handler registered *before* the static handler.
+- **`GET /config.json` is reachable** (matched by the trailing `serveStatic("/", FILESYSTEM, "/")`) and returns Wi-Fi, MQTT and OTA passwords in plaintext. It is behind HTTP Basic auth; nothing else protects it. `fullbot-firmware` fixed the equivalent by moving credentials into a salted-hash `UserStore` and shadowing the path with an explicit 403 handler registered *before* the static handler.
 
 ---
 
@@ -642,13 +665,43 @@ why they cannot share a threshold.
 
 ---
 
+## Filesystem — LittleFS, and why the name appears once
+
+`include/core/filesystem.h` is the only file that says `LittleFS`. Every other
+source says `FILESYSTEM`, so changing driver again is one line instead of the
+sixty substitutions across nineteen files it took to leave SPIFFS.
+
+- **`board_build.filesystem = littlefs` in `platformio.ini` is the matching
+  half.** Without it `-t buildfs` still runs mkspiffs, the image is a SPIFFS
+  one, and the device formats it away on first mount — silently, because
+  `begin(true)` formats on failure and the boot then looks normal apart from
+  every file being gone. The build artefact is now `littlefs.bin`; a build
+  still producing `spiffs.bin` means the flag did not apply.
+- **The migration cannot be done over the air, in either order.** Firmware
+  first mounts a SPIFFS partition as LittleFS, fails, formats, and takes
+  `/config.json` — and with it the WiFi credentials — on a device that is now
+  unreachable. Filesystem first is erased by the old firmware's own format at
+  the next boot. It is a USB job with a verified `?secrets=1` backup in hand,
+  which is how this one was done.
+- **It costs space rather than saving it.** Measured on 9e7c: SPIFFS 333 of 463
+  usable KB (72 %), LittleFS 388 of 512 KB (76 %) — 4 KB blocks against 256 B
+  pages, so thirty small web assets pay ~55 KB of internal slack and free space
+  went 130 → 124 KB. What was bought is the removal of SPIFFS's degradation
+  cliff past ~75 % full, which this partition was about to reach, and
+  copy-on-write metadata on a board whose supply is marginal enough to print
+  `flash read err, 1000` every boot.
+- **The URL prefix is still `/spiffs/`** and stays that way. It is a contract
+  with `data/*.js` and with anything anyone has scripted against the device;
+  renaming a route to match an internal driver change is a breaking change
+  bought for nothing.
+
 ## I/O history ring buffer
 
 `/io_history.bin` holds the last N snapshots of every input and output. Sized
 once at `begin()` and never grown: appends overwrite the oldest slot in place,
 so flash usage is exactly `16 + capacity * 48` bytes forever and there is no
 rotation to get wrong. Defaults are 1440 records at 60 s — 24 h of history in
-69 KB of the 512 KB SPIFFS.
+69 KB of the 512 KB LittleFS partition.
 
 - **Both parameters are config-driven**: `history.records` (0 disables the
   feature) and `history.periodSec`. Both are range-checked at load, because a
@@ -659,8 +712,9 @@ rotation to get wrong. Defaults are 1440 records at 60 s — 24 h of history in
   firmwares disagree about how to read the same file with no way to tell which
   wrote it. The header carries `recordSize` anyway, and any mismatch — magic,
   size, capacity, or file length — discards the file and reformats.
-- **Do not lower `history.periodSec` toward 1 s.** SPIFFS rewrites a whole page
-  per append, so the period is the flash-wear knob.
+- **Do not lower `history.periodSec` toward 1 s.** LittleFS is copy-on-write, so
+  an append rewrites a block and relocates metadata; the period is the
+  flash-wear knob, and it matters at least as much as it did under SPIFFS.
 - **Growing `IoRecord` discards the stored history, on purpose.** The header
   carries `recordSize` and `begin()` reformats on any mismatch — reading
   40-byte records out of a 48-byte file would return garbage shaped like data.
@@ -675,7 +729,7 @@ rotation to get wrong. Defaults are 1440 records at 60 s — 24 h of history in
   than half this chip's DRAM with WiFi already holding a share. The handler also
   keeps a `static IoRecord buffer[200]` — 9.6 KB of DRAM, visible in the build.
 - The wrap-around arithmetic lives in `include/core/ring_index.h`, deliberately
-  free of Arduino and SPIFFS so `test_ring_index` can reach it. A wrong answer
+  free of Arduino and LittleFS so `test_ring_index` can reach it. A wrong answer
   there reorders history instead of failing, which is why it is the one part
   with unit tests.
 
@@ -871,7 +925,7 @@ Guards that are not in fullbot's version and should not be removed:
 
 The filesystem image cannot be delivered this way: `handleUpdateUpload` picks
 `U_SPIFFS` from the uploaded *filename*, and the FOTA path always writes
-`U_FLASH`. `spiffs.bin` still goes through `/update.html`.
+`U_FLASH`. `littlefs.bin` still goes through `/update.html`.
 
 `mqttLoop()` now backs off exponentially (1 s → 60 s) instead of retrying every
 `loop()` iteration, which used to bury the reason for a refused connection in
@@ -895,7 +949,7 @@ What the user asked for. Ordered by value, with the real blockers.
 | `TelemetryAggregator` | `src/core/TelemetryAggregator.cpp` | **Superseded** — `AccumulatorV2` was rewritten as a fixed-size ring instead, which buys the same no-allocation property while keeping the `val`/`avg`/`var` shape the UI depends on |
 | Webpack frontend | `~/solarbot/fullbot-frontend` | Not done, but the reason it mattered is gone: Bootstrap and jQuery are vendored and gzipped, so nothing degrades offline. What a bundler would still buy is dead-CSS elimination — 29.9 KB of Bootstrap for the handful of classes these pages use |
 | `SelfTest` | `src/core/SelfTest.cpp` | Not done. A boot that reports a dead moisture probe is worth more than a season of unusable data |
-| `test/` harness (`[env:native]`) | `platformio.ini` + `test/support/native_includes/` | **Started** — env, CI job and `test_accumulator`. The stub layer for SPIFFS/JSON/FreeRTOS is still to transplant |
+| `test/` harness (`[env:native]`) | `platformio.ini` + `test/support/native_includes/` | **Started** — env, CI job and `test_accumulator`. The stub layer for LittleFS/JSON/FreeRTOS is still to transplant |
 
 Concrete gotchas measured in this tree:
 

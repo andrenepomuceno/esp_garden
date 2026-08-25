@@ -3,7 +3,7 @@
 #include "core/tasks.h"
 #include "core/logger.h"
 #include <Arduino_JSON.h>
-#include <SPIFFS.h>
+#include "core/filesystem.h"
 
 ConfigFile config;
 
@@ -181,7 +181,7 @@ ConfigFile::ConfigFile()
     // log
     logLevel = LOG_INFO;
 
-    // ~24 h at one record per minute, 57.6 KB of the 512 KB SPIFFS.
+    // ~24 h at one record per minute, 57.6 KB of the 512 KB FILESYSTEM.
     historyRecords = 1440;
     historyPeriodSec = 60;
 }
@@ -238,12 +238,12 @@ ConfigFile::loadFile(unsigned deviceID)
     String filename = "/config.json";
     logger.info("Loading " + filename + "...");
 
-    if (!SPIFFS.exists(filename)) {
+    if (!FILESYSTEM.exists(filename)) {
         logger.error("Config file " + filename + " not found.");
         return false;
     }
 
-    File configFile = SPIFFS.open(filename, FILE_READ);
+    File configFile = FILESYSTEM.open(filename, FILE_READ);
     if (configFile == false) {
         logger.error("Failed to open " + filename + ".");
         return false;
@@ -541,7 +541,7 @@ ConfigFile::loadFile(unsigned deviceID)
             const int records = (int)history["records"];
             // 5000 records is 240 KB at the current 48-byte record, which
             // fits beside the ~190 KB of web assets in the 463 KB usable
-            // SPIFFS. The ceiling is in RECORDS, so it has to come down
+            // FILESYSTEM. The ceiling is in RECORDS, so it has to come down
             // whenever the record grows — it was 6000 while a record was 40
             // bytes, and leaving it there would have quietly asked for 288 KB.
             // The previous ceiling of 20000 was 800 KB — half again the whole
@@ -591,7 +591,7 @@ ConfigFile::loadFile(unsigned deviceID)
 String
 ConfigFile::readFile()
 {
-    File configFile = SPIFFS.open("/config.json", FILE_READ);
+    File configFile = FILESYSTEM.open("/config.json", FILE_READ);
     if (configFile == false) {
         logger.error("Failed to open /config.json for reading.");
         return String();
@@ -607,7 +607,7 @@ ConfigFile::saveFile(const String& content)
 {
     // FILE_WRITE truncates. A short write leaves a corrupt document behind, so
     // the length is checked rather than trusting print().
-    File configFile = SPIFFS.open("/config.json", FILE_WRITE);
+    File configFile = FILESYSTEM.open("/config.json", FILE_WRITE);
     if (configFile == false) {
         logger.error("Failed to open /config.json for writing.");
         return false;

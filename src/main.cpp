@@ -1,4 +1,4 @@
-#include "SPIFFS.h"
+#include "core/filesystem.h"
 #include "BuildConfig.h"
 #include "core/config.h"
 #include "core/io_history.h"
@@ -61,8 +61,8 @@ setup(void)
     unsigned id = ESP.getEfuseMac() % 0x10000;
     logger.info("ID: " + String(id, 16));
 
-    if (!SPIFFS.begin(true)) {
-        logger.error("Failed to initialize SPIFFS.");
+    if (!FILESYSTEM.begin(true)) {
+        logger.error("Failed to initialize FILESYSTEM.");
         error = true;
     }
 
@@ -74,7 +74,7 @@ setup(void)
     // Seeded from the legacy ota.{username,password} pair on first boot, so a
     // device that already had a config gets an account without any password
     // being compiled into the firmware.
-    if (!userStore.load(SPIFFS, config.otaUser, config.otaPassword)) {
+    if (!userStore.load(FILESYSTEM, config.otaUser, config.otaPassword)) {
         error = true;
     }
 #endif

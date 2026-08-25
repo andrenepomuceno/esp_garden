@@ -25,10 +25,10 @@ environment.
 scope. Today that is `AccumulatorV2` and `core/ring_index.h`. The latter exists as a
 separate header precisely so it can be tested: the ring arithmetic behind
 `/history.json` reorders records rather than failing when it is wrong, and the
-rest of `IoHistory` is inseparable from SPIFFS.
+rest of `IoHistory` is inseparable from LittleFS.
 
 `fullbot-firmware` covers the rest with a stub layer in
-`test/support/native_includes/` (in-memory SPIFFS/SD, a `JSONVar`
+`test/support/native_includes/` (in-memory LittleFS/SD, a `JSONVar`
 re-implementation, FreeRTOS no-ops), and that layer transplants here nearly
 as-is when a suite needs it.
 

@@ -28,7 +28,7 @@ class CustomLogin
     CustomLogin();
     ~CustomLogin();
 
-    void begin(); // call after SPIFFS is mounted and users are loaded
+    void begin(); // call after the filesystem is mounted and users are loaded
 
     void handleNonce(AsyncWebServerRequest* request);
     void handleLogin(AsyncWebServerRequest* request);
