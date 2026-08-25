@@ -261,6 +261,29 @@ garbage. An hour went into learning that.
   board had run **15 hours** unattended with no reboot at all. Load-testing an
   active-low relay board is not free: every reset pulses every pump.
 
+- **Firmware 2.6.1, over the air, and what it proved** (2026-08-25).
+
+  - **The five-root CA bundle validates on the device, not just in openssl.**
+    The pem was uploaded BEFORE the OTA on purpose, so the reboot the update
+    needs anyway became the test: the board came back with
+    `MQTT Link: connected` and `Last Publish: 31s ago`. That is the check that
+    matters, because `mqttSetup()` reads the CA once at boot — a bad bundle
+    would have shown up only at the next reset, silently.
+  - **`MQTT Link` and `Last Publish` answer on the device.** The dashboard now
+    distinguishes the operator's switch from the broker link, which is the gap
+    that hid a three-year outage.
+  - **The superseded-twin deletion works**, logged four times by the device:
+    `[upload] removed the superseded /config.js` and three more. Uploading the
+    `.gz` removed the plain file that AsyncFileResponse would otherwise have
+    kept serving, so the explicit deletes that followed correctly found nothing.
+  - **The exact upload guard unblocked the last four assets.** `/config.*` and
+    `/users.*` had been refused by a prefix match; they deployed cleanly.
+  - **All nine pages, swept clean.** Every page serves gzipped at 4 requests
+    (5 where a vendored sha256/SparkMD5 is also needed), with no truncation.
+  - **The history survived the OTA reboot**: `1139/1440 records across 7 of 8
+    segments`. Segment CREATION is now well exercised; the first recycle is
+    still ahead, at 1440.
+
 **Unverified — written, compiles, never run on hardware:**
 
 - **The history boot-loop interlock.** The RTC strike counter compiles and
@@ -269,8 +292,10 @@ garbage. An hour went into learning that.
   because the board is now reachable only over the air, where a writer that
   panics before the web server answers is unrecoverable.
 
-- **A segment rotation.** See above: the first one is three hours after the
-  history was enabled.
+- **A segment RECYCLE.** Seven of eight segments are in use and creation is
+  proven; what has not happened is the oldest being truncated and reused, which
+  starts at 1440 records — and with it the retention swing between 7/8 and 8/8
+  of capacity, so far only tested on the host.
 
 - **ThingsBoard RPC.** No command has been sent. The device's credential is
   MQTT Basic rather than an access token, so the tenant REST API is not
