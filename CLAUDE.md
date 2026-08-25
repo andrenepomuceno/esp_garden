@@ -564,6 +564,23 @@ Every sensor compiles into every image; `config.*Fitted` and `config.moistureCou
 - **TalkBack is plain HTTP on port 80** with the API key in the request body (there is a `// TODO use HTTPS` in `talkback.cpp`). The only command parsed is `watering:<ms>`, capped at 20 000 ms by `startWatering()`.
 - **`data/thingspeak.pem` pins the CA for the MQTT TLS connection, and a stale pin fails silently for years.** It used to hold the *intermediate* `DigiCert TLS RSA SHA256 2020 CA1`; ThingSpeak now serves a chain under `DigiCert Global G2 TLS RSA SHA256 2020 CA1` / `DigiCert Global Root G2`, so every connect returned `-9984 X509 - Certificate verification failed` and channel 1348790 received nothing between **2023-03-07 and 2026-08-19**. Nothing surfaces this: `/data.json` keeps reporting `MQTT: enabled`, and only `Packages Sent` staying at 0 gives it away. It now pins the **root**, not the intermediate — roots last until 2038, intermediates rotate. Verify with `openssl s_client -connect mqtt3.thingspeak.com:8883 -showcerts` before assuming the file is current.
 - **`mqttLoop()` retries the connection on every `loop()` iteration with no backoff**, so a TLS failure produces hundreds of log lines per minute and drowns everything else in the serial log. Worth a backoff if you touch `mqtt.cpp`.
+- **`/data.json` reports the LINK, not just the switch.** `MQTT` is the
+  operator's toggle (`enabled`/`disabled`, and `index.js` binds a checkbox to
+  it); `MQTT Link` is `connected` or `down (rc=N)` from PubSubClient, and
+  `Last Publish` is the age of the last publish the broker accepted. Conflating
+  the two is what made the 2023-2026 outage invisible: the dashboard said
+  `MQTT: enabled` throughout, and only `Packages Sent` staying at 0 gave it
+  away — a counter that resets every boot, so on a device up for an hour it
+  reads the same whether the broker took everything or nothing.
+- **The pinned bundle is three roots** — ISRG Root X1 (to 2035), ISRG Root X2
+  (2040) and USERTrust ECC (2038) — and the live `thingsboard.cloud:8883` chain
+  verifies against it today (checked 2026-08-25 with `openssl s_client -CAfile`,
+  `Verification: OK`). **But it terminates in `ISRG Root YR` cross-signed by
+  X1**, and that cross-signature is transitional by design. When Let's Encrypt
+  stops serving it the chain will end at a root this device does not carry, and
+  the failure will be silent in exactly the old way. Adding ISRG Root YR to
+  `data/thingsboard.pem` is the fix; `mbedtls_x509_crt_parse` accepts a
+  concatenated PEM bundle, which is why there are already three.
 
 ---
 

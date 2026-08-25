@@ -19,6 +19,12 @@ static const unsigned g_bootTimeField = 8;
 
 extern unsigned g_packagesSent;
 
+// Epoch of the last publish the broker ACCEPTED; 0 until one has. A counter
+// that stops moving is only visible to somebody already watching it, and the
+// three-year outage here was found by a person reading a channel, not by the
+// device. An age is the same fact stated so it cannot be missed.
+extern uint32_t g_lastPublishTime;
+
 void
 mqttAddField(int field, String val);
 void

@@ -32,6 +32,7 @@ class DeviceState:
         self.channel = "1348790"
         self.mqtt_enabled = True
         self.packages_sent = 0
+        self.last_publish = 0  # epoch of the last accepted publish, 0 = never
         self.watering_cycles = 0
         self.connection_loss_count = 0
         self.dht_total_reads = 0
@@ -181,6 +182,7 @@ class DeviceState:
         with self.lock:
             self.boot_time = time.time()
             self.packages_sent = 0
+            self.last_publish = 0
             self.watering_cycles = 0
             self.connection_loss_count = 0
             for relay in self.relays:
@@ -218,6 +220,7 @@ class DeviceState:
             # Mqtt publishes a "package" every 30s when enabled.
             if self.mqtt_enabled and int(now - self.boot_time) % 30 == 0:
                 self.packages_sent += 1
+                self.last_publish = int(time.time())
             # Random DHT reads
             self.dht_total_reads += 1
             if random.random() < 0.02:
@@ -272,9 +275,20 @@ class DeviceState:
                 "Ping": f"{random.randint(15, 60)}ms",
                 "Connection Loss Count": str(self.connection_loss_count),
                 "MQTT": "enabled" if self.mqtt_enabled else "disabled",
+                # Two different questions on the device: "MQTT" is the
+                # operator's switch, "MQTT Link" is whether the broker is
+                # actually reachable. The simulator has no broker, so the link
+                # simply follows the switch -- but the KEY has to be here, or
+                # index.js is styled against a payload the device does not send.
+                "MQTT Link": "connected" if self.mqtt_enabled else "disabled",
+                "Last Publish": (f"{int(time.time()) - self.last_publish}s ago"
+                                 if self.mqtt_enabled and self.last_publish
+                                 else ("never" if self.mqtt_enabled else "n/a")),
                 "Packages Sent": str(self.packages_sent),
                 "Watering Cycles": str(self.watering_cycles),
-                "Filesystem": "139 / 463 KB",
+                # LittleFS reports the whole 512 KB partition where SPIFFS
+                # reported 463 KB of usable space.
+                "Filesystem": "320 / 512 KB",
             }
             if self.dht_total_reads:
                 rate = self.dht_read_errors / self.dht_total_reads * 100

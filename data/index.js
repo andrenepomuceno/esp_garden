@@ -20,13 +20,32 @@
   function statusBadge(value) {
     var v = String(value).toLowerCase();
     var cls = 'text-bg-secondary';
-    if (v === 'online' || v === 'enabled') cls = 'text-bg-success';
-    else if (v === 'offline' || v === 'disabled') cls = 'text-bg-danger';
+    if (v === 'online' || v === 'enabled' || v === 'connected')
+      cls = 'text-bg-success';
+    // `down (rc=-2)` carries the reason in the text; the colour only has to
+    // say that it is one.
+    else if (v === 'offline' || v === 'disabled' || v.indexOf('down') === 0)
+      cls = 'text-bg-danger';
     return '<span class="badge ' + cls + '">' + esc(value) + '</span>';
   }
 
+  // How long since the broker last accepted a publish. The point of showing it
+  // is the failure it makes visible: this channel received nothing for three
+  // years while the dashboard said MQTT was enabled, because "enabled" is the
+  // operator's switch and says nothing about the link.
+  function publishBadge(value) {
+    var v = String(value);
+    var cls = 'num-badge';
+    if (v === 'never') cls += ' badge text-bg-danger';
+    else if (/h ago$/.test(v) || v === 'clock stepped')
+      cls += ' badge text-bg-warning';
+    return '<span class="' + cls + '">' + esc(value) + '</span>';
+  }
+
   function formatStatusValue(key, value) {
-    if (key === 'Internet' || key === 'MQTT') return statusBadge(value);
+    if (key === 'Internet' || key === 'MQTT' || key === 'MQTT Link')
+      return statusBadge(value);
+    if (key === 'Last Publish') return publishBadge(value);
     if (key === 'Signal Strength') {
       var pct = parseInt(value, 10);
       var cls = 'text-bg-success';

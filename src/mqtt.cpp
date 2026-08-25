@@ -21,6 +21,18 @@ mqttIsThingsBoard()
 }
 
 bool
+mqttIsConnected()
+{
+    return mqttClient.connected();
+}
+
+int
+mqttState()
+{
+    return mqttClient.state();
+}
+
+bool
 mqttPublishTopic(const String& topic, const String& message)
 {
     return mqttClient.publish(topic.c_str(), message.c_str());

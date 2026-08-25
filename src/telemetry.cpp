@@ -24,6 +24,7 @@ static String g_mqttMessage = "";
 static const char* const g_thingsBoardTelemetryTopic = "v1/devices/me/telemetry";
 
 unsigned g_packagesSent = 0;
+uint32_t g_lastPublishTime = 0;
 
 void
 mqttAddField(int field, String val)
@@ -128,7 +129,13 @@ buildThingsBoardPayload()
         g_pendingWateringMs = 0;
     }
 
-    telemetry["ping"] = (double)g_pingTime.getAverage();
+    // Guarded like every other accumulator. It was the one exception, and on a
+    // device that has not completed a ping it published 0.0 — which reads as a
+    // zero-millisecond round trip, not as "no measurement". Same reason the
+    // moisture and DHT fields are skipped when unsampled.
+    if (g_pingTime.getSamples() > 0) {
+        telemetry["ping"] = (double)g_pingTime.getAverage();
+    }
     telemetry["connectionLoss"] = (int)g_connectionLossCount;
     telemetry["wateringCycles"] = (int)g_wateringCycles;
     telemetry["firmware"] = FW_VERSION;
@@ -231,6 +238,7 @@ telemetryPublish()
 
         if (success) {
             ++g_packagesSent;
+            g_lastPublishTime = (uint32_t)time(NULL);
             msgQueue.pop_front();
             errors = 0;
         } else {

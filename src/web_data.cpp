@@ -4,6 +4,7 @@
 #include "core/config.h"
 #include <esp_heap_caps.h>
 #include "core/tasks.h"
+#include "network/mqtt.h"
 #include "network/thingsboard.h"
 #include "network/web.h"
 #include "network/web_data.h"
@@ -84,7 +85,46 @@ webUpdateDataCache()
     statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
     statusJson["Ping"] = String(g_pingTime.getAverage()) + "ms";
     statusJson["Connection Loss Count"] = String(g_connectionLossCount);
+    // Two different questions, and conflating them is what made a three-year
+    // outage invisible. "MQTT" is the operator's switch — index.js binds a
+    // checkbox to it, so its values stay "enabled"/"disabled". "MQTT Link" is
+    // what the device actually has.
     statusJson["MQTT"] = String((g_mqttEnabled) ? "enabled" : "disabled");
+    if (!g_mqttEnabled) {
+        statusJson["MQTT Link"] = "disabled";
+    } else if (mqttIsConnected()) {
+        statusJson["MQTT Link"] = "connected";
+    } else {
+        // The state code names the refusal instead of leaving it to be
+        // guessed: -2 covers a failed TLS handshake, which is where a stale CA
+        // pin lands and where this device sat, unnoticed, from 2023 to 2026.
+        statusJson["MQTT Link"] =
+          "down (rc=" + String(mqttState()) + ")";
+    }
+
+    // The age of the last ACCEPTED publish. `Packages Sent` counts up from
+    // zero at every boot, so on a device that has been up an hour it reads the
+    // same whether the broker is taking everything or has taken nothing since
+    // the second minute.
+    if (g_lastPublishTime == 0) {
+        statusJson["Last Publish"] = g_mqttEnabled ? "never" : "n/a";
+    } else {
+        const time_t now = time(NULL);
+        const long age = (long)now - (long)g_lastPublishTime;
+        char buffer[32];
+        if (age < 0) {
+            // The clock moved backwards under us — an NTP correction, most
+            // likely. Better to say so than to print a negative age.
+            snprintf(buffer, sizeof buffer, "clock stepped");
+        } else if (age < 120) {
+            snprintf(buffer, sizeof buffer, "%lds ago", age);
+        } else if (age < 7200) {
+            snprintf(buffer, sizeof buffer, "%ldm ago", age / 60);
+        } else {
+            snprintf(buffer, sizeof buffer, "%ldh ago", age / 3600);
+        }
+        statusJson["Last Publish"] = String(buffer);
+    }
     // Only while it is actually blocking something. A refusal that leaves no
     // trace in the UI is indistinguishable from a relay button that does not
     // work, which is how a safety feature becomes a bug report.

@@ -19,6 +19,19 @@ mqttPublishTopic(const String& topic, const String& message);
 bool
 mqttIsThingsBoard();
 
+// Whether the broker link is UP, as opposed to whether publishing is switched
+// on. The two were never distinguished, and that is what let this channel
+// receive nothing for three years while /data.json reported "MQTT: enabled":
+// the flag it printed was the operator's intent, not the device's reality.
+bool
+mqttIsConnected();
+
+// PubSubClient's state code, so a refusal names itself. -2 is a failed TCP or
+// TLS connect (a stale CA pin lands here), -4 a timeout, 4 bad credentials,
+// 5 not authorised — each a different investigation.
+int
+mqttState();
+
 // Subscribes to an explicit topic, logging either outcome. Only useful once
 // connected — a broker forgets every subscription when the session drops, so
 // call sites live in the on-connect path.
