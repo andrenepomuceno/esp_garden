@@ -572,15 +572,26 @@ Every sensor compiles into every image; `config.*Fitted` and `config.moistureCou
   `MQTT: enabled` throughout, and only `Packages Sent` staying at 0 gave it
   away — a counter that resets every boot, so on a device up for an hour it
   reads the same whether the broker took everything or nothing.
-- **The pinned bundle is three roots** — ISRG Root X1 (to 2035), ISRG Root X2
-  (2040) and USERTrust ECC (2038) — and the live `thingsboard.cloud:8883` chain
-  verifies against it today (checked 2026-08-25 with `openssl s_client -CAfile`,
-  `Verification: OK`). **But it terminates in `ISRG Root YR` cross-signed by
-  X1**, and that cross-signature is transitional by design. When Let's Encrypt
-  stops serving it the chain will end at a root this device does not carry, and
-  the failure will be silent in exactly the old way. Adding ISRG Root YR to
-  `data/thingsboard.pem` is the fix; `mbedtls_x509_crt_parse` accepts a
-  concatenated PEM bundle, which is why there are already three.
+- **The pinned bundle is five roots**: ISRG Root X1 (to 2035), X2 (2040),
+  USERTrust ECC (2038), and — added 2026-08-25 — **ISRG Root YR and YE, both to
+  2045**. `mbedtls_x509_crt_parse` accepts a concatenated PEM bundle, which is
+  what makes pinning several roots one file.
+  
+  YR and YE were added because the live `thingsboard.cloud:8883` chain
+  terminates in **`ISRG Root YR` cross-signed by X1**, and that cross-signature
+  is transitional by design: it exists only until the new root is widely
+  trusted. Pinning X1 alone worked *because of it*, and would have failed
+  silently the day it was withdrawn — the exact signature of the 2023-2026
+  outage. YR and YE mirror X1 and X2: Let's Encrypt's `gen-y` hierarchy has an
+  RSA root and an ECDSA one, and which issues a given certificate is the CA's
+  choice, not ours.
+  
+  **Verified, not assumed** (`openssl s_client -CAfile`): the live chain
+  validates against the new bundle, and — the check that matters — against
+  **ISRG Root YR ALONE**, which is what proves the anchor still works once the
+  cross-signature is gone. Both new roots are self-signed
+  (`openssl verify -CAfile self self`), so they are trust anchors and not
+  cross-signed copies wearing the same name.
 
 ---
 
