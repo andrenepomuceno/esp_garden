@@ -757,6 +757,62 @@ sixty substitutions across nineteen files it took to leave SPIFFS.
   renaming a route to match an internal driver change is a breaking change
   bought for nothing.
 
+### The ring buffer does not survive the move, and the reason generalises
+
+**`IoHistory::append()` panicked the board every 60 s under LittleFS**, from the
+first history write after every boot, deterministically. Verified 2026-08-24 on
+9e7c, three consecutive panics 73-76 s apart, all with the same PC and a clean
+backtrace:
+
+```
+Guru Meditation Error: Core 1 panic'ed (IntegerDivideByZero)
+lfs_alloc              lfs.c:689
+lfs_ctz_extend         lfs.c:2892  (inlined by lfs_file_flushedwrite:3557)
+lfs_file_flush / _sync_ / _close_ / lfs_file_close / vfs_littlefs_close
+IoHistory::append      src/io_history.cpp:178   <- the close()
+historyTaskHandler     src/tasks.cpp:489
+```
+
+What is NOT wrong, each measured on the device rather than assumed:
+
+- Block allocation. A 1256-byte `/config.json` save allocated and committed.
+- Sequential writes at any size. 4 KB and 69 136 B uploaded through
+  `/spiffs/upload`, read back **byte-identical**, deleted, space reclaimed, with
+  the board never missing a beat.
+- The image. The superblock built by `tool-mklittlefs` reads `block_size 4096`,
+  `block_count 128`, version 2.0 — correct for a 512 KB partition.
+
+What IS wrong is the access pattern, and it is a design mismatch rather than a
+bug to patch. **LittleFS stores file data as a copy-on-write CTZ skip-list,
+which is built for appending.** Rewriting bytes in the MIDDLE of a file makes it
+copy the chain forward from that point. `append()` seeks to
+`16 + head * 48` and writes 48 bytes, then seeks to 0 and rewrites the header —
+so with `head` near the start it rewrites **the whole 69 KB file**, every minute,
+forever.
+
+That is fatal twice over. It crashed here, and even if it had not: 69 KB of
+rewrite per 48-byte record, once a minute, is ~100 MB of flash writes a day on
+blocks rated for ~100 000 erases. The ring would have destroyed the partition in
+weeks while looking like it worked.
+
+**The design was correct for SPIFFS and is wrong for LittleFS.** SPIFFS rewrites
+one 256-byte page for an in-place overwrite, which is what "a fixed-size ring
+with in-place appends" was built on. The lesson is not about littlefs: any
+copy-on-write filesystem turns random writes into whole-file rewrites, so
+*in-place mutation of a large file is the thing to design out*, not a knob to
+tune.
+
+The fix is append-only segments — records written to the END of a file, which
+touches only the last block, rotated across a few files with the oldest deleted.
+Fixed flash usage is preserved and the wear is far below even the SPIFFS design.
+
+**The device currently runs with `history.records = 0`**, set through
+`POST /config.json` on 2026-08-24 to stop the panic loop without a reflash. That
+is what a panicking garden controller costs: every reset floats the GPIOs, and on
+these active-low boards that pulses every pump for the length of a boot. Nothing
+is being recorded and the classifier has nothing to train on until the rewrite
+lands and the key goes back to 1440.
+
 ## I/O history ring buffer
 
 `/io_history.bin` holds the last N snapshots of every input and output. Sized
