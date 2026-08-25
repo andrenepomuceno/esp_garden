@@ -204,7 +204,45 @@ garbage. An hour went into learning that.
   (`esptool read_flash 0x3F0000 0x10000`) against
   `backups/elf/firmware-2.5.0-littlefs.elf`, which is kept for exactly that.
 
+- **The append-only history, on the device** (2026-08-24, firmware 2.6.0,
+  over the air). The rewrite that replaced the ring survived the append that
+  killed its predecessor: uptime passed ten minutes and kept going where the
+  old design panicked at ~60 s, every boot. The log reads
+
+  ```
+  io_history: removed the legacy ring /io_history.bin
+  io_history: ready, 0/1440 records across 0 of 8 segments (180 each)
+  io_history: logging every 60 s
+  ```
+
+  and after ten minutes `/spiffs/hist0.bin` is **492 bytes — a 12-byte header
+  plus exactly 10 records of 48** — while `hist1..7` are still 404, which is
+  the lazy creation working. `/history.json?limit=5` answers with records 60 s
+  apart carrying all three probes and the DHT. Deleting the legacy ring freed
+  the expected 69 KB: the filesystem went 392 → 332 KB.
+
+  What is NOT yet exercised is a **rotation**: segment 0 fills at 180 records,
+  so the first recycle is three hours in, and the retention swing it introduces
+  has only been tested on the host.
+
+- **The firmware OTA path, end to end** (2026-08-24). 1.2 MB uploaded to a
+  board with no USB attached, `/updateEnable` armed against idle relays, and
+  the version confirmed by polling until it changed — the upload's own
+  connection timed out after 420 s, which as the trap below says is not a
+  verdict. Two web assets then went up individually through `/spiffs/upload`
+  and were read back byte-identical, so `data/` changes no longer cost a
+  partition rewrite.
+
 **Unverified — written, compiles, never run on hardware:**
+
+- **The history boot-loop interlock.** The RTC strike counter compiles and
+  ships, and the path that clears it after ten minutes has run — but no panic
+  has been counted against it, so the refusal itself has never fired. It exists
+  because the board is now reachable only over the air, where a writer that
+  panics before the web server answers is unrecoverable.
+
+- **A segment rotation.** See above: the first one is three hours after the
+  history was enabled.
 
 - **ThingsBoard RPC.** No command has been sent. The device's credential is
   MQTT Basic rather than an access token, so the tenant REST API is not
@@ -806,12 +844,12 @@ The fix is append-only segments — records written to the END of a file, which
 touches only the last block, rotated across a few files with the oldest deleted.
 Fixed flash usage is preserved and the wear is far below even the SPIFFS design.
 
-**The device currently runs with `history.records = 0`**, set through
-`POST /config.json` on 2026-08-24 to stop the panic loop without a reflash. That
-is what a panicking garden controller costs: every reset floats the GPIOs, and on
-these active-low boards that pulses every pump for the length of a boot. Nothing
-is being recorded and the classifier has nothing to train on until the rewrite
-lands and the key goes back to 1440.
+`history.records` was set to 0 through `POST /config.json` on 2026-08-24 to
+stop the panic loop without a reflash — that is what a panicking garden
+controller costs, because every reset floats the GPIOs and on these active-low
+boards pulses every pump for the length of a boot. **It went back to 1440 the
+same day**, once the append-only rewrite was flashed; see the verified entry
+above.
 
 ## I/O history — append-only segments
 

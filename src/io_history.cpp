@@ -93,6 +93,14 @@ IoHistory::begin(uint16_t capacity, FS& filesystem)
         }
     }
 
+    // The ring this replaced. It is dead weight now — 69 KB of a 512 KB
+    // partition — and leaving it would also leave the file whose in-place
+    // rewrites panicked the board, one config edit away from being used again.
+    if (fs->exists(IO_HISTORY_LEGACY_FILE)) {
+        fs->remove(IO_HISTORY_LEGACY_FILE);
+        logger.info("io_history: removed the legacy ring " IO_HISTORY_LEGACY_FILE);
+    }
+
     if (capacity == 0) {
         logger.info("io_history: disabled (capacity 0)");
         return false;
@@ -102,14 +110,6 @@ IoHistory::begin(uint16_t capacity, FS& filesystem)
     if (segmentRecords == 0) {
         logger.error("io_history: capacity too small to segment");
         return false;
-    }
-
-    // The ring this replaced. It is dead weight now — 69 KB of a 512 KB
-    // partition — and leaving it would also leave the file whose in-place
-    // rewrites panicked the board, one config edit away from being used again.
-    if (fs->exists(IO_HISTORY_LEGACY_FILE)) {
-        fs->remove(IO_HISTORY_LEGACY_FILE);
-        logger.info("io_history: removed the legacy ring " IO_HISTORY_LEGACY_FILE);
     }
 
     storedTotal = 0;
