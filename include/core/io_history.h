@@ -1,34 +1,49 @@
 #pragma once
 
 #include "BuildConfig.h"
-#include "core/ring_index.h"
+#include "core/filesystem.h"
+#include "core/segment_index.h"
 #include <Arduino.h>
 #include <FS.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
-#include "core/filesystem.h"
 
-// Fixed-size ring buffer of I/O snapshots on FILESYSTEM.
+// Append-only history of I/O snapshots, spread across a fixed set of segment
+// files on FILESYSTEM.
 //
-// The file is preallocated to `capacity` records and never grows: the oldest
-// record is overwritten in place. That bounds flash usage exactly — a full
-// buffer costs `IO_HISTORY_HEADER_SIZE + capacity * sizeof(IoRecord)` bytes,
-// forever — and removes the rotation logic the logger needs.
+// Records are written to the END of the newest segment and nothing is ever
+// rewritten in place — not a record, not a header. When the newest segment is
+// full the oldest is recycled: truncated, stamped with a new sequence number,
+// and written into. Flash usage is therefore bounded at
+// `kSegments * (sizeof(IoSegmentHeader) + recordsPerSegment * sizeof(IoRecord))`
+// forever, which is what the old ring bought, without the in-place writes that
+// made it fatal on a copy-on-write filesystem. See core/segment_index.h for
+// what happened and why the shape had to change.
+//
+// The segment header deliberately carries NO record count. The count is the
+// file length, so an append is one write at the end and a torn append leaves a
+// partial record that simply does not divide evenly and is ignored. Storing a
+// count would mean rewriting the header on every append — reintroducing the
+// exact mid-file write this design exists to remove — and would make a torn
+// write a disagreement between two places instead of a short tail.
 //
 // The record layout is FIXED regardless of build flags: a board with one probe
-// still writes four slots, filled with NaN. Making the layout depend on
-// MOISTURE_SENSOR_COUNT would mean two firmwares disagree about how to read the
+// still writes four slots, filled with NaN. Making the layout depend on the
+// fitted probe count would mean two firmwares disagree about how to read the
 // same file, and the reader has no way to tell which wrote it.
 //
 // Changing the layout DISCARDS the stored history. The header carries
-// `recordSize`, and begin() reformats on any mismatch — which is the point:
-// reading 40-byte records out of a 48-byte file would silently return garbage
-// that looks like data. Growing this struct is a deliberate trade of the
-// buffer's current contents for the new channel.
+// `recordSize` and begin() drops any segment that disagrees — which is the
+// point: reading 40-byte records out of a 48-byte file would silently return
+// garbage that looks like data.
 
 #define IO_HISTORY_MAX_MOISTURE 4
-#define IO_HISTORY_MAGIC 0x45474831UL // "EGH1"
-#define IO_HISTORY_FILE "/io_history.bin"
+
+// "EGH2". Bumped from EGH1 with the move to segments: an old single-file
+// /io_history.bin must not be mistaken for a segment, and the new files have
+// new names anyway, so the old one is simply deleted at begin().
+#define IO_HISTORY_MAGIC 0x45474832UL
+#define IO_HISTORY_LEGACY_FILE "/io_history.bin"
 
 #pragma pack(push, 1)
 struct IoRecord
@@ -51,13 +66,12 @@ struct IoRecord
 #define IO_HISTORY_FLAG_FLOAT_VALID  0x0001
 #define IO_HISTORY_FLAG_FLOAT_RAISED 0x0002
 
-struct IoHistoryHeader
+struct IoSegmentHeader
 {
     uint32_t magic;
     uint16_t recordSize; ///< sizeof(IoRecord) as written
-    uint16_t capacity;   ///< records the file holds
-    uint32_t head;       ///< slot the next append writes to
-    uint32_t stored;     ///< records ever written, saturating at capacity
+    uint16_t records;    ///< this segment's capacity, to catch a config change
+    uint32_t seq;        ///< monotonic, higher is newer; 0 is never written
 };
 #pragma pack(pop)
 
@@ -73,9 +87,15 @@ static_assert(MOISTURE_MAX == IO_HISTORY_MAX_MOISTURE,
 class IoHistory
 {
   public:
-    // Opens the file, or creates it when missing. Any disagreement about
-    // magic, record size or capacity discards the file and starts over: a
-    // half-understood binary log is worse than none.
+    // Adopts whatever segments are already on disk and agree with this build.
+    // A segment that disagrees about magic, record size or per-segment capacity
+    // is deleted rather than reinterpreted: a half-understood binary log is
+    // worse than none.
+    //
+    // Nothing is preallocated. The old design wrote the whole file at begin()
+    // so an append could never fail for space; with append-only segments the
+    // space is taken as it is used and released a whole segment at a time, and
+    // after the first full cycle no new space is ever needed.
     bool begin(uint16_t capacity, FS& filesystem = FILESYSTEM);
 
     bool append(const IoRecord& record);
@@ -95,50 +115,74 @@ class IoHistory
     //
     // Locating the window and reading it are ONE operation on purpose. They
     // used to be two public calls, each taking the mutex on its own, and an
-    // append() landing between them shifted every logical index: once the ring
-    // has wrapped, `stored` stays at capacity while `head` advances, so index
-    // i names a different record after each append. A request arriving on the
-    // history task's append boundary got a window starting one record late,
-    // and in the limit `from` could equal `stored` — zero records returned for
-    // a window that plainly has data, with no error to explain it.
+    // append() landing between them shifted every logical index.
     size_t readWindow(uint32_t sinceEpoch, IoRecord* out, size_t maxPoints,
                       uint32_t* strideOut, uint32_t* fromOut);
 
-    // Streams every stored record, oldest first, under ONE lock and ONE file
-    // handle. Returns how many it visited; the visitor returning false stops
-    // the walk early.
+    // Streams every stored record, oldest first. Returns how many it visited;
+    // the visitor returning false stops the walk early.
     //
     // Exists for the moisture trainer, which needs three passes over the whole
     // buffer and must not hold it in RAM: 1440 records is 69 KB, and the
-    // sufficient statistics it is building are twelve doubles. Reopening the
-    // file per record would be the obvious alternative and is thousands of
-    // SPIFFS opens.
+    // sufficient statistics it is building are twelve doubles.
     using Visitor = bool (*)(const IoRecord& record, uint32_t index, void* ctx);
     size_t forEach(Visitor visit, void* ctx);
 
-    uint16_t capacity() const { return header.capacity; }
-    uint32_t stored() const { return header.stored; }
+    uint32_t capacity() const
+    {
+        return (uint32_t)segmentRecords * segment::kSegments;
+    }
+    uint32_t stored() const { return storedTotal; }
     bool ready() const { return initialised; }
 
+    // Records evicted since boot, i.e. how far the logical index origin has
+    // moved. forEach() uses it to stay aligned across the lock it releases.
+    uint32_t evicted() const { return evictedTotal; }
+
   private:
-    // Both assume the mutex is held and the file is open. `lowerBoundLocked`
-    // reports failure rather than returning a half-converged index: a readAt()
-    // error mid-search used to `break` and hand back whatever `lo` had reached,
-    // which reads as a valid answer.
-    bool lowerBoundLocked(File& file, uint32_t sinceEpoch, uint32_t& out);
-    size_t readDecimatedLocked(File& file, IoRecord* out, size_t maxPoints,
+    // Holds one segment open across consecutive reads. A logical walk crosses a
+    // segment boundary only every `segmentRecords` records, and a binary search
+    // touches about eleven, so reopening only when the SLOT changes turns what
+    // would be one open per record into a handful.
+    struct Reader
+    {
+        File file;
+        int slot = -1;
+    };
+
+    bool readAt(Reader& reader, uint32_t index, IoRecord& out);
+    static void closeReader(Reader& reader);
+
+    // Both assume the mutex is held. `lowerBoundLocked` reports failure rather
+    // than returning a half-converged index: a readAt() error mid-search used
+    // to `break` and hand back whatever `lo` had reached, which reads as a
+    // valid answer.
+    bool lowerBoundLocked(Reader& reader, uint32_t sinceEpoch, uint32_t& out);
+    size_t readDecimatedLocked(Reader& reader, IoRecord* out, size_t maxPoints,
                                uint32_t fromIndex, uint32_t* strideOut);
 
-    IoHistoryHeader header = {};
+    // Recycles the oldest segment (or claims an unused one) and makes it the
+    // newest. Assumes the mutex is held.
+    bool rotateLocked(uint8_t& slotOut);
+    static String pathFor(uint8_t slot);
+    bool adoptSegmentLocked(uint8_t slot);
+
     FS* fs = nullptr;
     bool initialised = false;
 
-    bool format(uint16_t capacity);
-    bool readAt(File& file, uint32_t index, IoRecord& out) const;
+    uint16_t segmentRecords = 0;
+    uint16_t segmentCount[segment::kSegments] = {}; ///< records held, by SLOT
+    uint32_t segmentSeq[segment::kSegments] = {};   ///< 0 means unused, by SLOT
+    uint8_t order[segment::kSegments] = {};         ///< slots, oldest first
+    uint8_t orderCount = 0;
+    uint32_t storedTotal = 0;
+    uint32_t evictedTotal = 0;
+    uint32_t nextSeq = 1;
 
     // append() runs on loop(); read() runs on the async_tcp task. Both touch
-    // the same header and the same file, so without this a request landing
-    // mid-append reads a half-written record and a head that moved under it.
+    // the same segment table and the same files, so without this a request
+    // landing mid-append reads a half-written record and a table that moved
+    // under it.
     SemaphoreHandle_t mutex = nullptr;
 };
 

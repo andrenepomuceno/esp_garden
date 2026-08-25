@@ -418,8 +418,17 @@ ledBlinkTaskHandler()
 static void
 historyTaskHandler()
 {
+    // Ten minutes of appends without a panic clears the boot-loop interlock.
+    // Long enough that a writer which crashes on its first append — the failure
+    // this guards against — never reaches it, and short enough that a real
+    // reboot for any other reason does not leave a strike behind to be counted
+    // against an unrelated future one.
+    if (millis() > 10UL * 60UL * 1000UL) {
+        historyGuardClear();
+    }
+
     // A record stamped before the clock synced is undatable, and it would sit
-    // in the ring pretending to be from 1970.
+    // in the history pretending to be from 1970.
     const time_t now = time(NULL);
     if (now < g_safeTimestamp) {
         return;

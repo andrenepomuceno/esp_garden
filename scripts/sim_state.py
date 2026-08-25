@@ -38,8 +38,12 @@ class DeviceState:
         self.dht_read_errors = 0
         self.logs: deque[str] = deque(maxlen=self.LOG_CAPACITY)
 
-        # Mirrors the on-device ring buffer in src/io_history.cpp. A deque with
-        # maxlen IS a ring buffer, so the simulator gets the same drop-oldest
+        # Mirrors the on-device history in src/io_history.cpp. The device
+        # now drops a whole SEGMENT at a time rather than one record, so its
+        # retention swings between 7/8 and 8/8 of capacity; a deque with
+        # maxlen drops one at a time, which is close enough for a frontend
+        # mock and is noted here so nobody reads it as the device's rule.
+        # The simulator gets the same drop-oldest
         # behaviour without the file. Capacity and period come from the same
         # config block the device reads — hardcoding them let the simulator
         # report a capacity the device would never return.

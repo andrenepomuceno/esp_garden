@@ -14,7 +14,7 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
   a two-point calibration and then to no badge at all
 - **Scheduled watering** — up to 8 timed relay activations, edited in the web UI
 - **Cloud logging** — sensor data published to ThingSpeak or ThingsBoard over MQTT (TLS)
-- **On-device history** — a fixed-size ring buffer keeps the last N I/O snapshots
+- **On-device history** — append-only segments keep the last N I/O snapshots
   across reboots, served as JSON
 - **Internet watchdog** — pings Google/Cloudflare DNS and reports connectivity losses
 - **NTP time sync** — clock synchronized daily via Brazilian NTP pool
@@ -139,7 +139,7 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
     "log": {
         "level": 4               // 0 disable .. 4 info (default) .. 6 trace
     },
-    "history": {                 // on-device ring buffer of I/O snapshots
+    "history": {                 // on-device append-only I/O snapshots
         "records": 1440,         // file capacity; 0 disables. 1440 = 24 h at 60 s
         "periodSec": 60          // one record per this many seconds
     },
@@ -631,7 +631,7 @@ TalkBack, an MQTT drain) stalls every other background task for its duration.
 | `io` | 1 s | Read ADC sensors and rebuild the `/data.json` payload |
 | `dht` | 1 s | Read temperature and humidity from DHT11 |
 | `checkInternet` | 15 s | Ping DNS servers, update connectivity state |
-| `history` | `history.periodSec` | Append one I/O snapshot to the ring buffer |
+| `history` | `history.periodSec` | Append one I/O snapshot to the newest segment |
 | `schedules` | 20 s | Fire any schedule that is due |
 | `mqtt` | 1 min | Publish averaged sensor data to the configured backend |
 | `talkBack` | 1 min | Poll ThingSpeak TalkBack for remote commands |

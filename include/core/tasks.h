@@ -49,3 +49,27 @@ requestRestart();
 // power cut are three different investigations and the enum alone hides that.
 const char*
 resetReasonName();
+
+// Boot-loop interlock for the history subsystem.
+//
+// The history writer has already reboot-looped this board once: under LittleFS
+// the old in-place ring divided by zero inside the allocator on its first
+// append after every boot, so the device panicked every 75 s. Recovering meant
+// disabling it through POST /config.json — which needs the device to stay up
+// long enough to answer, and needs someone watching.
+//
+// A config key is the wrong place for that guard, because the change only
+// takes effect at the next boot: turning history back on and being wrong about
+// it leaves a device that panics before it can be told otherwise, and with no
+// USB attached that is unrecoverable. So the count lives in RTC memory, which
+// survives a panic reset, and the firmware refuses to start the writer after
+// three consecutive panics.
+//
+// `historyGuardTripped()` is asked once at boot. `historyGuardClear()` is
+// called by the history task after it has been running long enough to prove
+// this firmware and this config are stable.
+bool
+historyGuardTripped();
+
+void
+historyGuardClear();

@@ -31,7 +31,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | ThingsBoard | `src/thingsboard.cpp` (729) | The downlink half: client/shared attributes, two-way RPC, the chunked `v2/fw` firmware stream |
 | Versions | `src/fw_version.cpp` | Semantic-version compare — the check deciding whether a cloud image is flashed. Host-tested |
 | TalkBack | `src/talkback.cpp` | Hand-rolled HTTP/1.1 POST to `api.thingspeak.com` (**plain HTTP, port 80**) |
-| History | `src/io_history.cpp`, `include/core/ring_index.h` | Fixed-size ring buffer of I/O snapshots on LittleFS, served by `/history.json` |
+| History | `src/io_history.cpp`, `include/core/segment_index.h` | Append-only segments of I/O snapshots on LittleFS, served by `/history.json` |
 | Moisture model | `src/moisture_classifier.cpp` (pure maths, host-tested), `src/moisture_model.cpp` (training, persistence) | Gaussian naive Bayes per probe, labelled by watering events. See [Soil moisture](#soil-moisture-a-classifier-trained-on-watering-events) |
 | Stats | `src/accumulator_v2.cpp` | Rolling window mean + variance over a `std::list<float>` |
 | Filesystem image | `data/` | `index.*`, `login.*`, `config.*`, `users.*`, `update.*`, `auth.js`; vendored `jquery.js`, `sha256.js`, `spark-md5.js` (all MIT); `favicon.ico`, `thingspeak.pem`, `config.template.json`; vendored `bootstrap.css.gz` |
@@ -106,7 +106,7 @@ garbage. An hour went into learning that.
   half-written filesystem via serial.
 - `GET /config.json?secrets=1` → edit → `POST` round trip, verified by byte
   count (1267 sent, 1267 written). The masked-secret restore path.
-- The I/O history ring buffer, its wrap-around, and `/history.json`.
+- The I/O history buffer, its wrap-around, and `/history.json` — as a ring, under SPIFFS. The append-only segments that replaced it are host-tested and built but have not yet run on the board.
 - Relay switching, the 30 s ceiling, the sticky mask in the history record.
 - Probe readings: three probes at 42.9 / 57.0 / 52.6 with variances ≤ 0.10.
 - **Heap under load** (2026-08-24, firmware 2.2.1). Six endpoints hammered in
@@ -359,7 +359,7 @@ Three traps that used to live here are fixed; do not re-introduce them:
 | `io` | 1 s | background | All ADC reads, then `webUpdateDataCache()` |
 | `dht` | 1 s | background | Enabled only when `config.dhtFitted`; tracks `g_dhtReadErrors` / `g_dhtTotalReads` |
 | `checkInternet` | 15 s | background | |
-| `history` | `history.periodSec` (60 s) | background | One `IoRecord` into the ring buffer; the 60 s here is only the fallback until `tasksSetup()` calls `setPeriod()` |
+| `history` | `history.periodSec` (60 s) | background | One `IoRecord` appended to the newest segment; the 60 s here is only the fallback until `tasksSetup()` calls `setPeriod()` |
 | `schedules` | 20 s | background | Fires a due schedule; three ticks a minute, with a 10 min catch-up window |
 | `mqtt` | 1 min | background | Builds and publishes the payload for whichever backend is configured |
 | `talkBack` | 1 min | background | Polls the TalkBack queue |
@@ -420,7 +420,7 @@ Facts worth knowing before touching it:
 | `/login`, `/logout` | POST | **public** | `CustomLogin` |
 | `/data.json` | GET | session | serves the cache built by the `io` task |
 | `/control` | POST | **OPERATOR** | `relay`+`relayTime`, `watering`, `wateringTime`, `mqtt`, `reset` |
-| `/history.json` | GET | session | last N I/O snapshots from the ring buffer, `?limit=` (cap 200) |
+| `/history.json` | GET | session | last N I/O snapshots, `?limit=` (cap 200) |
 | `/logs` | GET | **ADMIN** | the whole 8 KB log buffer as `text/plain` |
 | `/config.json` | GET/POST | **ADMIN** | read with secrets masked / write the whole document. `?secrets=1` exports verbatim for a restorable backup |
 | `/config.html`, `/config.js` | GET | **public** | configuration editor in tabs (the data behind it is ADMIN) |
@@ -813,46 +813,76 @@ these active-low boards that pulses every pump for the length of a boot. Nothing
 is being recorded and the classifier has nothing to train on until the rewrite
 lands and the key goes back to 1440.
 
-## I/O history ring buffer
+## I/O history — append-only segments
 
-`/io_history.bin` holds the last N snapshots of every input and output. Sized
-once at `begin()` and never grown: appends overwrite the oldest slot in place,
-so flash usage is exactly `16 + capacity * 48` bytes forever and there is no
-rotation to get wrong. Defaults are 1440 records at 60 s — 24 h of history in
-69 KB of the 512 KB LittleFS partition.
+`/hist0.bin` .. `/hist7.bin` hold the last N snapshots of every input and
+output. Records are appended to the END of the newest segment; when it fills,
+the oldest segment is truncated, stamped with a new sequence number and written
+into. **Nothing is ever rewritten in place — not a record, not a header** — and
+that is the whole design, because in-place mutation of a large file is what
+[panicked the board under LittleFS](#the-ring-buffer-does-not-survive-the-move-and-the-reason-generalises).
 
-- **Both parameters are config-driven**: `history.records` (0 disables the
-  feature) and `history.periodSec`. Both are range-checked at load, because a
-  typo here asks for a file larger than the partition.
+Flash usage stays bounded at `8 * (12 + recordsPerSegment * 48)` bytes forever,
+which is what the ring bought, without the writes that made it fatal.
+
+- **The segment header carries NO record count.** The count is the file length.
+  Storing one would mean rewriting the header on every append — reintroducing
+  exactly the mid-file write this design removes — and would turn a torn append
+  into a disagreement between two places instead of a short tail that does not
+  divide evenly and is simply ignored.
+- **Retention became granular, and that is the price.** A whole segment is
+  dropped at once, so the number of records held swings between `7/8` and `8/8`
+  of capacity rather than sitting exactly at it. At the default 1440 that is
+  1260–1440 records.
+- **Both parameters are still config-driven**: `history.records` (0 disables the
+  feature) and `history.periodSec`. `history.records` is the TOTAL; it is
+  divided across the eight segments, rounded up, so the history is never
+  shorter than what was asked for.
+- **Nothing is preallocated any more.** The ring wrote its whole file at
+  `begin()` so an append could never fail for space; segments take space as
+  they use it and release a whole segment at a time, and after the first full
+  cycle no new space is ever needed.
 - **The record layout is fixed regardless of build flags.** A board with one
   probe still writes four moisture slots, filled with NaN, which serializes as
   `null`. Making the layout depend on the fitted probe count would mean two
   firmwares disagree about how to read the same file with no way to tell which
-  wrote it. The header carries `recordSize` anyway, and any mismatch — magic,
-  size, capacity, or file length — discards the file and reformats.
-- **Do not lower `history.periodSec` toward 1 s.** LittleFS is copy-on-write, so
-  an append rewrites a block and relocates metadata; the period is the
-  flash-wear knob, and it matters at least as much as it did under SPIFFS.
-- **Growing `IoRecord` discards the stored history, on purpose.** The header
-  carries `recordSize` and `begin()` reformats on any mismatch — reading
-  40-byte records out of a 48-byte file would return garbage shaped like data.
-  The record went 40 → 48 bytes when flow rate and the cumulative litres were
-  added; the float switch rides in `flags` as two bits (VALID and RAISED,
-  because "not fitted" and "reads empty" must not look alike) rather than
-  costing another float. **`history.records` is capped in RECORDS, so the cap
-  has to come down whenever the record grows** — it went 6000 → 5000 when the
-  record grew to 48 bytes, then **5000 → 2500 under LittleFS**: 240 KB no longer
-  fits in the 189 KB that is free before any history exists, and the old
-  comment's "463 KB usable" was a SPIFFS number that survived the migration
-  because the driver rename was mechanical.
+  wrote it. Each segment header carries `recordSize`, and a segment that
+  disagrees is deleted rather than reinterpreted.
+- **`history.records` is capped in RECORDS, so the cap comes down whenever the
+  record grows** — 6000 → 5000 at 48 bytes, then 5000 → **2500** under LittleFS,
+  because 240 KB no longer fits in the 189 KB free before any history exists.
 - **`/history.json` caps a response at 200 records** (`g_historyMaxResponse`).
   1440 records is 57 KB of raw struct and roughly 170 KB rendered as JSON, more
   than half this chip's DRAM with WiFi already holding a share. The handler also
   keeps a `static IoRecord buffer[200]` — 9.6 KB of DRAM, visible in the build.
-- The wrap-around arithmetic lives in `include/core/ring_index.h`, deliberately
-  free of Arduino and LittleFS so `test_ring_index` can reach it. A wrong answer
-  there reorders history instead of failing, which is why it is the one part
-  with unit tests.
+- **`forEach()` walks in ABSOLUTE coordinates**, not logical ones. It releases
+  the mutex every 64 records so a daily training run does not block the
+  `async_tcp` task for seconds, and a rotation landing in that gap shifts every
+  logical index by a whole segment — 180 records, where the ring shifted by one.
+  The walk therefore tracks the ordinal since the first append ever and
+  subtracts `evicted()`, so a rotation costs exactly the records it discarded.
+- **The index arithmetic lives in `include/core/segment_index.h`**, deliberately
+  free of Arduino and LittleFS so `test_segment_index` can reach it. A wrong
+  answer there reorders history instead of failing, which is why it is the one
+  part with unit tests — including that `counts` is indexed by SLOT while
+  `order` lists slots, a confusion that gives right answers until the first
+  rotation and wrong ones forever after.
+
+### The boot-loop interlock
+
+The history writer has already reboot-looped this board once, and recovering
+needed `POST /config.json` — which needs the device to stay up long enough to
+answer. A config key cannot guard against that, because a config change only
+takes effect at the NEXT boot: turning history back on and being wrong leaves a
+device that panics before it can be told otherwise, and with no USB attached
+that is unrecoverable.
+
+So the strike count lives in **RTC memory** (`RTC_NOINIT_ATTR`), which survives
+a panic reset and not a power cut. Three consecutive boots ending in a panic or
+a watchdog and `setup()` refuses to start the writer, logs why, and lights the
+error blink — leaving `history.records` untouched, so a clean power cycle is a
+fresh attempt. `historyTaskHandler()` clears the count once it has been running
+ten minutes, which a writer that crashes on its first append never reaches.
 
 ---
 

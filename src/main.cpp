@@ -32,6 +32,56 @@ resetReasonName()
     }
 }
 
+// RTC slow memory: NOINIT so it survives a panic reset, which is exactly the
+// event being counted. It does NOT survive a power cut, and that is the right
+// behaviour — someone who pulls the plug and puts it back is entitled to a
+// fresh attempt.
+RTC_NOINIT_ATTR static uint32_t g_historyGuardMagic;
+RTC_NOINIT_ATTR static uint32_t g_historyGuardStrikes;
+
+static const uint32_t kHistoryGuardMagic = 0x48475244UL; // "HGRD"
+static const uint32_t kHistoryGuardLimit = 3;
+
+bool
+historyGuardTripped()
+{
+    return g_historyGuardStrikes >= kHistoryGuardLimit;
+}
+
+void
+historyGuardClear()
+{
+    g_historyGuardStrikes = 0;
+}
+
+// Counts this boot against the guard if the last one ended badly. Called once,
+// before anything opens the history.
+static void
+historyGuardBoot()
+{
+    if (g_historyGuardMagic != kHistoryGuardMagic) {
+        // Uninitialised RTC memory is whatever the RAM powered up as.
+        g_historyGuardMagic = kHistoryGuardMagic;
+        g_historyGuardStrikes = 0;
+        return;
+    }
+
+    switch (esp_reset_reason()) {
+        case ESP_RST_PANIC:
+        case ESP_RST_INT_WDT:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:
+            ++g_historyGuardStrikes;
+            break;
+        default:
+            // A clean restart, a power cut or a brownout says nothing about
+            // the history writer, so the count is left alone rather than
+            // cleared: a panic loop punctuated by a brownout is still a panic
+            // loop.
+            break;
+    }
+}
+
 void
 setup(void)
 {
@@ -109,7 +159,20 @@ setup(void)
 
     // After the config load so the capacity is the configured one, and before
     // webSetup() so /history.json never sees a half-open buffer.
-    ioHistory.begin((uint16_t)config.historyRecords);
+    historyGuardBoot();
+    if (historyGuardTripped()) {
+        // Deliberately NOT a config change: the device stays reachable, the
+        // configured capacity is left alone, and the next clean power cycle
+        // gives it another go. What must not happen is a third panic turning
+        // into a fourth on a board nobody can reach.
+        logger.error("io_history: DISABLED after three consecutive panic "
+                     "reboots. The last boots ended in a panic or a watchdog, "
+                     "and the history writer is the most likely cause. "
+                     "history.records is unchanged; power-cycle to retry.");
+        error = true;
+    } else {
+        ioHistory.begin((uint16_t)config.historyRecords);
+    }
 
     // After the config load, because it reports per configured probe, and
     // before webSetup() so /moisture.json never answers from a zeroed model

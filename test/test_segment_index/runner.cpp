@@ -1,6 +1,6 @@
 #include <unity.h>
 
-void run_ring_index_tests(void);
+void run_segment_index_tests(void);
 
 void
 setUp(void)
@@ -16,6 +16,6 @@ int
 main(int, char**)
 {
     UNITY_BEGIN();
-    run_ring_index_tests();
+    run_segment_index_tests();
     return UNITY_END();
 }

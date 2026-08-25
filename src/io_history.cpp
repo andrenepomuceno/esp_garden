@@ -3,57 +3,77 @@
 
 IoHistory ioHistory;
 
-#define IO_HISTORY_HEADER_SIZE ((uint32_t)sizeof(IoHistoryHeader))
+#define IO_SEGMENT_HEADER_SIZE ((uint32_t)sizeof(IoSegmentHeader))
 
-bool
-IoHistory::format(uint16_t capacity)
+String
+IoHistory::pathFor(uint8_t slot)
 {
-    File file = fs->open(IO_HISTORY_FILE, FILE_WRITE, true);
+    // Short on purpose: the upload endpoint refuses paths over
+    // FILESYSTEM_MAX_PATH, and these names are also what a person sees when
+    // browsing /spiffs/.
+    return String("/hist") + String((int)slot) + ".bin";
+}
+
+void
+IoHistory::closeReader(Reader& reader)
+{
+    if (reader.slot >= 0) {
+        reader.file.close();
+        reader.slot = -1;
+    }
+}
+
+// Reads one segment off disk into the table, or deletes it if this build cannot
+// make sense of it. Caller holds the mutex.
+bool
+IoHistory::adoptSegmentLocked(uint8_t slot)
+{
+    const String path = pathFor(slot);
+    segmentSeq[slot] = 0;
+    segmentCount[slot] = 0;
+
+    if (!fs->exists(path)) {
+        return false;
+    }
+
+    File file = fs->open(path, FILE_READ);
     if (file == false) {
-        logger.error("io_history: cannot create " IO_HISTORY_FILE);
         return false;
     }
 
-    header.magic = IO_HISTORY_MAGIC;
-    header.recordSize = (uint16_t)sizeof(IoRecord);
-    header.capacity = capacity;
-    header.head = 0;
-    header.stored = 0;
-
-    if (file.write((const uint8_t*)&header, sizeof(header)) != sizeof(header)) {
-        logger.error("io_history: header write failed");
-        file.close();
-        return false;
-    }
-
-    // Preallocate every slot so the file never grows later and an append can
-    // never fail for lack of space halfway through a season. Written in blocks:
-    // one VFS call per record meant 1440 round-trips with the web server not
-    // yet up, and 6000 at the configured ceiling.
-    static const size_t kBlockRecords = 16;
-    uint8_t block[kBlockRecords * sizeof(IoRecord)] = {};
-    uint16_t remaining = capacity;
-    while (remaining > 0) {
-        const size_t batch =
-          (remaining < kBlockRecords) ? remaining : kBlockRecords;
-        const size_t bytes = batch * sizeof(IoRecord);
-        if (file.write(block, bytes) != bytes) {
-            logger.error("io_history: preallocation failed with " +
-                         String(remaining) + " records left — is the filesystem full?");
-            file.close();
-            // Leaving the partial file behind would keep the space it already
-            // took and the next boot would try again on a fuller filesystem.
-            fs->remove(IO_HISTORY_FILE);
-            return false;
-        }
-        remaining -= batch;
-    }
-
+    IoSegmentHeader onDisk = {};
+    const bool readOk =
+      file.read((uint8_t*)&onDisk, sizeof(onDisk)) == (int)sizeof(onDisk);
+    const uint32_t size = (uint32_t)file.size();
     file.close();
-    logger.info("io_history: formatted " IO_HISTORY_FILE " for " +
-                String(capacity) + " records (" +
-                String(IO_HISTORY_HEADER_SIZE + (uint32_t)capacity * sizeof(IoRecord)) +
-                " bytes)");
+
+    // Every field has to agree. A firmware that changed the record layout would
+    // otherwise read the old file as garbage and publish it as history.
+    if (!readOk || onDisk.magic != IO_HISTORY_MAGIC ||
+        onDisk.recordSize != sizeof(IoRecord) ||
+        onDisk.records != segmentRecords || onDisk.seq == 0 ||
+        size < IO_SEGMENT_HEADER_SIZE) {
+        logger.warning("io_history: dropping unusable " + path);
+        fs->remove(path);
+        return false;
+    }
+
+    // The count is the file length, and a torn append leaves a tail that does
+    // not divide evenly. Truncating it here — logically, by ignoring it — is
+    // the whole benefit of keeping no count in the header: the partial record
+    // is simply not one of the records.
+    const uint32_t body = size - IO_SEGMENT_HEADER_SIZE;
+    uint32_t records = body / sizeof(IoRecord);
+    if (records > segmentRecords) {
+        records = segmentRecords; // a longer file than this build would write
+    }
+    if (body % sizeof(IoRecord) != 0) {
+        logger.warning("io_history: " + path + " ends in a partial record, " +
+                       "ignoring " + String(body % sizeof(IoRecord)) + " bytes");
+    }
+
+    segmentSeq[slot] = onDisk.seq;
+    segmentCount[slot] = (uint16_t)records;
     return true;
 }
 
@@ -78,52 +98,91 @@ IoHistory::begin(uint16_t capacity, FS& filesystem)
         return false;
     }
 
-    bool needsFormat = true;
-    if (fs->exists(IO_HISTORY_FILE)) {
-        File file = fs->open(IO_HISTORY_FILE, FILE_READ);
-        if (file != false) {
-            IoHistoryHeader onDisk = {};
-            if (file.read((uint8_t*)&onDisk, sizeof(onDisk)) == sizeof(onDisk)) {
-                const uint32_t expected =
-                  IO_HISTORY_HEADER_SIZE +
-                  (uint32_t)onDisk.capacity * onDisk.recordSize;
-                // Every field has to agree. A firmware that changed the record
-                // layout would otherwise read the old file as garbage and
-                // publish it as history.
-                if (onDisk.magic == IO_HISTORY_MAGIC &&
-                    onDisk.recordSize == sizeof(IoRecord) &&
-                    onDisk.capacity == capacity &&
-                    onDisk.head < onDisk.capacity &&
-                    // Without this a corrupt `stored` (a torn header write, a
-                    // flipped bit) is accepted: read() computes
-                    // skip = stored - wanted and serves arbitrary slots in
-                    // scrambled order, and append() stops counting for good.
-                    onDisk.stored <= onDisk.capacity &&
-                    // Before the buffer wraps the two are the same number.
-                    // Checking them only separately lets head=5/stored=3 pass,
-                    // and read() then serves preallocated zeros while the real
-                    // records in slots 3 and 4 are unreachable.
-                    (onDisk.stored == onDisk.capacity ||
-                     onDisk.head == onDisk.stored) &&
-                    (uint32_t)file.size() == expected) {
-                    header = onDisk;
-                    needsFormat = false;
-                }
-            }
-            file.close();
-        }
-        if (needsFormat) {
-            logger.warning("io_history: incompatible or corrupt file, recreating");
-        }
-    }
-
-    if (needsFormat && !format(capacity)) {
+    segmentRecords = segment::recordsPerSegment(capacity, segment::kSegments);
+    if (segmentRecords == 0) {
+        logger.error("io_history: capacity too small to segment");
         return false;
     }
 
+    // The ring this replaced. It is dead weight now — 69 KB of a 512 KB
+    // partition — and leaving it would also leave the file whose in-place
+    // rewrites panicked the board, one config edit away from being used again.
+    if (fs->exists(IO_HISTORY_LEGACY_FILE)) {
+        fs->remove(IO_HISTORY_LEGACY_FILE);
+        logger.info("io_history: removed the legacy ring " IO_HISTORY_LEGACY_FILE);
+    }
+
+    storedTotal = 0;
+    evictedTotal = 0;
+    nextSeq = 1;
+    for (uint8_t slot = 0; slot < segment::kSegments; ++slot) {
+        if (adoptSegmentLocked(slot)) {
+            storedTotal += segmentCount[slot];
+            if (segmentSeq[slot] >= nextSeq) {
+                nextSeq = segmentSeq[slot] + 1;
+            }
+        }
+    }
+
+    orderCount =
+      segment::buildOrder(segmentSeq, segment::kSegments, order);
+
     initialised = true;
-    logger.info("io_history: ready, " + String(header.stored) + "/" +
-                String(header.capacity) + " records");
+    logger.info("io_history: ready, " + String(storedTotal) + "/" +
+                String(this->capacity()) + " records across " + String(orderCount) +
+                " of " + String((int)segment::kSegments) + " segments (" +
+                String(segmentRecords) + " each)");
+    return true;
+}
+
+bool
+IoHistory::rotateLocked(uint8_t& slotOut)
+{
+    const uint8_t slot =
+      segment::slotToRecycle(segmentSeq, segment::kSegments);
+
+    // Whatever this slot held is being thrown away. Accounting for it BEFORE
+    // the write means the logical index origin moves exactly once, and
+    // forEach() can correct for it with evicted().
+    if (segmentSeq[slot] != 0) {
+        storedTotal -= segmentCount[slot];
+        evictedTotal += segmentCount[slot];
+    }
+    segmentCount[slot] = 0;
+    segmentSeq[slot] = 0;
+
+    const String path = pathFor(slot);
+    // FILE_WRITE truncates, which is the point: the segment is reused in place
+    // rather than deleted and recreated, so the filesystem never has to find
+    // space it did not already have.
+    File file = fs->open(path, FILE_WRITE, true);
+    if (file == false) {
+        logger.error("io_history: cannot open " + path + " for rotation");
+        orderCount = segment::buildOrder(segmentSeq, segment::kSegments, order);
+        return false;
+    }
+
+    IoSegmentHeader head = {};
+    head.magic = IO_HISTORY_MAGIC;
+    head.recordSize = (uint16_t)sizeof(IoRecord);
+    head.records = segmentRecords;
+    head.seq = nextSeq;
+
+    const bool ok =
+      file.write((const uint8_t*)&head, sizeof(head)) == sizeof(head);
+    file.close();
+
+    if (!ok) {
+        logger.error("io_history: header write failed for " + path +
+                     " — is the filesystem full?");
+        fs->remove(path);
+        orderCount = segment::buildOrder(segmentSeq, segment::kSegments, order);
+        return false;
+    }
+
+    segmentSeq[slot] = nextSeq++;
+    orderCount = segment::buildOrder(segmentSeq, segment::kSegments, order);
+    slotOut = slot;
     return true;
 }
 
@@ -138,71 +197,86 @@ IoHistory::append(const IoRecord& record)
         return false;
     }
 
-    File file = fs->open(IO_HISTORY_FILE, "r+");
-    if (file == false) {
-        logger.error("io_history: cannot open for append");
+    uint8_t slot = 0;
+    bool haveSlot = false;
+    if (orderCount > 0) {
+        const uint8_t newest = order[orderCount - 1];
+        if (segmentCount[newest] < segmentRecords) {
+            slot = newest;
+            haveSlot = true;
+        }
+    }
+    if (!haveSlot && !rotateLocked(slot)) {
         xSemaphoreGive(mutex);
         return false;
     }
 
-    const uint32_t offset =
-      IO_HISTORY_HEADER_SIZE + header.head * (uint32_t)sizeof(IoRecord);
-
-    // An unchecked seek writes the record wherever the handle happened to sit —
-    // offset 0 means straight over the header.
-    bool ok = file.seek(offset);
-    if (ok) {
-        ok = file.write((const uint8_t*)&record, sizeof(record)) == sizeof(record);
+    const String path = pathFor(slot);
+    File file = fs->open(path, FILE_APPEND);
+    if (file == false) {
+        logger.error("io_history: cannot open " + path + " to append");
+        xSemaphoreGive(mutex);
+        return false;
     }
 
-    if (ok) {
-        const IoHistoryHeader previous = header;
-        header.head = (header.head + 1) % header.capacity;
-        if (header.stored < header.capacity) {
-            ++header.stored;
-        }
-
-        // The header write must be checked too. Dropping it leaves RAM ahead of
-        // disk, and the next boot rewinds `head` and overwrites live records
-        // while claiming they are the newest.
-        const bool headerOk =
-          file.seek(0) &&
-          file.write((const uint8_t*)&header, sizeof(header)) == sizeof(header);
-        if (!headerOk) {
-            header = previous;
-            logger.error("io_history: header update failed; record dropped");
-            ok = false;
-        }
-    }
-
+    // One write, at the end, and the close commits it. Under LittleFS that
+    // touches the last block of the file and nothing else — which is the entire
+    // reason this subsystem was rewritten.
+    const bool ok = file.write((const uint8_t*)&record, sizeof(record)) ==
+                    sizeof(record);
     file.close();
-    xSemaphoreGive(mutex);
+
     if (!ok) {
-        logger.error("io_history: append failed");
+        logger.error("io_history: record write failed on " + path);
+        // The file may now carry a partial record. It is not corrected here:
+        // begin() ignores a tail that does not divide evenly, and a second
+        // append landing after a short write would put a record at a
+        // misaligned offset. Refuse instead and let the next boot tidy it.
+        xSemaphoreGive(mutex);
+        return false;
     }
-    return ok;
+
+    ++segmentCount[slot];
+    ++storedTotal;
+    xSemaphoreGive(mutex);
+    return true;
 }
 
 // Reads one record by logical index. Caller holds the mutex.
 bool
-IoHistory::readAt(File& file, uint32_t index, IoRecord& out) const
+IoHistory::readAt(Reader& reader, uint32_t index, IoRecord& out)
 {
-    const uint32_t slot =
-      ring::slotOf(index, header.head, header.stored, header.capacity);
-    if (!file.seek(IO_HISTORY_HEADER_SIZE + slot * (uint32_t)sizeof(IoRecord))) {
+    uint8_t slot = 0;
+    uint32_t offset = 0;
+    if (!segment::locate(index, segmentCount, order, orderCount, slot, offset)) {
         return false;
     }
-    return file.read((uint8_t*)&out, sizeof(IoRecord)) == (int)sizeof(IoRecord);
+
+    if (reader.slot != (int)slot) {
+        closeReader(reader);
+        reader.file = fs->open(pathFor(slot), FILE_READ);
+        if (reader.file == false) {
+            return false;
+        }
+        reader.slot = (int)slot;
+    }
+
+    if (!reader.file.seek(IO_SEGMENT_HEADER_SIZE +
+                          offset * (uint32_t)sizeof(IoRecord))) {
+        return false;
+    }
+    return reader.file.read((uint8_t*)&out, sizeof(IoRecord)) ==
+           (int)sizeof(IoRecord);
 }
 
 bool
-IoHistory::lowerBoundLocked(File& file, uint32_t sinceEpoch, uint32_t& out)
+IoHistory::lowerBoundLocked(Reader& reader, uint32_t sinceEpoch, uint32_t& out)
 {
-    uint32_t lo = 0, hi = header.stored; // answer lives in [lo, hi]
+    uint32_t lo = 0, hi = storedTotal; // answer lives in [lo, hi]
     IoRecord record;
     while (lo < hi) {
         const uint32_t mid = lo + (hi - lo) / 2;
-        if (!readAt(file, mid, record)) {
+        if (!readAt(reader, mid, record)) {
             return false;
         }
         if (record.timestamp < sinceEpoch) {
@@ -217,14 +291,14 @@ IoHistory::lowerBoundLocked(File& file, uint32_t sinceEpoch, uint32_t& out)
 }
 
 size_t
-IoHistory::readDecimatedLocked(File& file, IoRecord* out, size_t maxPoints,
+IoHistory::readDecimatedLocked(Reader& reader, IoRecord* out, size_t maxPoints,
                                uint32_t fromIndex, uint32_t* strideOut)
 {
-    if (fromIndex >= header.stored) {
+    if (fromIndex >= storedTotal) {
         return 0;
     }
 
-    const uint32_t span = header.stored - fromIndex;
+    const uint32_t span = storedTotal - fromIndex;
     // Ceiling division: with 1440 records and 200 points the stride is 8, and
     // the newest record must still be the last one returned.
     uint32_t stride = (span + (uint32_t)maxPoints - 1) / (uint32_t)maxPoints;
@@ -255,7 +329,7 @@ IoHistory::readDecimatedLocked(File& file, IoRecord* out, size_t maxPoints,
     // while the rest of the record comes from the bucket's newest sample.
     for (uint32_t back = 0; back < span && got < maxPoints; ++back) {
         IoRecord record;
-        if (!readAt(file, header.stored - 1 - back, record)) {
+        if (!readAt(reader, storedTotal - 1 - back, record)) {
             break;
         }
 
@@ -284,11 +358,10 @@ IoHistory::readDecimatedLocked(File& file, IoRecord* out, size_t maxPoints,
     return got;
 }
 
-
 size_t
 IoHistory::forEach(Visitor visit, void* ctx)
 {
-    if (!initialised || visit == nullptr || header.stored == 0) {
+    if (!initialised || visit == nullptr || storedTotal == 0) {
         return 0;
     }
 
@@ -296,57 +369,55 @@ IoHistory::forEach(Visitor visit, void* ctx)
         return 0;
     }
 
-    File file = fs->open(IO_HISTORY_FILE, FILE_READ);
-    if (file == false) {
-        xSemaphoreGive(mutex);
-        return 0;
-    }
-
     // The lock is RELEASED every chunk, not held for the whole walk.
     //
-    // A full walk is thousands of SPIFFS seek+reads — seconds. Holding the
-    // mutex across it blocks readWindow(), which runs on the async_tcp task,
-    // and blocking that task stalls every HTTP connection on the device rather
+    // A full walk is thousands of seek+reads — seconds. Holding the mutex
+    // across it blocks readWindow(), which runs on the async_tcp task, and
+    // blocking that task stalls every HTTP connection on the device rather
     // than just the one asking for history. The daily training run would take
     // the dashboard down with it.
     //
-    // The trade is that an append during the walk can shift logical indices
-    // once the ring has wrapped, so a visitor may see one record twice or miss
-    // one. readWindow() cannot tolerate that — it would return a window
-    // starting at the wrong place — which is why it keeps the single-lock
-    // guarantee. The only caller here is the moisture trainer, fitting
-    // Gaussians over thousands of samples, where one duplicated or dropped
-    // record is far below the noise it is already modelling.
+    // What moves under the walk is different now, and worse if ignored. The
+    // ring shifted every logical index by ONE on each append once it had
+    // wrapped; segments shift by a whole segment at a rotation — 180 records at
+    // the default capacity. So the walk is kept in ABSOLUTE coordinates: the
+    // ordinal of a record since the first append ever, from which the current
+    // logical index is `absolute - evicted()`. A rotation during the walk then
+    // costs the records it actually threw away and nothing more.
     static const uint32_t kChunk = 64;
 
+    Reader reader;
     size_t visited = 0;
     IoRecord record;
     bool stop = false;
+    uint32_t absolute = evictedTotal;
 
-    for (uint32_t i = 0; !stop; ++i) {
-        if (i > 0 && (i % kChunk) == 0) {
-            file.close();
+    for (uint32_t step = 0; !stop; ++step, ++absolute) {
+        if (step > 0 && (step % kChunk) == 0) {
+            closeReader(reader);
             xSemaphoreGive(mutex);
             // Somebody else gets the lock here, by design.
             taskYIELD();
             if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
                 return visited;
             }
-            file = fs->open(IO_HISTORY_FILE, FILE_READ);
-            if (file == false) {
-                xSemaphoreGive(mutex);
-                return visited;
-            }
         }
 
-        if (i >= header.stored || !readAt(file, i, record)) {
+        // Records evicted while the lock was down are simply gone; the walk
+        // resumes at the oldest record still held rather than skipping ahead.
+        if (absolute < evictedTotal) {
+            absolute = evictedTotal;
+        }
+        const uint32_t index = absolute - evictedTotal;
+
+        if (index >= storedTotal || !readAt(reader, index, record)) {
             break;
         }
         ++visited;
-        stop = !visit(record, i, ctx);
+        stop = !visit(record, index, ctx);
     }
 
-    file.close();
+    closeReader(reader);
     xSemaphoreGive(mutex);
     return visited;
 }
@@ -361,8 +432,7 @@ IoHistory::readWindow(uint32_t sinceEpoch, IoRecord* out, size_t maxPoints,
     if (fromOut) {
         *fromOut = 0;
     }
-    if (!initialised || out == nullptr || maxPoints == 0 ||
-        header.stored == 0) {
+    if (!initialised || out == nullptr || maxPoints == 0 || storedTotal == 0) {
         return 0;
     }
 
@@ -370,24 +440,19 @@ IoHistory::readWindow(uint32_t sinceEpoch, IoRecord* out, size_t maxPoints,
         return 0;
     }
 
-    File file = fs->open(IO_HISTORY_FILE, FILE_READ);
-    if (file == false) {
-        xSemaphoreGive(mutex);
-        return 0;
-    }
-
-    // One lock, one file handle, both halves of the answer. See the header for
-    // what happened when these were two calls.
+    // One lock, both halves of the answer. See the header for what happened
+    // when these were two calls.
+    Reader reader;
     uint32_t from = 0;
     size_t count = 0;
-    if (lowerBoundLocked(file, sinceEpoch, from)) {
-        count = readDecimatedLocked(file, out, maxPoints, from, strideOut);
+    if (lowerBoundLocked(reader, sinceEpoch, from)) {
+        count = readDecimatedLocked(reader, out, maxPoints, from, strideOut);
         if (fromOut) {
             *fromOut = from;
         }
     }
 
-    file.close();
+    closeReader(reader);
     xSemaphoreGive(mutex);
     return count;
 }
@@ -403,7 +468,7 @@ IoHistory::read(IoRecord* out, size_t limit, uint32_t offset)
         return 0;
     }
 
-    const uint32_t available = header.stored;
+    const uint32_t available = storedTotal;
     uint32_t skip;
     if (offset == kNewest) {
         const uint32_t wanted = (limit < available) ? (uint32_t)limit : available;
@@ -420,21 +485,16 @@ IoHistory::read(IoRecord* out, size_t limit, uint32_t offset)
     const uint32_t remaining = available - skip;
     const size_t wanted = (limit < remaining) ? limit : remaining;
 
-    File file = fs->open(IO_HISTORY_FILE, FILE_READ);
-    if (file == false) {
-        xSemaphoreGive(mutex);
-        return 0;
-    }
-
+    Reader reader;
     size_t got = 0;
     for (size_t i = 0; i < wanted; ++i) {
-        if (!readAt(file, skip + (uint32_t)i, out[got])) {
+        if (!readAt(reader, skip + (uint32_t)i, out[got])) {
             break;
         }
         ++got;
     }
 
-    file.close();
+    closeReader(reader);
     xSemaphoreGive(mutex);
     return got;
 }
