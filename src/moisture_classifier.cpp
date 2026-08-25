@@ -212,6 +212,23 @@ moistureClassName(int cls)
 // Absorption
 // ---------------------------------------------------------------------------
 
+// How close the tail of the capture has to be to its own preceding third
+// before the plateau is treated as a plateau, as a fraction of the total rise.
+//
+// This is what keeps the estimator honest on a window that is short relative to
+// the time constant. The plateau is estimated from the tail, so if the curve is
+// still climbing there the target sits below the true 63.2 % level and the
+// crossing is found too early: a true tau of 1200 s measured through a 1800 s
+// window comes back around 720 s, a 40 % underestimate reported as fact. The
+// bias grows with tau, so without this the slow probes tau exists to describe
+// are the ones it gets most wrong.
+//
+// For a first-order curve the last third and the middle third differ by ~0.15
+// of the rise at a window of 3 tau and ~0.05 at 6 tau, so 0.10 accepts roughly
+// a window of four time constants or more and refuses the rest. A refusal
+// means unmeasured, and unmeasured falls back to the fixed ramp.
+const double g_riseSettleFraction = 0.10;
+
 double
 moistureTimeConstant(const float* values,
                      const uint16_t* dtSec,
@@ -245,6 +262,29 @@ moistureTimeConstant(const float* values,
     const double rise = plateau - baseline;
     if (fabs(rise) < minRise) {
         return 0.0; // the probe did not respond; nothing to fit
+    }
+
+    // Has it actually settled? Compare the tail against the third before it.
+    // While those still differ the curve is climbing, the "plateau" is not one,
+    // and any crossing found against it is early by an amount that grows with
+    // the time constant.
+    const unsigned tailLen = count - tailFrom;
+    if (tailFrom >= tailLen) {
+        double middle = 0.0;
+        unsigned middleCount = 0;
+        for (unsigned i = tailFrom - tailLen; i < tailFrom; ++i) {
+            if (isfinite(values[i])) {
+                middle += values[i];
+                ++middleCount;
+            }
+        }
+        if (middleCount == 0) {
+            return 0.0;
+        }
+        const double drift = fabs(plateau - (middle / middleCount));
+        if (drift > g_riseSettleFraction * fabs(rise)) {
+            return 0.0; // still rising: this window cannot measure this probe
+        }
     }
 
     const double target = baseline + 0.632 * rise;

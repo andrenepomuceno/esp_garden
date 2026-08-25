@@ -306,16 +306,42 @@ test_a_slow_probe_is_distinguished_from_a_fast_one()
 {
     // The whole diagnostic value: tau is a physical property of this probe in
     // this pot. Two probes must not report the same number.
-    float fastV[40], slowV[40];
-    uint16_t fastT[40], slowT[40];
-    buildRise(fastV, fastT, 40, 40.0, 15.0, 120.0);  // 2 min: shallow
-    buildRise(slowV, slowT, 40, 40.0, 15.0, 1500.0); // 25 min: deep
+    //
+    // 100 samples at 60 s is 99 minutes, which is ~5 time constants for the
+    // slow probe — enough for its curve to flatten, which is what the estimator
+    // requires before it will believe a plateau.
+    float fastV[100], slowV[100];
+    uint16_t fastT[100], slowT[100];
+    buildRise(fastV, fastT, 100, 40.0, 15.0, 120.0);  // 2 min: shallow
+    buildRise(slowV, slowT, 100, 40.0, 15.0, 1200.0); // 20 min: deep
 
-    const double fast = moistureTimeConstant(fastV, fastT, 40, 4, 0.5);
-    const double slow = moistureTimeConstant(slowV, slowT, 40, 4, 0.5);
+    const double fast = moistureTimeConstant(fastV, fastT, 100, 4, 0.5);
+    const double slow = moistureTimeConstant(slowV, slowT, 100, 4, 0.5);
 
-    TEST_ASSERT_TRUE(fast > 0.0);
+    // Asserted against the TRUTH, not merely against each other. The previous
+    // version of this test only required `slow > fast * 4.0`, which passed
+    // happily while the slow probe came back at 927 s for a real 1500 — the
+    // systematic underestimate that the settle check now refuses outright.
+    TEST_ASSERT_TRUE(fast > 90.0 && fast < 150.0);
+    TEST_ASSERT_TRUE(slow > 1050.0 && slow < 1350.0);
     TEST_ASSERT_TRUE(slow > fast * 4.0);
+}
+
+static void
+test_a_window_too_short_for_the_time_constant_is_refused()
+{
+    // 40 samples at 60 s is 39 minutes against a 25-minute time constant, so
+    // the curve is only 1.6 time constants in and has not flattened. The
+    // plateau estimated from the tail is well below the real one, the 63.2 %
+    // target moves down with it, and the crossing is found early — a confident
+    // number that is wrong by tens of percent, and wrong by MORE the slower the
+    // probe. Refusing is the answer; unmeasured falls back to the fixed ramp.
+    float v[40];
+    uint16_t dt[40];
+    buildRise(v, dt, 40, 40.0, 15.0, 1500.0);
+
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0,
+                              moistureTimeConstant(v, dt, 40, 4, 0.5));
 }
 
 static void
@@ -409,6 +435,7 @@ main(int, char**)
     RUN_TEST(test_the_prior_decides_a_reading_the_likelihoods_tie_on);
     RUN_TEST(test_the_time_constant_is_recovered_from_a_first_order_rise);
     RUN_TEST(test_a_slow_probe_is_distinguished_from_a_fast_one);
+    RUN_TEST(test_a_window_too_short_for_the_time_constant_is_refused);
     RUN_TEST(test_a_probe_that_did_not_respond_is_refused);
     RUN_TEST(test_inverted_polarity_gives_the_same_time_constant);
     RUN_TEST(test_too_few_samples_is_refused);

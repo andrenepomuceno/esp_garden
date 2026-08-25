@@ -39,8 +39,20 @@ static const double g_outlierZ = 3.0;
 // still reading the old soil for the first minutes.
 static const uint32_t g_absorptionLagSec = 5 * 60;
 
-// The absorption capture. At a 60 s history period a 30-minute wet window
-// holds 30 readings, plus the pre-watering baseline at element 0.
+// The absorption capture runs LONGER than the wet labelling window. The two
+// answer different questions: 30 minutes is how long a reading counts as wet,
+// while the settle check needs roughly four time constants of curve before it
+// will believe a plateau. Capturing an hour doubles the time constants that can
+// be measured at no cost, because the records are already there — they are just
+// labelled HUMID rather than WET.
+static const uint32_t g_riseWindowSec = 60 * 60;
+
+// Samples kept per curve. The capture DECIMATES when it fills — every second
+// sample is dropped and the stride doubles — so the array bounds the memory
+// without bounding the window. A fixed cap would have silently tied the
+// estimator to a 60 s history period, and history.periodSec is configurable
+// down to 10 s: at that period 32 samples cover 310 s of a 3600 s window, the
+// plateau is read off a curve that is still climbing, and tau collapses.
 static const unsigned g_riseMaxSamples = 32;
 
 // Fewer samples than this and a "time constant" is a line drawn through noise.
@@ -223,8 +235,11 @@ struct ScanContext
     float riseValue[MOISTURE_MAX][g_riseMaxSamples];
     uint16_t riseDt[MOISTURE_MAX][g_riseMaxSamples];
     uint8_t riseCount[MOISTURE_MAX];
+    uint8_t riseStride[MOISTURE_MAX]; // 1, then doubled on each decimation
+    uint32_t riseSeen[MOISTURE_MAX];  // samples offered to the capture
     uint32_t riseFrom[MOISTURE_MAX];
     float lastValue[MOISTURE_MAX];
+    uint32_t lastTimestamp[MOISTURE_MAX];
     bool lastValid[MOISTURE_MAX];
     double tauSum[MOISTURE_MAX];
     unsigned tauCount[MOISTURE_MAX];
@@ -364,6 +379,22 @@ labelFor(uint32_t timestamp,
     return MOISTURE_UNKNOWN;
 }
 
+// Halves the capture in place, keeping every second sample, and doubles the
+// stride so the rest of the curve is sampled at the new rate. Element 0 — the
+// pre-watering baseline — is always index 0 and always survives.
+static void
+decimateRise(ScanContext& scan, unsigned p)
+{
+    unsigned kept = 1;
+    for (unsigned i = 2; i < scan.riseCount[p]; i += 2) {
+        scan.riseValue[p][kept] = scan.riseValue[p][i];
+        scan.riseDt[p][kept] = scan.riseDt[p][i];
+        ++kept;
+    }
+    scan.riseCount[p] = (uint8_t)kept;
+    scan.riseStride[p] = (uint8_t)(scan.riseStride[p] * 2);
+}
+
 // Closes the capture open for this probe, folding its time constant into the
 // run's mean when the curve was good enough to fit. Idempotent, so it can be
 // called on every new watering and again at the end of the pass.
@@ -388,15 +419,26 @@ accumulate(const IoRecord& record, uint32_t, void* ctx)
 {
     ScanContext& scan = *(ScanContext*)ctx;
 
-    // Already folded into the statistics on an earlier run, or beyond the last
-    // complete cycle this run can label. Both bounds matter: the first stops
-    // the same evidence being counted twice, the second stops a reading being
-    // labelled HUMID now when the watering that would make it DRY has not
+    // Beyond the last complete cycle this run can label: stop before a reading
+    // is labelled HUMID now when the watering that would make it DRY has not
     // happened yet.
-    if (record.timestamp <= scan.consumedFrom ||
-        record.timestamp >= scan.consumeUntil) {
+    if (record.timestamp >= scan.consumeUntil) {
         return true;
     }
+
+    // At or before consumedFrom the evidence is already folded in and must not
+    // be counted twice — but pass 2 still has to WATCH those records, because
+    // the last of them is the pre-watering baseline of a watering sitting
+    // exactly on the boundary.
+    //
+    // Skipping them outright is why this never measured anything in the case
+    // that matters. With one watering a day and a daily training run, the
+    // window is (C_prev, C_new): the only watering edge inside it is C_prev at
+    // the very first record, and its baseline is one record on the other side
+    // of the bound. lastValid was therefore false, no capture ever started,
+    // tau stayed 0 forever, and the fixed ramp kept running while the endpoint
+    // reported "unmeasured" as though it were merely waiting for data.
+    const bool spent = (record.timestamp <= scan.consumedFrom);
 
     for (unsigned p = 0; p < scan.probes; ++p) {
         if (scan.relayOf[p] < 0 || scan.eventCount[p] == 0) {
@@ -405,6 +447,15 @@ accumulate(const IoRecord& record, uint32_t, void* ctx)
         const double value = record.moisture[p];
         if (!isfinite(value)) {
             continue; // not fitted at the time, or the slot was never written
+        }
+
+        if (spent) {
+            if (scan.reference == nullptr) {
+                scan.lastValue[p] = (float)value;
+                scan.lastTimestamp[p] = record.timestamp;
+                scan.lastValid[p] = true;
+            }
+            continue;
         }
 
         const uint32_t wasWatering = scan.previousWatering[p];
@@ -431,27 +482,48 @@ accumulate(const IoRecord& record, uint32_t, void* ctx)
                 // post-watering sample instead would measure the rise from a
                 // point already part of the way up it.
                 finishRise(scan, p);
-                if (scan.lastValid[p]) {
+
+                // The baseline has to be RECENT. After a gap — a power cycle,
+                // a wrapped ring — the last reading on file can be hours old,
+                // and the soil dried across it. The "rise" is then the real
+                // absorption plus that drying, the target is crossed far too
+                // early, and a bogus small tau is folded in and then takes ten
+                // decayed runs to work back out.
+                const uint32_t maxAge = 2 * (uint32_t)config.historyPeriodSec;
+                const bool fresh =
+                  scan.lastValid[p] &&
+                  scan.previousWatering[p] >= scan.lastTimestamp[p] &&
+                  (scan.previousWatering[p] - scan.lastTimestamp[p]) <= maxAge;
+
+                if (fresh) {
                     scan.riseFrom[p] = scan.previousWatering[p];
                     scan.riseValue[p][0] = scan.lastValue[p];
                     scan.riseDt[p][0] = 0;
                     scan.riseCount[p] = 1;
+                    scan.riseStride[p] = 1;
+                    scan.riseSeen[p] = 0;
                 }
             }
 
             if (scan.riseFrom[p] != 0) {
-                if (record.timestamp > scan.riseFrom[p] + g_wetWindowSec) {
+                if (record.timestamp > scan.riseFrom[p] + g_riseWindowSec) {
                     finishRise(scan, p);
-                } else if (record.timestamp > scan.riseFrom[p] &&
-                           scan.riseCount[p] < g_riseMaxSamples) {
+                } else if (record.timestamp > scan.riseFrom[p]) {
                     const uint32_t dt = record.timestamp - scan.riseFrom[p];
-                    scan.riseValue[p][scan.riseCount[p]] = (float)value;
-                    scan.riseDt[p][scan.riseCount[p]] = (uint16_t)dt;
-                    ++scan.riseCount[p];
+                    if (scan.riseSeen[p] % scan.riseStride[p] == 0) {
+                        if (scan.riseCount[p] >= g_riseMaxSamples) {
+                            decimateRise(scan, p);
+                        }
+                        scan.riseValue[p][scan.riseCount[p]] = (float)value;
+                        scan.riseDt[p][scan.riseCount[p]] = (uint16_t)dt;
+                        ++scan.riseCount[p];
+                    }
+                    ++scan.riseSeen[p];
                 }
             }
 
             scan.lastValue[p] = (float)value;
+            scan.lastTimestamp[p] = record.timestamp;
             scan.lastValid[p] = true;
         }
 
@@ -482,7 +554,20 @@ accumulate(const IoRecord& record, uint32_t, void* ctx)
         // labels are already computed. A probe whose response stays near zero
         // after several waterings is either disconnected, in the wrong pot, or
         // downstream of a pump that is not running.
-        if (label == MOISTURE_WET && confidence > 0.5) {
+        //
+        // Selected by POSITION in the window, not by confidence. The confidence
+        // is now a function of this probe's own tau, so a `confidence > 0.5`
+        // gate would admit samples from 150 s in on a fast probe and only from
+        // 1250 s in on a slow one — and `response` is then compared against a
+        // fixed 0.5-point threshold to decide whether a probe answers its pump
+        // at all. A diagnosis that tells an operator to go and check a probe,
+        // a pot and a pump must not depend on which probe it is looking at.
+        const uint32_t sinceWatering =
+          (scan.previousWatering[p] != 0 &&
+           record.timestamp > scan.previousWatering[p])
+            ? (record.timestamp - scan.previousWatering[p])
+            : 0;
+        if (label == MOISTURE_WET && sinceWatering * 3 >= g_wetWindowSec * 2) {
             scan.wetSum[p] += value;
             scan.wetWeight[p] += 1.0;
         } else if (label == MOISTURE_DRY && confidence > 0.5) {
@@ -510,8 +595,11 @@ resetFit(ScanContext& scan)
         // Deliberately NOT tauSum/tauCount: only pass 2 measures those, and
         // resetFit runs again before pass 3.
         scan.riseCount[p] = 0;
+        scan.riseStride[p] = 1;
+        scan.riseSeen[p] = 0;
         scan.riseFrom[p] = 0;
         scan.lastValid[p] = false;
+        scan.lastTimestamp[p] = 0;
     }
     scan.samplesUsed = 0;
     scan.outliersDropped = 0;

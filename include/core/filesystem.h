@@ -54,4 +54,18 @@
 // endpoint still enforces 31, deliberately: nothing here needs a longer path,
 // and a limit that was once a silent truncation is worth keeping as an explicit
 // refusal.
+//
+// Used by src/web_files.cpp and published through GET /capabilities.json, so
+// the number lives here and the web UI never restates it. It sat unreferenced
+// for one commit while two hardcoded 31s and a user-facing string naming SPIFFS
+// carried the real rule — which is the drift this constant exists to stop.
 #define FILESYSTEM_MAX_PATH 31
+
+// The allocation unit, read from the superblock of the image this build
+// produces (`block_size 4096`, `block_count 128` for the 512 KB partition).
+//
+// It matters outside the driver because LittleFS allocates whole blocks where
+// SPIFFS used 256 B pages: a free-space check in BYTES passes for a file that
+// then does not fit, and the caller finds out only after transferring the whole
+// body.
+#define FILESYSTEM_BLOCK_SIZE 4096

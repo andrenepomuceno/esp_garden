@@ -539,18 +539,28 @@ ConfigFile::loadFile(unsigned deviceID)
         JSONVar history = configJson["history"];
         if (history.hasOwnProperty("records")) {
             const int records = (int)history["records"];
-            // 5000 records is 240 KB at the current 48-byte record, which
-            // fits beside the ~190 KB of web assets in the 463 KB usable
-            // FILESYSTEM. The ceiling is in RECORDS, so it has to come down
-            // whenever the record grows — it was 6000 while a record was 40
-            // bytes, and leaving it there would have quietly asked for 288 KB.
-            // The previous ceiling of 20000 was 800 KB — half again the whole
-            // partition — and a config that
-            // asked for it filled the filesystem, taking the log backup, the
-            // user store and POST /config.json down with it. begin() runs
-            // before webSetup(), so the admin who caused it had no editor left
-            // to undo it.
-            if (records >= 0 && records <= 5000) {
+            // 2500 records is 120 KB at the current 48-byte record.
+            //
+            // Measured on 9e7c after the LittleFS migration, not estimated:
+            // the assets and stores occupy 323 KB of the 512 KB partition, so
+            // 189 KB is free before any history exists. 120 KB of history
+            // leaves ~69 KB for the four rotating log backups and the block
+            // slack LittleFS charges for thirty small files.
+            //
+            // The ceiling used to be 5000 and its comment described a "463 KB
+            // usable" partition — a SPIFFS number that survived the migration
+            // because the driver rename was mechanical. 5000 records is 240 KB,
+            // which no longer fits in what is free, and a config asking for it
+            // would have filled the filesystem at begin() — before webSetup(),
+            // so the admin who caused it would have had no editor left to undo
+            // it. Before that it was 20000, or 800 KB: half again the whole
+            // partition, and that one did happen.
+            //
+            // The ceiling is in RECORDS, so it comes down whenever the record
+            // grows: it was 6000 while a record was 40 bytes. It will want
+            // revisiting again when the ring becomes append-only segments,
+            // because the storage shape changes with it.
+            if (records >= 0 && records <= 2500) {
                 historyRecords = records;
             } else {
                 logger.warning("Ignoring out-of-range history.records " +

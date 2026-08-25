@@ -158,9 +158,21 @@ function startSingleFileUpload(file, path) {
     reader.readAsArrayBuffer(file);
 }
 
+// The device owns this rule; /capabilities.json publishes it. The literal is
+// the fallback for a device too old to answer, so a failed lookup costs a
+// slightly stale limit rather than a broken upload page.
+var maxPathLength = 31;
+
 $(function () {
     // OTA is ADMIN-only; without a token every request here answers 401.
     if (!espAuth.requireToken()) return;
+
+    $.getJSON('/capabilities.json')
+        .done(function (caps) {
+            if (caps && typeof caps.maxPathLength === 'number') {
+                maxPathLength = caps.maxPathLength;
+            }
+        });
 
     $('#file-input').on('change', function () {
         var file = this.files[0];
@@ -168,8 +180,20 @@ $(function () {
         var name = file.name.toLowerCase();
         if (name === 'firmware.bin') {
             $('#type-firmware').prop('checked', true);
-        } else if (name === 'spiffs.bin' || name === 'filesystem.bin') {
+        } else if (name === 'littlefs.bin' || name === 'spiffs.bin' ||
+                   name === 'filesystem.bin') {
             $('#type-filesystem').prop('checked', true);
+        } else {
+            // An unrecognised name is the dangerous case, not a harmless one:
+            // leaving the previous radio checked means a filesystem image
+            // picked while "firmware" is still ticked gets renamed to
+            // `firmware`, and handleUpdateUpload decides U_FLASH from that
+            // name. The image lands in the app slot, the upload reports
+            // success, and the board is unbootable until someone reaches it
+            // with USB. littlefs.bin is what the build produces now; spiffs.bin
+            // stays recognised because an operator may still have one on disk.
+            $('#type-firmware').prop('checked', false);
+            $('#type-filesystem').prop('checked', false);
         }
     });
 
@@ -225,10 +249,11 @@ $(function () {
 
         // Checked here as well as on the device, so the answer is immediate
         // and does not cost a full upload to find out.
-        if (path.length > 31) {
+        if (path.length > maxPathLength) {
             $('#progress-card').show();
             setStatus('danger', 'Path is ' + path.length +
-                                ' characters; SPIFFS allows 31.');
+                                ' characters; the device allows ' +
+                                maxPathLength + '.');
             return;
         }
 

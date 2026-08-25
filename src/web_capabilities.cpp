@@ -1,4 +1,5 @@
 #include "BuildConfig.h"
+#include "core/filesystem.h"
 #include "core/config.h"
 #include "network/web_capabilities.h"
 #include <Arduino_JSON.h>
@@ -16,6 +17,10 @@ handleCapabilitiesJson(AsyncWebServerRequest* request)
     doc["firmware"] = FW_VERSION;
     doc["relayMax"] = (int)RELAY_MAX;
     doc["moistureMax"] = (int)MOISTURE_MAX;
+
+    // The upload path limit, so /update.html can refuse a long path before
+    // spending a whole upload on it without restating a rule the firmware owns.
+    doc["maxPathLength"] = (int)FILESYSTEM_MAX_PATH;
 
     // The kinds this build has drivers for. A web page cannot add a kind that
     // is not in this list: a DHT needs the DHT library linked in, which is the

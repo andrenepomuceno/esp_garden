@@ -540,6 +540,13 @@ def moisture_snapshot(scenario: str = None) -> dict:
                           "is in, and whether the pump runs" % model["response"])
             elif relays[i] < 0:
                 reason = "no relay assigned: nothing labels this probe"
+            elif trained_at == 0:
+                # The message a fresh device sends for every probe, and the one
+                # the simulator could not produce at all until now -- it jumped
+                # straight to the event count and reported "only 0 of 6", a
+                # sentence the device never says in that state. Anyone styling
+                # moisture.js against the simulator would never have seen it.
+                reason = "not trained yet"
             elif model["wateringEvents"] < MOISTURE_MIN_EVENTS:
                 reason = ("only %d of %d watering events seen so far"
                           % (model["wateringEvents"], MOISTURE_MIN_EVENTS))

@@ -95,8 +95,8 @@ jobs:
           mkdir -p artifacts
           cp .pio/build/${{ matrix.environment }}/firmware.bin \
              artifacts/esp-garden-${{ matrix.environment }}-firmware.bin
-          cp .pio/build/${{ matrix.environment }}/spiffs.bin \
-             artifacts/esp-garden-${{ matrix.environment }}-spiffs.bin
+          cp .pio/build/${{ matrix.environment }}/littlefs.bin \
+             artifacts/esp-garden-${{ matrix.environment }}-littlefs.bin
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -111,4 +111,4 @@ jobs:
         with:
           files: |
             artifacts/esp-garden-${{ matrix.environment }}-firmware.bin
-            artifacts/esp-garden-${{ matrix.environment }}-spiffs.bin
+            artifacts/esp-garden-${{ matrix.environment }}-littlefs.bin

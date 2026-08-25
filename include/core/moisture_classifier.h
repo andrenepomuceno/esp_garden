@@ -145,6 +145,10 @@ moistureZScore(const GaussianStats& stats, double value);
 //
 // Polarity is not assumed: a conversion where a wetter soil reads LOWER gives a
 // negative rise and the same time constant.
+// Refuses when the captured curve has not flattened: see the settle check in
+// the implementation. Exposed so the caller and the tests name the same number.
+extern const double g_riseSettleFraction;
+
 double
 moistureTimeConstant(const float* values,
                      const uint16_t* dtSec,

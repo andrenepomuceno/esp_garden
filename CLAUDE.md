@@ -840,8 +840,11 @@ rotation to get wrong. Defaults are 1440 records at 60 s — 24 h of history in
   added; the float switch rides in `flags` as two bits (VALID and RAISED,
   because "not fitted" and "reads empty" must not look alike) rather than
   costing another float. **`history.records` is capped in RECORDS, so the cap
-  has to come down whenever the record grows** — it went 6000 → 5000 to stay at
-  the same 240 KB.
+  has to come down whenever the record grows** — it went 6000 → 5000 when the
+  record grew to 48 bytes, then **5000 → 2500 under LittleFS**: 240 KB no longer
+  fits in the 189 KB that is free before any history exists, and the old
+  comment's "463 KB usable" was a SPIFFS number that survived the migration
+  because the driver rename was mechanical.
 - **`/history.json` caps a response at 200 records** (`g_historyMaxResponse`).
   1440 records is 57 KB of raw struct and roughly 170 KB rendered as JSON, more
   than half this chip's DRAM with WiFi already holding a share. The handler also

@@ -211,6 +211,10 @@ class Handler(BaseHTTPRequestHandler):
                 "firmware": "2.2.0",
                 "relayMax": 8,
                 "moistureMax": 4,
+                # FILESYSTEM_MAX_PATH. /update.html reads it from here rather
+                # than restating the limit, so the simulator has to carry it or
+                # the upload page silently falls back to its own literal.
+                "maxPathLength": 31,
                 "kinds": ["relays", "soilMoisture", "dht", "luminosity",
                           "waterLevel", "flow", "floatSwitch"],
                 "analogPins": [p for p in pins if is_adc1(p)],

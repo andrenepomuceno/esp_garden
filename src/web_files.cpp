@@ -46,8 +46,9 @@ uploadPathIsUsable(const String& path, String& reason)
     // SPIFFS_OBJ_NAME_LEN is 32 including the terminator. A longer name is
     // truncated silently, so the file lands somewhere the caller did not ask
     // for and every later read misses it.
-    if (path.length() > 31) {
-        reason = "path longer than 31 characters";
+    if (path.length() > FILESYSTEM_MAX_PATH) {
+        reason = "path longer than " + String(FILESYSTEM_MAX_PATH) +
+                 " characters";
         return false;
     }
     if (path == g_uploadTempPath) {
@@ -85,8 +86,16 @@ handleFileUpload(AsyncWebServerRequest* request,
 
         // Both files exist at once until the rename, so the check has to cover
         // the incoming size on top of everything already stored.
+        //
+        // Rounded UP to the allocation block, plus one block for the CTZ chain
+        // metadata: LittleFS allocates in 4 KB blocks where SPIFFS used 256 B
+        // pages, so a raw byte comparison passes for a file that then does not
+        // fit, and the caller learns it only after sending the whole body.
         const size_t freeBytes = FILESYSTEM.totalBytes() - FILESYSTEM.usedBytes();
-        const size_t incoming = request->contentLength();
+        const size_t raw = request->contentLength();
+        const size_t incoming =
+          ((raw + FILESYSTEM_BLOCK_SIZE - 1) / FILESYSTEM_BLOCK_SIZE + 1) *
+          FILESYSTEM_BLOCK_SIZE;
         if (incoming > freeBytes) {
             g_uploadError = "not enough space: " + String(incoming) +
                             " B incoming, " + String(freeBytes) + " B free";
@@ -142,11 +151,16 @@ handleFileUpload(AsyncWebServerRequest* request,
         }
     }
 
-    // Only now is the old file replaced. FILESYSTEM.rename refuses an existing
-    // destination, so the remove has to come first — that is the one window
-    // where the target is missing, and it lasts microseconds rather than the
-    // length of an upload.
-    FILESYSTEM.remove(g_uploadTarget);
+    // Only now is the old file replaced, and under LittleFS that is a single
+    // atomic rename over the existing destination: the target is either the old
+    // version or the new one, never absent.
+    //
+    // It used to remove the target first, because SPIFFS.rename refused an
+    // existing destination. That left a window — short, but real — in which the
+    // file did not exist, and losing power inside it while replacing
+    // /index.html or /auth.js leaves an unbootable web UI. This board prints
+    // `flash read err, 1000` on every boot from a marginal supply, so that is
+    // not hypothetical. Do not reintroduce the remove.
     if (!FILESYSTEM.rename(g_uploadTempPath, g_uploadTarget)) {
         g_uploadError = "could not move into place as " + g_uploadTarget;
         logger.error("[upload] " + g_uploadError);

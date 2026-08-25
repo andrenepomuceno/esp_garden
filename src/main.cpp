@@ -61,9 +61,31 @@ setup(void)
     unsigned id = ESP.getEfuseMac() % 0x10000;
     logger.info("ID: " + String(id, 16));
 
-    if (!FILESYSTEM.begin(true)) {
-        logger.error("Failed to initialize FILESYSTEM.");
-        error = true;
+    // Mount without formatting FIRST, so that a partition which fails to mount
+    // is named before it is erased.
+    //
+    // begin(true) formats on failure, and that is the recovery path for a
+    // factory-blank partition — but it is also what happens on the first boot
+    // of a LittleFS firmware flashed over the air onto a board whose partition
+    // is still SPIFFS. The mount fails, the partition is formatted, and
+    // /config.json goes with it: the device comes up on compiled defaults it
+    // cannot associate with, has no users, and is unreachable without USB. The
+    // hazard is documented in core/filesystem.h; this at least makes the boot
+    // that caused it say so, which is the one thing someone recovering over
+    // serial actually needs.
+    if (!FILESYSTEM.begin(false)) {
+        logger.error("FILESYSTEM did not mount. If this firmware was just "
+                     "updated over the air onto a board that still had a "
+                     "SPIFFS partition, the next line ERASES it — including "
+                     "/config.json and every credential. Recover by flashing "
+                     "the filesystem image over USB.");
+        if (!FILESYSTEM.begin(true)) {
+            logger.error("Failed to initialize FILESYSTEM.");
+            error = true;
+        } else {
+            logger.error("FILESYSTEM was reformatted; stored files are gone.");
+            error = true;
+        }
     }
 
     if (!loadConfigFile(id)) {
