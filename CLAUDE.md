@@ -221,6 +221,17 @@ garbage. An hour went into learning that.
   apart carrying all three probes and the DHT. Deleting the legacy ring freed
   the expected 69 KB: the filesystem went 392 → 332 KB.
 
+  **Flash usage is flat, which is the number that condemned the ring.** Measured
+  over eight consecutive appends at 60 s: `hist0.bin` grew 972 → 1356 bytes,
+  exactly 48 per record (28 x 48 + 12 = 1356), while the filesystem stayed at
+  336 KB throughout. The earlier 324 → 336 KB climb was LittleFS allocating the
+  new segment's blocks and settling, not a leak — copy-on-write reuses the last
+  block until it fills, so a 48-byte append costs one 4 KB block rewrite rather
+  than the ~69 KB the ring paid. That is roughly 1440 block erases a day spread
+  across free space, against blocks rated for ~100 000: years, where the ring
+  measured in weeks. (The erase count is arithmetic from the measurement, not a
+  measurement — nothing here reads the wear counters.)
+
   What is NOT yet exercised is a **rotation**: segment 0 fills at 180 records,
   so the first recycle is three hours in, and the retention swing it introduces
   has only been tested on the host.
