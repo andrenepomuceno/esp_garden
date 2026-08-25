@@ -144,6 +144,9 @@
          probe.wateringEvents >= 2
            ? ' <span class="badge text-bg-warning">no response</span>' : '') +
         '</div>' +
+      '<div class="col-auto">Absorption &tau;: <strong>' +
+        (probe.tauSec > 0 ? fixed(probe.tauSec / 60, 1) + ' min' : 'unmeasured') +
+        '</strong></div>' +
       '</div>';
 
     return '<div class="card">' +

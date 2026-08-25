@@ -115,5 +115,52 @@ moistureClassify(const GaussianStats classes[MOISTURE_CLASS_COUNT],
 double
 moistureZScore(const GaussianStats& stats, double value);
 
+// ---------------------------------------------------------------------------
+// Absorption
+// ---------------------------------------------------------------------------
+
+// The time constant of a probe's response to a watering, in seconds, estimated
+// from one wet window. Returns 0 when the samples do not describe a rise.
+//
+// Irrigation is not a step at the probe. Water infiltrates, and the reading
+// follows a first-order approach to its new level:
+//
+//     m(t) = m_baseline + rise * (1 - exp(-(t - T) / tau))
+//
+// tau is where that curve reaches 63.2 % of the rise, and it is a PHYSICAL
+// property of this probe in this pot — depth, soil, distance from the emitter.
+// A probe answering in two minutes is shallow or sitting on the dripper; one
+// answering in forty is deep or far. A tau that MOVES on its own says something
+// physical changed: the probe was knocked, the soil compacted, the emitter
+// clogged.
+//
+// `dtSec[i]` is the seconds since the watering for `values[i]`, ascending.
+// Interpolates between the two samples straddling the threshold, because at a
+// 60 s history period the raw crossing is quantised to a minute.
+//
+// Refuses rather than guesses:
+//   - fewer than `minSamples` points
+//   - a rise smaller than `minRise`, which is a probe that did not respond
+//   - a curve that never crosses its own 63.2 % level
+//
+// Polarity is not assumed: a conversion where a wetter soil reads LOWER gives a
+// negative rise and the same time constant.
+double
+moistureTimeConstant(const float* values,
+                     const uint16_t* dtSec,
+                     unsigned count,
+                     unsigned minSamples,
+                     double minRise);
+
+// Confidence that a sample taken `dtSec` after a watering really is "wet",
+// given the probe's time constant: 1 - exp(-dt / tau), i.e. how much of the
+// response has actually happened.
+//
+// This weights the LABEL. It is deliberately not a classifier input — see the
+// note in moisture_model.h about why time since watering must never become a
+// feature.
+double
+moistureAbsorptionConfidence(double dtSec, double tauSec);
+
 const char*
 moistureClassName(int cls);

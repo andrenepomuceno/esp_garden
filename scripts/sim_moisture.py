@@ -162,6 +162,8 @@ MOISTURE_SCENARIOS = {
                     "humid": (45.0, 3.0, 360.0),
                     "wet": (62.0, 2.5, 240.0)},
         "events": 14,
+        "response": 33.0,
+        "tau": 420.0,
     },
     # Ordered and well fed with evidence, but the bands sit on top of each
     # other: J = 4^2 / (36 + 36) = 0.22. Refused on separation.
@@ -170,6 +172,24 @@ MOISTURE_SCENARIOS = {
                     "humid": (43.0, 6.5, 380.0),
                     "wet": (45.0, 6.0, 300.0)},
         "events": 11,
+        # 45 - 41: the response follows from the class means, and inventing a
+        # smaller one would send this scenario down the "does not respond"
+        # branch and stop it exercising the separation gate it exists for.
+        "response": 4.0,
+        "tau": 540.0,
+    },
+    # A probe that answers nothing: watered eleven times and the wet readings
+    # sit where the dry ones do. Disconnected, in the wrong pot, or downstream
+    # of a pump that never runs. The device says so BEFORE any statistical
+    # gate, because this names a cause a person can act on; separation would
+    # refuse the same probe days later and name only the symptom.
+    "noResponse": {
+        "classes": {"dry": (52.6, 0.1, 400.0),
+                    "humid": (52.6, 0.1, 380.0),
+                    "wet": (52.7, 0.1, 300.0)},
+        "events": 11,
+        "response": 0.1,
+        "tau": 0.0,
     },
     # A model that would pass every statistical gate, fitted to three watering
     # cycles. Refused on the event count, which is the gate that says "this
@@ -179,6 +199,8 @@ MOISTURE_SCENARIOS = {
                     "humid": (46.0, 3.0, 70.0),
                     "wet": (60.0, 2.5, 50.0)},
         "events": 3,
+        "response": 29.0,
+        "tau": 300.0,
     },
     # Humid outside the dry..wet interval: the labels disagree with the physics
     # that produced them. Reachable only with ?scenario=unordered.
@@ -187,6 +209,8 @@ MOISTURE_SCENARIOS = {
                     "humid": (66.0, 3.0, 300.0),
                     "wet": (58.0, 2.5, 300.0)},
         "events": 14,
+        "response": 27.0,
+        "tau": 600.0,
     },
     # Separated, ordered, enough events -- but the humid class has almost no
     # accumulated weight. The device refuses it (moistureModelIsUsable checks
@@ -197,6 +221,8 @@ MOISTURE_SCENARIOS = {
                     "humid": (45.0, 3.0, 12.0),
                     "wet": (62.0, 2.5, 300.0)},
         "events": 14,
+        "response": 33.0,
+        "tau": 480.0,
     },
     # Nothing accumulated: a fresh probe, or one whose relay is -1.
     "empty": {
@@ -204,6 +230,8 @@ MOISTURE_SCENARIOS = {
                     "humid": (0.0, 0.0, 0.0),
                     "wet": (0.0, 0.0, 0.0)},
         "events": 0,
+        "response": 0.0,
+        "tau": 0.0,
     },
 }
 
@@ -356,6 +384,8 @@ def moisture_models(forced: str = "") -> list:
             "classes": classes,
             "wateringEvents": events,
             "separation": moisture_separation(classes),
+            "response": spec["response"],
+            "tauSec": spec["tau"],
             "usable": usable,
         })
     return models
@@ -463,6 +493,8 @@ def moisture_snapshot(scenario: str = None) -> dict:
             "usable": model["usable"],
             "separation": model["separation"],
             "wateringEvents": model["wateringEvents"],
+            "response": model["response"],
+            "tauSec": model["tauSec"],
             "classes": {
                 key: {
                     "weight": classes[key]["weight"],
@@ -490,24 +522,35 @@ def moisture_snapshot(scenario: str = None) -> dict:
             # Which gate refused it. "No badge" with no reason is what makes a
             # classifier impossible to debug from the outside.
             #
-            # NOTE: this chain is copied from the firmware verbatim, defect
-            # included. A model refused for having too little accumulated weight
-            # in one class falls through to the ordering message, because the
-            # weight check lives inside moistureModelIsUsable() and has no
-            # branch of its own -- try ?scenario=lowWeight. Mirroring it is the
-            # point: the simulator is supposed to reproduce the device, not a
-            # better version of it.
-            reason = "no model yet"
-            if relays[i] < 0:
+            # The ORDER is the contract, not just the set of branches. The
+            # response check comes before every statistical gate because it
+            # names a physical cause -- probe out of the pot, pump not running
+            # -- where separation would report "bands overlap" days later and
+            # name only the symptom. Keep this chain in step with
+            # handleMoistureRequest(); an earlier version of this file was a
+            # copy of an older firmware and reported the wrong gate for
+            # ?scenario=lowWeight long after the device had stopped doing so.
+            weakest = min(model["classes"][k]["weight"]
+                          for k in MOISTURE_CLASSES)
+            if not sampled:
+                reason = "no reading from this probe yet"
+            elif model["wateringEvents"] >= 2 and abs(model["response"]) < 0.5:
+                reason = ("this probe does not respond to its pump (rise of "
+                          "%.2f across waterings): check the probe, the pot it "
+                          "is in, and whether the pump runs" % model["response"])
+            elif relays[i] < 0:
                 reason = "no relay assigned: nothing labels this probe"
             elif model["wateringEvents"] < MOISTURE_MIN_EVENTS:
-                reason = "not enough watering events yet"
+                reason = ("only %d of %d watering events seen so far"
+                          % (model["wateringEvents"], MOISTURE_MIN_EVENTS))
+            elif weakest < MOISTURE_MIN_WEIGHT_PER_CLASS:
+                reason = ("thinnest class has %.1f of the %d weight needed"
+                          % (weakest, MOISTURE_MIN_WEIGHT_PER_CLASS))
             elif model["separation"] < MOISTURE_MIN_SEPARATION:
-                reason = "bands overlap: dry and wet are not separable"
-            elif not model["usable"]:
+                reason = ("bands overlap: separation J=%.1f below %.1f"
+                          % (model["separation"], MOISTURE_MIN_SEPARATION))
+            else:
                 reason = "class means are not ordered dry..humid..wet"
-            elif not sampled:
-                reason = "no reading yet"
             probe["blockedBy"] = reason
 
             # The fallback the dashboard is actually showing, if any.

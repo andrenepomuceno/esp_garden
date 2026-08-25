@@ -269,6 +269,128 @@ test_the_prior_decides_a_reading_the_likelihoods_tie_on()
                                            MIN_SEPARATION, nullptr));
 }
 
+
+// ---------------------------------------------------------------------------
+// Absorption
+// ---------------------------------------------------------------------------
+
+// Builds a first-order rise sampled every 60 s, the history period.
+static unsigned
+buildRise(float* values, uint16_t* dt, unsigned count,
+          double baseline, double rise, double tau)
+{
+    for (unsigned i = 0; i < count; ++i) {
+        const double t = (double)i * 60.0;
+        dt[i] = (uint16_t)t;
+        values[i] = (float)(baseline + rise * (1.0 - exp(-t / tau)));
+    }
+    return count;
+}
+
+static void
+test_the_time_constant_is_recovered_from_a_first_order_rise()
+{
+    float v[40];
+    uint16_t dt[40];
+    const unsigned n = buildRise(v, dt, 40, 40.0, 15.0, 300.0); // tau = 5 min
+
+    const double tau = moistureTimeConstant(v, dt, n, 4, 0.5);
+    // Within one sampling interval: the curve is only observed every 60 s, and
+    // interpolation between the straddling samples is what keeps it this close.
+    TEST_ASSERT_TRUE(tau > 240.0);
+    TEST_ASSERT_TRUE(tau < 360.0);
+}
+
+static void
+test_a_slow_probe_is_distinguished_from_a_fast_one()
+{
+    // The whole diagnostic value: tau is a physical property of this probe in
+    // this pot. Two probes must not report the same number.
+    float fastV[40], slowV[40];
+    uint16_t fastT[40], slowT[40];
+    buildRise(fastV, fastT, 40, 40.0, 15.0, 120.0);  // 2 min: shallow
+    buildRise(slowV, slowT, 40, 40.0, 15.0, 1500.0); // 25 min: deep
+
+    const double fast = moistureTimeConstant(fastV, fastT, 40, 4, 0.5);
+    const double slow = moistureTimeConstant(slowV, slowT, 40, 4, 0.5);
+
+    TEST_ASSERT_TRUE(fast > 0.0);
+    TEST_ASSERT_TRUE(slow > fast * 4.0);
+}
+
+static void
+test_a_probe_that_did_not_respond_is_refused()
+{
+    // A disconnected probe, or one in a pot its pump does not reach: the
+    // reading wanders but never rises. Returning a plausible tau here would be
+    // worse than returning nothing.
+    float v[40];
+    uint16_t dt[40];
+    for (int i = 0; i < 40; ++i) {
+        dt[i] = (uint16_t)(i * 60);
+        // `int`, not `unsigned`: (i % 3) - 1 on an unsigned wraps 0 to four
+        // billion and the "noise" becomes a cliff. The same signed/unsigned
+        // trap the pin validator was caught by.
+        v[i] = 52.6f + (float)((i % 3) - 1) * 0.05f;
+    }
+
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0,
+                              moistureTimeConstant(v, dt, 40, 4, 0.5));
+}
+
+static void
+test_inverted_polarity_gives_the_same_time_constant()
+{
+    float up[40], down[40];
+    uint16_t t[40];
+    buildRise(up, t, 40, 40.0, 15.0, 300.0);
+    buildRise(down, t, 40, 40.0, -15.0, 300.0); // wetter reads LOWER
+
+    const double a = moistureTimeConstant(up, t, 40, 4, 0.5);
+    const double b = moistureTimeConstant(down, t, 40, 4, 0.5);
+
+    TEST_ASSERT_TRUE(a > 0.0);
+    TEST_ASSERT_DOUBLE_WITHIN(1.0, a, b);
+}
+
+static void
+test_too_few_samples_is_refused()
+{
+    float v[3];
+    uint16_t dt[3];
+    buildRise(v, dt, 3, 40.0, 15.0, 300.0);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, moistureTimeConstant(v, dt, 3, 8, 0.5));
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0,
+                              moistureTimeConstant(nullptr, dt, 3, 2, 0.5));
+}
+
+static void
+test_absorption_confidence_follows_the_curve_not_a_ramp()
+{
+    const double tau = 300.0; // 5 min
+
+    // At t = tau the response is 63.2 % done, by definition. A linear ramp over
+    // the same window would say 100 % — which is the error this replaces.
+    TEST_ASSERT_DOUBLE_WITHIN(0.01, 0.632,
+                              moistureAbsorptionConfidence(300.0, tau));
+    TEST_ASSERT_DOUBLE_WITHIN(0.01, 0.865,
+                              moistureAbsorptionConfidence(600.0, tau));
+    TEST_ASSERT_DOUBLE_WITHIN(0.01, 0.950,
+                              moistureAbsorptionConfidence(900.0, tau));
+
+    // A sample at the pump's own edge carries no weight: the probe is still
+    // reading the old soil.
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, moistureAbsorptionConfidence(0.0, tau));
+
+    // A slow probe discounts the same sample much harder — the point of
+    // measuring tau rather than assuming five minutes for every pot.
+    TEST_ASSERT_TRUE(moistureAbsorptionConfidence(300.0, 1500.0) <
+                     moistureAbsorptionConfidence(300.0, 120.0));
+
+    // No estimate yet: the caller must fall back, not treat it as instant.
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, moistureAbsorptionConfidence(300.0, 0.0));
+}
+
 int
 main(int, char**)
 {
@@ -285,5 +407,11 @@ main(int, char**)
     RUN_TEST(test_the_disconnected_probe_reading_is_a_visible_outlier);
     RUN_TEST(test_non_finite_samples_are_dropped_instead_of_poisoning_the_fit);
     RUN_TEST(test_the_prior_decides_a_reading_the_likelihoods_tie_on);
+    RUN_TEST(test_the_time_constant_is_recovered_from_a_first_order_rise);
+    RUN_TEST(test_a_slow_probe_is_distinguished_from_a_fast_one);
+    RUN_TEST(test_a_probe_that_did_not_respond_is_refused);
+    RUN_TEST(test_inverted_polarity_gives_the_same_time_constant);
+    RUN_TEST(test_too_few_samples_is_refused);
+    RUN_TEST(test_absorption_confidence_follows_the_curve_not_a_ramp);
     return UNITY_END();
 }

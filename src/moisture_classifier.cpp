@@ -207,3 +207,93 @@ moistureClassName(int cls)
             return "";
     }
 }
+
+// ---------------------------------------------------------------------------
+// Absorption
+// ---------------------------------------------------------------------------
+
+double
+moistureTimeConstant(const float* values,
+                     const uint16_t* dtSec,
+                     unsigned count,
+                     unsigned minSamples,
+                     double minRise)
+{
+    if (values == nullptr || dtSec == nullptr || count < minSamples ||
+        count < 2) {
+        return 0.0;
+    }
+
+    const double baseline = values[0];
+
+    // The plateau is the mean of the last third rather than the final sample:
+    // one noisy reading at the end would set the target for the whole estimate.
+    const unsigned tailFrom = count - (count / 3 > 0 ? count / 3 : 1);
+    double tail = 0.0;
+    unsigned tailCount = 0;
+    for (unsigned i = tailFrom; i < count; ++i) {
+        if (isfinite(values[i])) {
+            tail += values[i];
+            ++tailCount;
+        }
+    }
+    if (tailCount == 0 || !isfinite(baseline)) {
+        return 0.0;
+    }
+
+    const double plateau = tail / tailCount;
+    const double rise = plateau - baseline;
+    if (fabs(rise) < minRise) {
+        return 0.0; // the probe did not respond; nothing to fit
+    }
+
+    const double target = baseline + 0.632 * rise;
+
+    for (unsigned i = 1; i < count; ++i) {
+        if (!isfinite(values[i])) {
+            continue;
+        }
+
+        // Crossing in the direction the rise actually went, so an inverted
+        // conversion works without a sign convention anywhere.
+        const bool crossed =
+          (rise > 0.0) ? (values[i] >= target) : (values[i] <= target);
+        if (!crossed) {
+            continue;
+        }
+
+        // Interpolate between the straddling samples: at a 60 s history period
+        // the raw crossing is quantised to a whole minute, which on a probe
+        // that answers in three is a 30 % error.
+        const double previous = values[i - 1];
+        const double span = values[i] - previous;
+        double fraction = 0.0;
+        if (fabs(span) > 1e-9) {
+            fraction = (target - previous) / span;
+            if (fraction < 0.0) {
+                fraction = 0.0;
+            } else if (fraction > 1.0) {
+                fraction = 1.0;
+            }
+        }
+
+        const double tau = (double)dtSec[i - 1] +
+                           fraction * ((double)dtSec[i] - (double)dtSec[i - 1]);
+        return (tau > 0.0) ? tau : 0.0;
+    }
+
+    return 0.0; // never reached its own 63 % level within the window
+}
+
+double
+moistureAbsorptionConfidence(double dtSec, double tauSec)
+{
+    if (!(tauSec > 0.0) || dtSec <= 0.0) {
+        return 0.0;
+    }
+    const double progressed = 1.0 - exp(-dtSec / tauSec);
+    if (progressed < 0.0) {
+        return 0.0;
+    }
+    return (progressed > 1.0) ? 1.0 : progressed;
+}

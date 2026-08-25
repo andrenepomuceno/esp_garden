@@ -56,6 +56,18 @@ struct MoistureProbeModel
     // the pump is not running. Free to compute, because the labels the model
     // already needs are exactly what it is made of.
     float response;
+
+    // The soil's absorption time constant, in seconds, measured from this
+    // probe's own rises after its pump: the 63.2 % crossing of a first-order
+    // response, decayed across runs like everything else here.
+    //
+    // It exists because a fixed five-minute ramp was a guess. Water reaching a
+    // probe is diffusion through soil, and how long that takes depends on the
+    // soil, the pot and how well the probe touches either — which is to say it
+    // is a property of THIS probe and cannot be a constant shared by four of
+    // them. Until one is measured the fixed ramp stands in; 0 means exactly
+    // that, and never "instant".
+    float tauSec;
 };
 
 struct MoistureModelState

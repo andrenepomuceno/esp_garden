@@ -44,6 +44,12 @@ handleMoistureJson(AsyncWebServerRequest* request)
         doc["probes"][p]["wateringEvents"] = (int)model.wateringEvents;
         doc["probes"][p]["response"] = (double)model.response;
 
+        // Seconds, 0 while unmeasured. Reported because it is the one number
+        // that says how long after a watering this probe's readings mean
+        // anything, and because a tau that drifts is a probe losing contact
+        // with its soil long before the separation gate notices.
+        doc["probes"][p]["tauSec"] = (double)model.tauSec;
+
         double totalWeight = 0.0;
         for (int c = 0; c < MOISTURE_CLASS_COUNT; ++c) {
             totalWeight += model.classes[c].weight;

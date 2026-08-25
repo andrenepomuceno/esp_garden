@@ -39,6 +39,18 @@ static const double g_outlierZ = 3.0;
 // still reading the old soil for the first minutes.
 static const uint32_t g_absorptionLagSec = 5 * 60;
 
+// The absorption capture. At a 60 s history period a 30-minute wet window
+// holds 30 readings, plus the pre-watering baseline at element 0.
+static const unsigned g_riseMaxSamples = 32;
+
+// Fewer samples than this and a "time constant" is a line drawn through noise.
+static const unsigned g_riseMinSamples = 5;
+
+// A rise smaller than this is not a response. Without the floor the fit would
+// return a confident time constant for a probe that never answered its pump --
+// exactly the probe the response check and the separation gate exist to catch.
+static const double g_riseMinPoints = 1.0;
+
 // How far from a window's edge a HUMID sample has to be to count fully. Inside
 // it the reading is a transition, and transitions belong to neither neighbour.
 static const uint32_t g_taperSec = 10 * 60;
@@ -206,6 +218,17 @@ struct ScanContext
     unsigned nextEvent[MOISTURE_MAX];
     uint32_t previousWatering[MOISTURE_MAX];
 
+    // Pass 2 only: one absorption curve at a time per probe, plus the running
+    // mean of the time constants this run measured.
+    float riseValue[MOISTURE_MAX][g_riseMaxSamples];
+    uint16_t riseDt[MOISTURE_MAX][g_riseMaxSamples];
+    uint8_t riseCount[MOISTURE_MAX];
+    uint32_t riseFrom[MOISTURE_MAX];
+    float lastValue[MOISTURE_MAX];
+    bool lastValid[MOISTURE_MAX];
+    double tauSum[MOISTURE_MAX];
+    unsigned tauCount[MOISTURE_MAX];
+
     // Pass 3 only.
     const GaussianStats (*reference)[MOISTURE_CLASS_COUNT];
     uint32_t samplesUsed;
@@ -278,6 +301,7 @@ static int
 labelFor(uint32_t timestamp,
          uint32_t previousWatering,
          uint32_t nextWatering,
+         double tauSec,
          double& confidence)
 {
     // The label is not equally trustworthy across its window, and saying so is
@@ -294,10 +318,20 @@ labelFor(uint32_t timestamp,
         // few minutes the probe is still reading the OLD soil, so those
         // samples are weighted down to near zero and the confidence ramps to
         // full once absorption has had time to happen.
+        //
+        // Absorption is diffusion, and diffusion is not a ramp: the reading
+        // approaches its new level as 1 - e^(-t/tau). Where this probe's own
+        // time constant has been measured, that curve IS the confidence, so a
+        // fast probe reaches full weight in three minutes and a slow one is
+        // still discounted at fifteen. The fixed ramp stands in only while no
+        // measurement exists -- the same shape to first order, and it never
+        // claims more than it knows.
         const uint32_t since = timestamp - previousWatering;
-        confidence = (since >= g_absorptionLagSec)
-                       ? 1.0
-                       : ((double)since / (double)g_absorptionLagSec);
+        confidence = (tauSec > 0.0)
+                       ? moistureAbsorptionConfidence((double)since, tauSec)
+                       : ((since >= g_absorptionLagSec)
+                            ? 1.0
+                            : ((double)since / (double)g_absorptionLagSec));
         return MOISTURE_WET;
     }
 
@@ -330,6 +364,25 @@ labelFor(uint32_t timestamp,
     return MOISTURE_UNKNOWN;
 }
 
+// Closes the capture open for this probe, folding its time constant into the
+// run's mean when the curve was good enough to fit. Idempotent, so it can be
+// called on every new watering and again at the end of the pass.
+static void
+finishRise(ScanContext& scan, unsigned p)
+{
+    const double tau = moistureTimeConstant(scan.riseValue[p],
+                                            scan.riseDt[p],
+                                            scan.riseCount[p],
+                                            g_riseMinSamples,
+                                            g_riseMinPoints);
+    if (tau > 0.0) {
+        scan.tauSum[p] += tau;
+        ++scan.tauCount[p];
+    }
+    scan.riseCount[p] = 0;
+    scan.riseFrom[p] = 0;
+}
+
 static bool
 accumulate(const IoRecord& record, uint32_t, void* ctx)
 {
@@ -354,6 +407,7 @@ accumulate(const IoRecord& record, uint32_t, void* ctx)
             continue; // not fitted at the time, or the slot was never written
         }
 
+        const uint32_t wasWatering = scan.previousWatering[p];
         while (scan.nextEvent[p] < scan.eventCount[p] &&
                scan.events[p][scan.nextEvent[p]] <= record.timestamp) {
             scan.previousWatering[p] = scan.events[p][scan.nextEvent[p]];
@@ -364,9 +418,49 @@ accumulate(const IoRecord& record, uint32_t, void* ctx)
             ? scan.events[p][scan.nextEvent[p]]
             : 0;
 
+        // Pass 2 only: pass 3 walks the same records and would count every
+        // curve twice. The outlier rejection below does not apply here either
+        // -- a rise is a shape, and rejecting its samples against a class mean
+        // would flatten exactly the transient being measured.
+        if (scan.reference == nullptr) {
+            if (scan.previousWatering[p] != wasWatering) {
+                // A new watering. Close whatever was open and start a capture
+                // whose element 0 is the last reading BEFORE the pump: at the
+                // pump's own edge the soil still reads its old value, and that
+                // is the baseline the exponential rises from. Using the first
+                // post-watering sample instead would measure the rise from a
+                // point already part of the way up it.
+                finishRise(scan, p);
+                if (scan.lastValid[p]) {
+                    scan.riseFrom[p] = scan.previousWatering[p];
+                    scan.riseValue[p][0] = scan.lastValue[p];
+                    scan.riseDt[p][0] = 0;
+                    scan.riseCount[p] = 1;
+                }
+            }
+
+            if (scan.riseFrom[p] != 0) {
+                if (record.timestamp > scan.riseFrom[p] + g_wetWindowSec) {
+                    finishRise(scan, p);
+                } else if (record.timestamp > scan.riseFrom[p] &&
+                           scan.riseCount[p] < g_riseMaxSamples) {
+                    const uint32_t dt = record.timestamp - scan.riseFrom[p];
+                    scan.riseValue[p][scan.riseCount[p]] = (float)value;
+                    scan.riseDt[p][scan.riseCount[p]] = (uint16_t)dt;
+                    ++scan.riseCount[p];
+                }
+            }
+
+            scan.lastValue[p] = (float)value;
+            scan.lastValid[p] = true;
+        }
+
         double confidence = 1.0;
-        const int label = labelFor(
-          record.timestamp, scan.previousWatering[p], nextWatering, confidence);
+        const int label = labelFor(record.timestamp,
+                                   scan.previousWatering[p],
+                                   nextWatering,
+                                   g_state.probe[p].tauSec,
+                                   confidence);
         if (label == MOISTURE_UNKNOWN) {
             continue;
         }
@@ -412,6 +506,12 @@ resetFit(ScanContext& scan)
         scan.wetWeight[p] = 0.0;
         scan.drySum[p] = 0.0;
         scan.dryWeight[p] = 0.0;
+
+        // Deliberately NOT tauSum/tauCount: only pass 2 measures those, and
+        // resetFit runs again before pass 3.
+        scan.riseCount[p] = 0;
+        scan.riseFrom[p] = 0;
+        scan.lastValid[p] = false;
     }
     scan.samplesUsed = 0;
     scan.outliersDropped = 0;
@@ -481,6 +581,12 @@ moistureModelTrain()
     scan->reference = nullptr;
     ioHistory.forEach(accumulate, scan);
 
+    // The newest watering inside the window leaves a capture open, with no
+    // later record to close it.
+    for (unsigned p = 0; p < scan->probes; ++p) {
+        finishRise(*scan, p);
+    }
+
     GaussianStats first[MOISTURE_MAX][MOISTURE_CLASS_COUNT];
     memcpy(first, scan->fit, sizeof(first));
 
@@ -535,6 +641,19 @@ moistureModelTrain()
                                          response * (1.0 - g_moistureDecayPerRun));
         }
 
+        // The absorption time constant, from this run's own rises. Decayed
+        // with everything else: how fast water reaches a probe depends on the
+        // soil, the pot and the probe's contact with both, all of which change
+        // slowly, so one watering measured through noise must not rewrite it.
+        if (scan->tauCount[p] > 0) {
+            const float tau = (float)(scan->tauSum[p] / scan->tauCount[p]);
+            model.tauSec =
+              (model.tauSec <= 0.0f)
+                ? tau
+                : (float)(model.tauSec * g_moistureDecayPerRun +
+                          tau * (1.0 - g_moistureDecayPerRun));
+        }
+
         model.separation = (float)moistureSeparation(model.classes);
         model.usable = (model.wateringEvents >= g_moistureMinEvents) &&
                        moistureModelIsUsable(model.classes,
@@ -549,7 +668,9 @@ moistureModelTrain()
           String(gaussianMean(model.classes[MOISTURE_DRY]), 1) + "/" +
           String(gaussianMean(model.classes[MOISTURE_HUMID]), 1) + "/" +
           String(gaussianMean(model.classes[MOISTURE_WET]), 1) +
-          ", response " + String(model.response, 2) +
+          ", response " + String(model.response, 2) + ", tau " +
+          (model.tauSec > 0.0f ? String(model.tauSec / 60.0f, 1) + " min"
+                               : String("unmeasured")) +
           (model.usable ? " -> usable" : " -> not usable yet"));
     }
 

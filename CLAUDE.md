@@ -213,6 +213,15 @@ garbage. An hour went into learning that.
   the MD5 verification, the relay-idle deferral and the 409 interlock against
   the browser path are all unexercised.
 
+- **The absorption time constant, on real soil.** `moistureTimeConstant()` is
+  covered by six host tests against synthetic first-order rises, and the
+  estimator, the fold and the confidence feedback all compile and ship. What
+  has never happened on this board is a watering whose 30 minutes afterwards
+  are in the history buffer at the moment training runs — the one watering on
+  record was a manual relay test, and the history was reformatted by the
+  LittleFS migration anyway. Until a real cycle completes, every probe reports
+  `tau` 0 and the 5-minute linear ramp is what is actually running.
+
 - **The reservoir interlock.** `floatInterlock` is off, and the float switch is
   not wired.
 - **The flow meter.** Not wired. `flowPulsesPerLitre` is a datasheet number, not
@@ -419,7 +428,7 @@ Facts worth knowing before touching it:
 | `/users.html`, `/users.js` | GET | **public** | account management page (the data behind it is ADMIN) |
 | `/schedules.html`, `/schedules.js` | GET | **public** | scheduled watering editor |
 | `/moisture.html`, `/moisture.js` | GET | **public** | the classifier's inference and its fitted parameters (data behind it needs a session) |
-| `/moisture.json` | GET | session | per-probe class means, spreads, priors, separation, and which gate refused an unclassified probe |
+| `/moisture.json` | GET | session | per-probe class means, spreads, priors, separation, watering response, absorption &tau;, and which gate refused an unclassified probe |
 | `/capabilities.json` | GET | session | per-kind maxima, the kinds this build has drivers for, and the usable pins — so the UI never restates a rule the firmware owns |
 | `/spiffs/upload` | POST | **ADMIN** | replace ONE file instead of rewriting the partition |
 | `/updateEnable`, `/update` | POST | **ADMIN** | OTA arm + upload |
@@ -529,9 +538,10 @@ instant the pump started counted as firmly "wet" as one taken twenty minutes
 later. Boundary samples are precisely what blurs the class means together, and
 blurred means are what fails the separation gate.
 
-- **Wet** ramps from 0 to full over `g_absorptionLagSec` (5 min). Soil does not
-  become wet when a pump starts; for the first minutes the probe is still
-  reading the old soil.
+- **Wet** follows the probe's own absorption curve — see [Absorption](#absorption-the-soil-is-a-diffusion-process-not-a-step)
+  below. Soil does not become wet when a pump starts; for the first minutes the
+  probe is still reading the old soil. Where no time constant has been measured
+  yet, a linear ramp over `g_absorptionLagSec` (5 min) stands in.
 - **Dry** ramps up as the next watering approaches. Moisture falls monotonically
   between waterings, so the closest sample is the driest and the most confident.
 - **Humid** tapers toward both neighbours over `g_taperSec` (10 min): a reading
@@ -574,6 +584,53 @@ Gaussian naive Bayes was chosen partly for this: it needs only `weight`, `sum`
 and `sumSq` per class, so training **streams** over the history file
 (`IoHistory::forEach`) instead of holding 69 KB of records in RAM, and the
 whole model is 12 doubles per probe.
+
+### Absorption: the soil is a diffusion process, not a step
+
+Water reaching a probe takes time, and how long depends on the soil, the pot,
+and how well the probe touches either. That is a property of ONE probe and
+cannot be a constant shared by four of them — which is what
+`g_absorptionLagSec` was, a five-minute guess applied to every probe on the
+board.
+
+Treated as first-order diffusion the reading approaches its new level as
+`m(t) = baseline + rise * (1 - e^-(t-T)/tau)`, and `tau` is estimated per probe
+from its own rises: the 63.2 % crossing of the step, interpolated between the
+two samples that straddle it. `moistureTimeConstant()` in
+`src/moisture_classifier.cpp` is the whole of it, host-tested, free of Arduino.
+
+- **The baseline is the last reading BEFORE the pump, not the first one after.**
+  At the pump's own edge the soil still reads its old value; starting from the
+  first post-watering sample measures the rise from a point already part of the
+  way up it, and returns a `tau` that is too small.
+- **Interpolation is not decoration.** At a 60 s history period the raw crossing
+  is quantised to a whole minute, so a probe that answers in three minutes is
+  measured with a 30 % error.
+- **It refuses more often than it answers, on purpose.** Fewer than
+  `g_riseMinSamples` (5) samples, a rise under `g_riseMinPoints` (1 point), or
+  no crossing inside the 30-minute wet window all return 0, which means
+  *unmeasured* and never *instant*. A probe that does not answer its pump must
+  not be handed a confident time constant — it is precisely the probe the
+  response check and the separation gate exist to catch.
+- **Polarity is not assumed**, exactly as nothing else here assumes it: the
+  crossing is tested in the direction the rise actually went.
+- **Only pass 2 measures it.** Pass 3 walks the same records and would count
+  every curve twice, and the 3-sigma outlier rejection does not apply to a rise
+  at all — a transient is a shape, and rejecting its samples against a class
+  mean would flatten the very thing being measured.
+- **It is decayed like every other statistic** (`g_moistureDecayPerRun`), so one
+  watering measured through noise cannot rewrite the estimate, and a probe
+  slowly losing contact with its soil shows up as a drifting `tau` well before
+  the separation gate refuses it.
+
+Feeding `tau` back is the point: `moistureAbsorptionConfidence(dt, tau)` is the
+weight a wet-window sample carries, so a fast probe reaches full confidence in
+three minutes and a slow one is still discounted at fifteen. The 5-minute ramp
+remains as the stand-in for a probe with no measurement yet.
+
+**`tau` is a WEIGHT on training samples, never a feature at classification
+time** — the same line the watering schedule is held to, and for the same
+reason. A model that reads the clock is a timer wearing a posterior.
 
 ### The gates — refusing is the feature
 
@@ -630,7 +687,12 @@ silently declines is indistinguishable from one that is broken.
 
 `test/test_moisture_classifier/` covers the maths on the host — the ordering
 gate, the separation gate, inverted polarity, the variance floor, the outlier
-z-score, and that confidence tracks how much the classes actually overlap.
+z-score, that confidence tracks how much the classes actually overlap, and the
+absorption estimator: that `tau` is recovered from a synthetic first-order rise,
+that a slow probe is distinguished from a fast one, that a probe which did not
+respond is refused, that inverted polarity gives the same `tau`, that too few
+samples is refused, and that the confidence follows the exponential rather than
+the old straight line.
 
 ### The two-point fallback
 

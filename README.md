@@ -454,7 +454,8 @@ the only symptom is a model trained against a pump that waters something else.
 prior and accumulated weight; the separation; the live classification with its
 confidence; and, when there is no classification, which gate blocked it. It also
 reports what the last training run scanned — records, samples used, outliers
-dropped. `GET /moisture.json` is the same data, and it carries the gate
+dropped, and each probe's absorption time constant. `GET /moisture.json` is
+the same data, and it carries the gate
 constants themselves so the page never hardcodes a threshold the firmware might
 have moved.
 
