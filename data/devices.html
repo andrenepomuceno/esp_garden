@@ -111,6 +111,8 @@
                 <th class="col-pin">GPIO</th>
                 <th class="col-cal">Dry (air)</th>
                 <th class="col-cal">Wet (water)</th>
+                <th>Sensor</th>
+                <th>Power</th>
                 <th>Fed by</th>
                 <th>Reading</th>
                 <th class="text-end col-fixed"></th>
@@ -131,7 +133,28 @@
           onto the next probe. While the two are equal the probe counts as
           uncalibrated and the dashboard shows no Dry/Humid/Wet badge, which is
           honest rather than a band invented from nothing. A disconnected probe
-          reads at a rail, and that is not a usable dry anchor.
+          does NOT read at a rail &mdash; measured here, an unplugged one sat
+          mid-scale and quiet, indistinguishable from soil by value alone
+          &mdash; so it is not a usable dry anchor either.
+        </div>
+        <div class="alert alert-secondary small mb-0 mt-2">
+          <em>Sensor</em> is a free label plus the probe's polarity.
+          <em>Reads lower when wet</em> is what the capacitive v2 modules do; a
+          resistive divider usually does the opposite. Getting it backwards
+          inverts the number on the dashboard without the classifier noticing,
+          because the classifier accepts either direction. Two readings settle
+          it: one in air, one in water &mdash; whichever is higher tells you
+          the sign.
+          <em>Power</em> names a GPIO that energises the probe only while it is
+          read. A resistive probe left permanently powered is an electrolysis
+          cell in wet soil and dissolves its own electrode in weeks; at a 1 s
+          period and a few milliseconds of reading, it is live under 1 % of the
+          time. Mind the current: an LM393 module with its LED draws around
+          20 mA, which is most of what one GPIO should source, so two of them
+          want a small MOSFET rather than a shared pin.
+          Changing the label or the polarity DISCARDS that probe's trained
+          model &mdash; which is the point, since the stored bands describe a
+          sensor that is no longer in the pot.
         </div>
       </div>
     </div>

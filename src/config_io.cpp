@@ -116,6 +116,37 @@ applySingleProbeLabel(ConfigFile& cfg)
     }
 }
 
+// The optional power-gating half of an `io.soilMoisture` entry:
+// {pin, name, powerPin, powerOn, settleMs}. Absent keys leave the defaults,
+// which are "permanently powered" — what every board did before this existed.
+static void
+loadProbePower(JSONVar node, ConfigFile& cfg, unsigned i)
+{
+    if (JSON.typeof(node) != "object") {
+        return; // a bare pin number: no room for any of this
+    }
+
+    JSONVar entry = node;
+    if (entry.hasOwnProperty("powerPin")) {
+        const int pin = (int)entry["powerPin"];
+        // -1 is how the UI says "none" without having to send kNoPin.
+        cfg.soilMoisturePowerPin[i] =
+          (pin < 0 || pin > 39) ? ConfigFile::kNoPin : (uint8_t)pin;
+    }
+    if (entry.hasOwnProperty("powerOn")) {
+        cfg.soilMoisturePowerOn[i] = ((int)entry["powerOn"] != 0) ? 1 : 0;
+    }
+    if (entry.hasOwnProperty("settleMs")) {
+        const int ms = (int)entry["settleMs"];
+        // Capped: this delay runs inside the 1 Hz io task, which is the same
+        // cooperative pump MQTT and TalkBack share. A probe that genuinely
+        // needs more than a quarter second is one to read less often, not one
+        // to stall every other background task for.
+        cfg.soilMoistureSettleMs[i] =
+          (ms < 0) ? 0 : ((ms > 250) ? 250 : (uint16_t)ms);
+    }
+}
+
 // `io.soilMoisture` is a bare pin number (legacy, one probe), an array of pins,
 // or an array of {pin, name}.
 void
@@ -135,6 +166,7 @@ loadSoilMoisture(ConfigFile& cfg, JSONVar& io)
 
         for (unsigned i = 0; i < cfg.moistureCount; ++i) {
             loadSensor(pins[i], cfg.soilMoisturePin[i], cfg.soilMoistureName[i]);
+            loadProbePower(pins[i], cfg, i);
         }
         applySingleProbeLabel(cfg);
         return;

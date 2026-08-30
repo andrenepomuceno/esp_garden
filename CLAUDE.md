@@ -493,7 +493,7 @@ Facts worth knowing before touching it:
 - **`POST /config.json` replaces the whole file**, exactly like fullbot's: `ConfigFile::saveFile()` opens with `FILE_WRITE` (truncate). The handler merges into the stored document first, so a caller only has to send a complete document, not a diff. **Nothing re-reads the file at runtime** — the response carries `restartRequired: true` and the change lands on the next boot.
 - The handler rejects a document whose `id` does not match `config.deviceId`. Without that check a config pasted from another garden would be written, `loadFile()` would reject it at boot, and the device would come up on compiled defaults it cannot connect with — unreachable to fix without USB.
 - **Changing `ota.password` is pushed into `UserStore` too.** The login password lives in `/users.json`, so a config-only change would otherwise not take effect until a filesystem deploy wiped the user store.
-- **Every `io` entry accepts more than one shape, and all of them must keep working** — a device in the field has to survive a firmware update. `io.relays`: array of `{pin,on,name}`, or the pre-2.0 `io.watering` + `io.wateringOn` scalars. `io.soilMoisture`: array of `{pin,name}`, array of bare pins, or a single bare pin. `io.dht` / `io.luminosity` / `io.waterLevel`: `{pin,name}` or a bare pin. `loadSensor()` handles the sensor cases in one place. Entries past the compiled count are ignored and missing ones keep their defaults — a short array logs a warning rather than zeroing a pin.
+- **Every `io` entry accepts more than one shape, and all of them must keep working** — a device in the field has to survive a firmware update. `io.relays`: array of `{pin,on,name}`, or the pre-2.0 `io.watering` + `io.wateringOn` scalars. `io.soilMoisture`: array of `{pin,name,powerPin,powerOn,settleMs}`, array of `{pin,name}`, array of bare pins, or a single bare pin — the three power keys are optional and absent means permanently powered. `io.dht` / `io.luminosity` / `io.waterLevel`: `{pin,name}` or a bare pin. `loadSensor()` handles the sensor cases in one place. Entries past the compiled count are ignored and missing ones keep their defaults — a short array logs a warning rather than zeroing a pin.
 - **Sensor and relay names are LABELS, not identifiers.** `/data.json` keys `Inputs` and `Outputs` by them, so renaming changes the dashboard immediately — but the `Relays` array stays index-addressed, the history record is positional, and the ThingsBoard telemetry keys stay `moisture1..N`. Renaming therefore never rewrites stored history. A name on `io.dht` is a *prefix*, because one pin produces two channels.
 - **`"version"` in the JSON is still never read** — the template says `2` but nothing enforces or migrates on it. `log.level` *is* read now (clamped to `LOG_DISABLE..LOG_TRACE`) and applied in `loadConfigFile()`.
 - **`loadFile()` mutates fields as it parses and only returns `false` at the end**, so a rejected config leaves a half-populated object behind.
@@ -813,6 +813,55 @@ that a slow probe is distinguished from a fast one, that a probe which did not
 respond is refused, that inverted polarity gives the same `tau`, that too few
 samples is refused, and that the confidence follows the exponential rather than
 the old straight line.
+
+### The probe is hardware, and the firmware stopped assuming which
+
+Two things about a soil probe were baked into the code and are now per-probe
+configuration, because a board can carry one of each.
+
+**Polarity — `moisture[i].invert`.** `sensorsReadIo()` did
+`100 - ADC_TO_PERCENT(...)`, one sign for the whole board. It is right for the
+capacitive v2 modules these were built around: their 555 output FALLS as the
+soil wets. A resistive divider does the opposite. The classifier never cared —
+both the two-point calibration and the ordering gate accept either direction —
+but the number on the dashboard and in the stored history would have run
+backwards, and every chart with it. Default `true`, which is what every existing
+board already does.
+
+**Power gating — `io.soilMoisture[i].powerPin` / `powerOn` / `settleMs`.** This
+is the difference between a resistive probe lasting a season and lasting weeks.
+Its two electrodes sit in wet soil with a DC potential across them, which is an
+electrolysis cell: the anode dissolves, the readings drift, and the probe is
+scrap. Driving the module's VCC from a GPIO and energising it only around the
+reading takes the duty cycle from 100 % to under 1 % at a 1 s period.
+
+- **Coalesced.** Two probes on one MOSFET is the normal wiring, so every power
+  pin is switched on, ONE settle delay is paid — the longest any probe asked
+  for — and all probes are read. Powering them one at a time would pay it twice.
+- **The first conversion after power-up is discarded.** The input was floating a
+  moment ago and the SAR capacitor carries charge from the previous channel.
+- **`settleMs` is capped at 250.** The delay runs inside the 1 Hz io task, which
+  is the same cooperative pump MQTT and TalkBack share. A probe needing more
+  than that is one to read less often, not one to stall every background task
+  for.
+- **The pin is parked OFF in `sensorsSetup()`**, before it is ever driven on,
+  for the same reason `relayPinsSafeInit()` is the first statement of `setup()`.
+- **`validatePins()` checks it as an OUTPUT**, and a pin shared between two
+  probes is not reported as a duplicate — that is the intended wiring.
+- **Current is the operator's problem, and the UI says so.** An LM393 module
+  with its LED draws around 20 mA, which is most of what one ESP32 GPIO should
+  source; two of them want a small MOSFET rather than a shared pin.
+
+**Swapping a sensor now discards its model.** `MoistureProbeModel` identified a
+probe by pin and relay, and replacing a capacitive module with a resistive one
+changes neither — same hole in the pot, same pump — while inverting the transfer
+curve. Weeks of Gaussians would have carried over and kept reporting a confident
+badge, and the separation gate would not have caught it: the bands stay well
+separated, they are simply the wrong bands. The identity now also carries
+`sourceInvert` and `sourceTag`, a hash of `moisture[i].kind`. That free-text
+label is the manual lever — relabel a probe and its statistics are thrown away —
+and it is why `kind` is only written when non-empty, so an empty one does not
+discard a model on every save.
 
 ### The two-point fallback
 

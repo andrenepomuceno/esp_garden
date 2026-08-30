@@ -161,7 +161,14 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
             { "pin": 18, "on": 0, "name": "Relay 4" }
         ],
         "dht": 23,
-        "soilMoisture": [36, 35, 32],
+        "soilMoisture": [                 // bare pin, or an object:
+            36,
+            {"pin": 35, "name": "Bed 2",  // optional power gating: the
+             "powerPin": 25,              //   probe is energised only
+             "powerOn": 1,                //   while it is being read,
+             "settleMs": 10},             //   which is what keeps a
+            32                            //   resistive probe alive
+        ],
         "luminosity": 39,
         "waterLevel": 34,
         "flow": {                // pulse flow meter; omit the key if not fitted

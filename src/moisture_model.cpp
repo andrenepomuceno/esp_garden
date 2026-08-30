@@ -160,6 +160,23 @@ probeRelay(unsigned probe)
 // training loop, which the "no new watering cycles" early return skips — so a
 // probe deleted on a device watered once a day kept the old pot's Gaussians,
 // usable and confident, until a cycle happened to complete.
+
+// FNV-1a over the probe's kind label. A hash rather than the string itself
+// because this lives in the persisted model, where a String would mean a
+// variable-length record; a collision costs a model that should have been
+// discarded and was not, which is the same risk the label is guarding against
+// and no worse than having no label at all.
+static uint16_t
+probeTag(const String& kind)
+{
+    uint32_t hash = 2166136261UL;
+    for (unsigned i = 0; i < kind.length(); ++i) {
+        hash ^= (uint8_t)kind[i];
+        hash *= 16777619UL;
+    }
+    return (uint16_t)(hash ^ (hash >> 16));
+}
+
 static void
 discardMovedProbes()
 {
@@ -167,20 +184,38 @@ discardMovedProbes()
         MoistureProbeModel& model = g_state.probe[p];
         const uint8_t pin = config.soilMoisturePin[p];
         const int8_t relay = (int8_t)probeRelay(p);
+        const uint16_t tag = probeTag(config.moistureKind[p]);
+        const bool invert = config.moistureInvert[p];
 
-        if (model.sourcePin == pin && model.sourceRelay == relay) {
+        if (model.sourcePin == pin && model.sourceRelay == relay &&
+            model.sourceTag == tag && model.sourceInvert == invert) {
             continue;
         }
 
         if (model.wateringEvents > 0 || model.usable) {
-            logger.warning("[moisture] probe " + String(p) + " moved (pin " +
-                           String(model.sourcePin) + "->" + String(pin) +
-                           ", relay " + String(model.sourceRelay) + "->" +
-                           String(relay) + "); discarding its model");
+            String why;
+            if (model.sourcePin != pin) {
+                why += " pin " + String(model.sourcePin) + "->" + String(pin);
+            }
+            if (model.sourceRelay != relay) {
+                why += " relay " + String(model.sourceRelay) + "->" +
+                       String(relay);
+            }
+            if (model.sourceInvert != invert) {
+                why += " polarity";
+            }
+            if (model.sourceTag != tag) {
+                why += " kind '" + config.moistureKind[p] + "'";
+            }
+            logger.warning("[moisture] probe " + String(p) +
+                           " is not the probe this model was fitted to (" +
+                           why + " ); discarding it");
         }
         memset(&model, 0, sizeof(model));
         model.sourcePin = pin;
         model.sourceRelay = relay;
+        model.sourceTag = tag;
+        model.sourceInvert = invert;
     }
 }
 

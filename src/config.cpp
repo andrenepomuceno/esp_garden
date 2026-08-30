@@ -137,6 +137,13 @@ ConfigFile::ConfigFile()
         // which is honest rather than inventing a band from nothing.
         moistureDry[i] = 0.0;
         moistureWet[i] = 0.0;
+        // True preserves what every existing board does: the capacitive v2
+        // modules these were built around read LOWER as the soil wets.
+        moistureInvert[i] = true;
+        moistureKind[i] = "";
+        soilMoisturePowerPin[i] = kNoPin;
+        soilMoisturePowerOn[i] = 1;
+        soilMoistureSettleMs[i] = 10;
         // One pump per zone is the common layout, so probe i defaults to
         // relay i. validated against relayCount at load.
         moistureRelay[i] = (int8_t)i;
@@ -375,6 +382,12 @@ ConfigFile::loadFile(unsigned deviceID)
                     logger.warning("moisture[" + String(i) + "].relay " +
                                    String(relay) + " out of range; ignored.");
                 }
+            }
+            if (entry.hasOwnProperty("invert")) {
+                moistureInvert[i] = (bool)entry["invert"];
+            }
+            if (JSON.typeof(entry["kind"]) == "string") {
+                moistureKind[i] = (const char*)JSONVar(entry["kind"]);
             }
         }
     }

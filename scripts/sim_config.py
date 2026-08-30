@@ -68,8 +68,14 @@ SIM_CONFIG = {
         # copied verbatim into /data.json and /moisture.json, so the pages that
         # render them are the ones that have to escape them.
         "soilMoisture": [
+            # A bare pin: still a shape a field device may carry, and the one
+            # that has to keep loading after a firmware update.
             36,
-            34,
+            # Power-gated, which is what a resistive probe needs to survive:
+            # energised only around the reading, so it is not an electrolysis
+            # cell the rest of the time.
+            {"pin": 34, "name": "Bed 2", "powerPin": 25, "powerOn": 1,
+             "settleMs": 30},
             {"pin": 32, "name": "<img src=x onerror=\"window.__xss=1\">Bed 3"},
             {"pin": 33, "name": "Bed 4 (no pump)"},
         ],
@@ -88,11 +94,18 @@ SIM_CONFIG = {
     #
     # Probe 2 is left uncalibrated (dry == wet) so the "no classification at all"
     # branch is reachable; probe 3 is the -1 case.
+    # `invert` is the probe's polarity and `kind` a free label; both are part of
+    # the trained model's IDENTITY on the device, so changing either discards
+    # that probe's statistics rather than letting a new sensor inherit the old
+    # one's bands. Probe 1 is deliberately the other polarity, so the page is
+    # exercised with a board carrying one of each.
     "moisture": [
-        {"dry": 6.0, "wet": 86.0, "relay": 0},
-        {"dry": 5.0, "wet": 84.0, "relay": 1},
-        {"dry": 0, "wet": 0, "relay": 2},
-        {"dry": 4.0, "wet": 88.0, "relay": -1},
+        {"dry": 6.0, "wet": 86.0, "relay": 0, "invert": True,
+         "kind": "capacitive-v2"},
+        {"dry": 5.0, "wet": 84.0, "relay": 1, "invert": False,
+         "kind": "wd-38"},
+        {"dry": 0, "wet": 0, "relay": 2, "invert": True},
+        {"dry": 4.0, "wet": 88.0, "relay": -1, "invert": True},
     ],
     # Both disabled, matching the fail-safe default the device now applies to a
     # schedule whose "enabled" key is absent.

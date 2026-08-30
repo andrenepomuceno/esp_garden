@@ -96,6 +96,18 @@
     $('.ms-wet').each(function () {
       model.probes[$(this).data('row')].wet = $.trim(String($(this).val()));
     });
+    $('.ms-kind').each(function () {
+      model.probes[$(this).data('row')].kind = $.trim(String($(this).val()));
+    });
+    $('.ms-invert').each(function () {
+      model.probes[$(this).data('row')].invert = $(this).is(':checked');
+    });
+    $('.ms-power').each(function () {
+      model.probes[$(this).data('row')].powerPin = pinValue($(this).val());
+    });
+    $('.ms-settle').each(function () {
+      model.probes[$(this).data('row')].settleMs = $.trim(String($(this).val()));
+    });
     $('.ms-relay').each(function () {
       var relay = parseInt($(this).val(), 10);
       model.probes[$(this).data('row')].relay = isNaN(relay) ? -1 : relay;

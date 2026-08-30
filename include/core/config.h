@@ -118,6 +118,27 @@ class ConfigFile
     uint8_t dhtPin;
     uint8_t soilMoisturePin[MOISTURE_MAX];
 
+    // Optional pin that ENERGISES the probe, and the level that does it.
+    // kNoPin means the probe is permanently powered, which is what every board
+    // did before this existed and stays the default.
+    //
+    // This is the whole reason a resistive probe is usable at all. Its two
+    // electrodes sit in wet soil with a DC potential across them, which is an
+    // electrolysis cell: the anode dissolves, the readings drift, and the
+    // sensor is scrap in weeks. Driving VCC from a GPIO and energising it only
+    // around the reading takes the duty cycle from 100 % to well under 1 %.
+    //
+    // A capacitive probe does not need it and loses nothing by having it.
+    uint8_t soilMoisturePowerPin[MOISTURE_MAX];
+    uint8_t soilMoisturePowerOn[MOISTURE_MAX];
+
+    // How long after energising before the reading means anything. The divider
+    // itself settles in microseconds; what takes time is the module's own
+    // regulator and comparator. Per probe because it is a property of the
+    // module, and configurable because the point of all this is not needing a
+    // new firmware when a different sensor arrives.
+    uint16_t soilMoistureSettleMs[MOISTURE_MAX];
+
     // Display labels. /data.json keys Inputs by these, so they are what the
     // dashboard, the history charts and the table show. They are labels, not
     // identifiers: telemetry keys and the Relays array stay index-based, so
@@ -136,6 +157,32 @@ class ConfigFile
     // Equal values disable classification for that probe.
     float moistureDry[MOISTURE_MAX];
     float moistureWet[MOISTURE_MAX];
+
+    // Which way the raw reading moves as the soil dries, per probe.
+    //
+    // It was a single `100 - pct` in sensorsReadIo(), correct for the
+    // capacitive v2 modules — their 555 oscillator output FALLS as the soil
+    // wets — and wrong for anything wired the other way. A resistive probe on
+    // the usual divider does the opposite: wet soil conducts, the node rises.
+    // With one probe of each fitted, no global sign is right, so the sign
+    // belongs to the probe.
+    //
+    // The classifier never cared: both the two-point calibration and the
+    // ordering gate accept either direction. What cared is the NUMBER on the
+    // dashboard and in the history, which would have run backwards.
+    bool moistureInvert[MOISTURE_MAX];
+
+    // Free-text label for what is physically in the pot. It is not used to
+    // decide anything — it is part of the trained model's IDENTITY, so
+    // changing it throws that probe's statistics away.
+    //
+    // Without it, swapping a capacitive sensor for a resistive one on the same
+    // pin keeps weeks of accumulated Gaussians: same pin, same relay, so the
+    // model's own identity check sees no change and the new probe inherits the
+    // old one's bands. That is confident nonsense of exactly the kind the
+    // separation gate exists to prevent, arriving through the one door the
+    // gate does not watch.
+    String moistureKind[MOISTURE_MAX];
 
     // Which relay waters which probe. The Bayesian model labels a reading by
     // its distance from a watering EVENT, so it needs to know whose pump

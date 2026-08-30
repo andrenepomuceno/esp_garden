@@ -45,6 +45,23 @@ struct MoistureProbeModel
     uint8_t sourcePin;
     int8_t sourceRelay;
 
+    // The rest of the probe's identity: everything about it that, if changed,
+    // means the stored Gaussians describe a different sensor.
+    //
+    // Pin and relay alone are not enough. Swapping a capacitive module for a
+    // resistive one leaves both untouched — same hole in the pot, same pump —
+    // while the transfer curve inverts and the span changes completely. The
+    // model would carry weeks of the old sensor's evidence into the new one
+    // and keep reporting a confident badge, and the separation gate would not
+    // catch it because the bands stay well separated. They would just be the
+    // wrong bands.
+    //
+    // `sourceTag` is a hash of moisture[i].kind, so relabelling a probe is
+    // also the way to say "this is a different sensor now" when nothing else
+    // about the wiring changed.
+    uint16_t sourceTag;
+    bool sourceInvert;
+
     GaussianStats classes[MOISTURE_CLASS_COUNT];
     uint32_t wateringEvents; // cumulative, decayed like the statistics
     bool usable;             // passed the weight, ordering and separation gates

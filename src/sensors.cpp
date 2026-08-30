@@ -154,6 +154,19 @@ sensorsSetup()
 
     pinMode(config.buttonPin, INPUT);
 
+    // A probe's power pin is driven OFF before it is ever driven on. Until a
+    // pin is configured it floats, and a floating gate on whatever switches
+    // the sensor is an undefined amount of time with the electrodes live —
+    // which is the exact thing power gating exists to avoid.
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
+        const uint8_t pin = config.soilMoisturePowerPin[i];
+        if (pin != ConfigFile::kNoPin) {
+            digitalWrite(pin, config.soilMoisturePowerOn[i] ? LOW : HIGH);
+            pinMode(pin, OUTPUT);
+            digitalWrite(pin, config.soilMoisturePowerOn[i] ? LOW : HIGH);
+        }
+    }
+
     // Only peripherals config.json declares get their pins touched. Attaching
     // an interrupt to a pin nothing is wired to would count noise as flow.
     if (config.flowFitted) {
@@ -178,12 +191,70 @@ sensorsSetup()
                 (config.floatFitted ? ", float switch" : ""));
 }
 
+// Energises every probe that has a power pin, waits the longest settle any of
+// them asked for, and reports whether anything was switched on.
+//
+// Coalesced on purpose: two probes on one MOSFET is the normal wiring, and
+// powering them one at a time would pay the settle delay twice for no reason.
+static bool
+moisturePowerUp()
+{
+    uint16_t settle = 0;
+    bool any = false;
+
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
+        const uint8_t pin = config.soilMoisturePowerPin[i];
+        if (pin == ConfigFile::kNoPin) {
+            continue;
+        }
+        digitalWrite(pin, config.soilMoisturePowerOn[i] ? HIGH : LOW);
+        any = true;
+        if (config.soilMoistureSettleMs[i] > settle) {
+            settle = config.soilMoistureSettleMs[i];
+        }
+    }
+
+    if (any && settle > 0) {
+        delay(settle);
+    }
+    return any;
+}
+
+static void
+moisturePowerDown()
+{
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
+        const uint8_t pin = config.soilMoisturePowerPin[i];
+        if (pin != ConfigFile::kNoPin) {
+            digitalWrite(pin, config.soilMoisturePowerOn[i] ? LOW : HIGH);
+        }
+    }
+}
+
 void
 sensorsReadIo()
 {
+    const bool powered = moisturePowerUp();
+
     for (unsigned i = 0; i < config.moistureCount; ++i) {
-        g_soilMoisture[i].add(
-          100.0 - ADC_TO_PERCENT(analogRead(config.soilMoisturePin[i])));
+        const uint8_t pin = config.soilMoisturePin[i];
+
+        // The first conversion after the input changes carries charge from the
+        // previous one through the SAR capacitor. It matters here and not for
+        // the always-on sensors because this input was floating a moment ago.
+        if (powered) {
+            (void)analogRead(pin);
+        }
+
+        const double pct = ADC_TO_PERCENT(analogRead(pin));
+        // Per probe, not one sign for the board: a capacitive module reads
+        // lower as the soil wets, a resistive divider reads higher, and a
+        // board can carry one of each.
+        g_soilMoisture[i].add(config.moistureInvert[i] ? (100.0 - pct) : pct);
+    }
+
+    if (powered) {
+        moisturePowerDown();
     }
 
     if (config.luminosityFitted) {

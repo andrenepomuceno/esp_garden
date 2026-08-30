@@ -1,131 +1,146 @@
 {
-  "version": 2,
-  "id": "1a2b",
-  "hostname": "device hostname",
-  "timezone": "<-03>3",
-  "wifi": {
-    "ssid": "wifi name",
-    "password": "wifi password"
-  },
-  "ota": {
-    "username": "ota update username",
-    "password": "ota update password"
-  },
-  "thingSpeak": {
-    "apiKey": "0000",
-    "channel": 123456,
-    "moisture2Field": 0
-  },
-  "talkBack": {
-    "apiKey": "0000",
-    "channel": 123456
-  },
-  "mqtt": {
-    "clientID": "",
-    "username": "",
-    "password": "",
-    "server": "mqtt3.thingspeak.com",
-    "port": 8883,
-    "cacert": "/thingspeak.pem",
-    "backend": "thingspeak",
-    "useTLS": true,
-    "rpc": true,
-    "fwUpdate": true,
-    "fwTitle": "esp-garden"
-  },
-  "log": {
-    "level": 4
-  },
-  "io": {
-    "button": 0,
-    "relays": [
-      {
-        "pin": 19,
-        "on": 0,
-        "name": "Watering"
-      },
-      {
-        "pin": 16,
-        "on": 0,
-        "name": "Relay 2"
-      },
-      {
-        "pin": 17,
-        "on": 0,
-        "name": "Relay 3"
-      },
-      {
-        "pin": 18,
-        "on": 0,
-        "name": "Relay 4"
-      }
+    "version": 2,
+    "id": "1a2b",
+    "hostname": "device hostname",
+    "timezone": "<-03>3",
+    "wifi": {
+        "ssid": "wifi name",
+        "password": "wifi password"
+    },
+    "ota": {
+        "username": "ota update username",
+        "password": "ota update password"
+    },
+    "thingSpeak": {
+        "apiKey": "0000",
+        "channel": 123456,
+        "moisture2Field": 0
+    },
+    "talkBack": {
+        "apiKey": "0000",
+        "channel": 123456
+    },
+    "mqtt": {
+        "clientID": "",
+        "username": "",
+        "password": "",
+        "server": "mqtt3.thingspeak.com",
+        "port": 8883,
+        "cacert": "/thingspeak.pem",
+        "backend": "thingspeak",
+        "useTLS": true,
+        "rpc": true,
+        "fwUpdate": true,
+        "fwTitle": "esp-garden"
+    },
+    "log": {
+        "level": 4
+    },
+    "io": {
+        "button": 0,
+        "relays": [
+            {
+                "pin": 19,
+                "on": 0,
+                "name": "Watering"
+            },
+            {
+                "pin": 16,
+                "on": 0,
+                "name": "Relay 2"
+            },
+            {
+                "pin": 17,
+                "on": 0,
+                "name": "Relay 3"
+            },
+            {
+                "pin": 18,
+                "on": 0,
+                "name": "Relay 4"
+            }
+        ],
+        "dht": 23,
+        "soilMoisture": [
+            {
+                "pin": 36,
+                "name": "Soil Moisture 1",
+                "powerPin": -1,
+                "powerOn": 1,
+                "settleMs": 10
+            },
+            {
+                "pin": 35,
+                "name": "Soil Moisture 2",
+                "powerPin": -1,
+                "powerOn": 1,
+                "settleMs": 10
+            },
+            {
+                "pin": 32,
+                "name": "Soil Moisture 3",
+                "powerPin": -1,
+                "powerOn": 1,
+                "settleMs": 10
+            }
+        ],
+        "luminosity": {
+            "pin": 39,
+            "name": "Luminosity"
+        },
+        "waterLevel": {
+            "pin": 34,
+            "name": "Water Level"
+        },
+        "flow": {
+            "pin": 27,
+            "name": "Fluxo",
+            "pulsesPerLitre": 450
+        },
+        "floatSwitch": {
+            "pin": 26,
+            "name": "Boia do Reservatorio",
+            "activeLevel": 0,
+            "interlock": false,
+            "fillRelay": 3
+        }
+    },
+    "moisture": [
+        {
+            "dry": 0,
+            "wet": 0,
+            "relay": 0,
+            "invert": true,
+            "kind": "capacitive-v2"
+        },
+        {
+            "dry": 0,
+            "wet": 0,
+            "relay": 1,
+            "invert": true,
+            "kind": "capacitive-v2"
+        },
+        {
+            "dry": 0,
+            "wet": 0,
+            "relay": 2,
+            "invert": true,
+            "kind": "capacitive-v2"
+        }
     ],
-    "dht": 23,
-    "soilMoisture": [
-      {
-        "pin": 36,
-        "name": "Soil Moisture 1"
-      },
-      {
-        "pin": 35,
-        "name": "Soil Moisture 2"
-      },
-      {
-        "pin": 32,
-        "name": "Soil Moisture 3"
-      }
-    ],
-    "luminosity": {
-      "pin": 39,
-      "name": "Luminosity"
+    "history": {
+        "records": 1440,
+        "periodSec": 60
     },
-    "waterLevel": {
-      "pin": 34,
-      "name": "Water Level"
-    },
-    "flow": {
-      "pin": 27,
-      "name": "Fluxo",
-      "pulsesPerLitre": 450
-    },
-    "floatSwitch": {
-      "pin": 26,
-      "name": "Boia do Reservatorio",
-      "activeLevel": 0,
-      "interlock": false,
-      "fillRelay": 3
-    }
-  },
-  "moisture": [
-    {
-      "dry": 0,
-      "wet": 0,
-      "relay": 0
-    },
-    {
-      "dry": 0,
-      "wet": 0,
-      "relay": 1
-    },
-    {
-      "dry": 0,
-      "wet": 0,
-      "relay": 2
-    }
-  ],
-  "history": {
-    "records": 1440,
-    "periodSec": 60
-  },
-  "schedules": [
-    {
-      "name": "Example",
-      "relay": 0,
-      "hour": 6,
-      "minute": 30,
-      "days": 127,
-      "durationMs": 10000,
-      "enabled": false
-    }
-  ]
+    "schedules": [
+        {
+            "name": "Example",
+            "relay": 0,
+            "hour": 6,
+            "minute": 30,
+            "days": 127,
+            "durationMs": 10000,
+            "enabled": false
+        }
+    ]
 }

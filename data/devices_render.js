@@ -36,9 +36,18 @@
   // instead of falling through to the first entry: silently moving a live
   // peripheral onto another GPIO is worse than showing the bad value and
   // refusing to save.
-  function pinSelect(cls, attributes, role, selected) {
+  function pinSelect(cls, attributes, role, selected, noneLabel) {
     var options = '';
     var known = false;
+
+    // A power pin is optional in a way a sensor pin is not, so it gets an
+    // explicit "none" entry rather than the "select a GPIO" placeholder that
+    // reads as something still to be filled in.
+    if (noneLabel) {
+      options += '<option value=""' + (selected === null ? ' selected' : '') +
+                 '>' + esc(noneLabel) + '</option>';
+      if (selected === null) known = true;
+    }
 
     $.each(pinList(role), function (_, pin) {
       if (pin === selected) known = true;
@@ -157,7 +166,7 @@
     var model = ctx.model();
     var ready = ctx.ready();
     if (!model.probes.length) {
-      $('#tbody-probes').html('<tr><td colspan="8" class="text-muted small">' +
+      $('#tbody-probes').html('<tr><td colspan="10" class="text-muted small">' +
         'No soil moisture probes.</td></tr>');
     } else {
       var html = '';
@@ -178,6 +187,22 @@
           '<td><input type="text" inputmode="decimal" autocomplete="off"' +
             ' class="form-control form-control-sm ms-wet" data-row="' + i + '"' +
             ' value="' + esc(p.wet) + '"></td>' +
+          '<td><input type="text" class="form-control form-control-sm ms-kind"' +
+            ' data-row="' + i + '" value="' + esc(p.kind || '') + '"' +
+            ' placeholder="e.g. wd-38"><div class="form-check form-check-sm">' +
+            '<input class="form-check-input ms-invert" type="checkbox"' +
+            ' data-row="' + i + '" id="ms-invert-' + i + '"' +
+            (p.invert === false ? '' : ' checked') + '>' +
+            '<label class="form-check-label hint" for="ms-invert-' + i + '">' +
+            'reads lower when wet</label></div></td>' +
+          '<td>' + pinSelect('ms-power', 'data-row="' + i + '"', 'output',
+                             (typeof p.powerPin === 'number') ? p.powerPin : null,
+                             'always on') +
+            '<input type="text" inputmode="numeric" autocomplete="off"' +
+            ' class="form-control form-control-sm ms-settle mt-1"' +
+            ' data-row="' + i + '" value="' + esc(p.settleMs || '10') + '"' +
+            ' title="milliseconds to wait after energising, before reading">' +
+            '</td>' +
           '<td><select class="form-select form-select-sm ms-relay"' +
             ' data-row="' + i + '">' + relayPickerOptions(
               (typeof p.relay === 'number') ? p.relay : -1) + '</select></td>' +

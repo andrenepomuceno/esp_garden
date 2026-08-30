@@ -178,7 +178,15 @@
   function readNode(node) {
     if (typeof node === 'number') return { pin: node, name: '' };
     if (isPlainObject(node)) {
-      return { pin: num(node.pin, null), name: text(node.name) };
+      return {
+        pin: num(node.pin, null),
+        name: text(node.name),
+        // Optional power gating. -1 and absent both mean "permanently
+        // powered", which is what every board did before this existed.
+        powerPin: num(node.powerPin, null),
+        powerOn: (num(node.powerOn, 1) === 0) ? 0 : 1,
+        settleMs: String(num(node.settleMs, 10)),
+      };
     }
     return null;
   }
@@ -236,6 +244,14 @@
         // save silently reverted the mapping to probe i -> relay i and
         // retrained the model against the wrong pump.
         relay: (typeof cal.relay === 'number') ? cal.relay : i,
+        // Defaults to true because that is what the capacitive v2 modules
+        // every existing board carries actually do.
+        invert: (cal.invert === false) ? false : true,
+        kind: text(cal.kind),
+        powerPin: (typeof node.powerPin === 'number' && node.powerPin >= 0)
+          ? node.powerPin : null,
+        powerOn: (node.powerOn === 0) ? 0 : 1,
+        settleMs: (typeof node.settleMs === 'string') ? node.settleMs : '10',
         liveKey: probeLiveKey(node.name, i, stored.length),
       });
     });
@@ -335,14 +351,25 @@
       $.each(model.probes, function (_, p) {
         var entry = { pin: p.pin };
         if (p.name) entry.name = p.name;
+        if (typeof p.powerPin === 'number' && p.powerPin >= 0) {
+          entry.powerPin = p.powerPin;
+          entry.powerOn = (p.powerOn === 0) ? 0 : 1;
+          var settle = numeric(p.settleMs);
+          entry.settleMs = (settle === null) ? 10 : settle;
+        }
         probes.push(entry);
         // An empty field is 0, which is the value the firmware ships as
         // "uncalibrated" — dry == wet means "do not classify".
-        calibration.push({
+        var cal = {
           dry: numeric(p.dry) === null ? 0 : numeric(p.dry),
           wet: numeric(p.wet) === null ? 0 : numeric(p.wet),
           relay: (typeof p.relay === 'number') ? p.relay : -1,
-        });
+          invert: (p.invert === false) ? false : true,
+        };
+        // Only when set: an empty label should not become part of the model's
+        // identity and start discarding models on every save.
+        if (p.kind) cal.kind = p.kind;
+        calibration.push(cal);
       });
       io.soilMoisture = probes;
       // Parallel to io.soilMoisture by construction: written from the same

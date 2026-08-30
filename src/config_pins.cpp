@@ -87,10 +87,11 @@ ConfigFile::validatePins() const
         Role role;
     };
 
-    PinUse used[1 + RELAY_MAX + MOISTURE_MAX + 5];
+    PinUse used[1 + RELAY_MAX + 2 * MOISTURE_MAX + 5];
     size_t count = 0;
     static char relayLabel[RELAY_MAX][12];
     static char probeLabel[MOISTURE_MAX][12];
+    static char powerLabel[MOISTURE_MAX][16];
 
     used[count++] = { buttonPin, "button", ROLE_DIGITAL };
 
@@ -113,6 +114,27 @@ ConfigFile::validatePins() const
     for (unsigned i = 0; i < moistureCount; ++i) {
         snprintf(probeLabel[i], sizeof(probeLabel[i]), "moisture%u", i);
         used[count++] = { soilMoisturePin[i], probeLabel[i], ROLE_ANALOG };
+
+        // The probe's power pin DRIVES, so it needs the output rules, not the
+        // analog ones — and it goes through the same duplicate check as
+        // everything else. Two probes sharing one power pin is normal and
+        // deliberate (one MOSFET, both sensors), so a repeat is only reported
+        // when the OTHER user is not another probe's power pin.
+        if (soilMoisturePowerPin[i] != kNoPin) {
+            bool shared = false;
+            for (unsigned j = 0; j < i; ++j) {
+                if (soilMoisturePowerPin[j] == soilMoisturePowerPin[i]) {
+                    shared = true;
+                    break;
+                }
+            }
+            if (!shared) {
+                snprintf(powerLabel[i], sizeof(powerLabel[i]),
+                         "moisture%uPower", i);
+                used[count++] = { soilMoisturePowerPin[i], powerLabel[i],
+                                  ROLE_OUTPUT };
+            }
+        }
     }
     if (luminosityFitted) {
         used[count++] = { luminosityPin, "luminosity", ROLE_ANALOG };
