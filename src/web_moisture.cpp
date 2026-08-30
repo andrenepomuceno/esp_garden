@@ -1,5 +1,6 @@
 #include "core/config.h"
 #include "core/moisture_model.h"
+#include "core/probe_health.h"
 #include "core/sensors.h"
 #include "network/web_moisture.h"
 #include <Arduino_JSON.h>
@@ -49,6 +50,16 @@ handleMoistureJson(AsyncWebServerRequest* request)
         // anything, and because a tau that drifts is a probe losing contact
         // with its soil long before the separation gate notices.
         doc["probes"][p]["tauSec"] = (double)model.tauSec;
+
+        // Is there a sensor on the pin at all? Reported whether or not a model
+        // exists, because it is the question that comes first and the one the
+        // model cannot answer for months.
+        const ProbeHealthReport health = probeHealthReport(p);
+        doc["probes"][p]["health"]["verdict"] =
+          probeVerdictName(health.verdict);
+        doc["probes"][p]["health"]["couplingSlope"] = (double)health.slope;
+        doc["probes"][p]["health"]["t"] = (double)health.t;
+        doc["probes"][p]["health"]["samples"] = (int)health.samples;
 
         double totalWeight = 0.0;
         for (int c = 0; c < MOISTURE_CLASS_COUNT; ++c) {
@@ -108,8 +119,24 @@ handleMoistureJson(AsyncWebServerRequest* request)
                 }
             }
 
+            const ProbeHealthReport wiring = probeHealthReport(p);
+
             if (!sampled) {
                 reason = "no reading from this probe yet";
+            } else if (wiring.verdict == PROBE_FLOATING) {
+                // Ahead of everything statistical, for the reason the response
+                // check is: it names a physical cause. The separation gate
+                // would refuse this probe too, days later, as "bands overlap".
+                reason = "nothing appears to be connected: this pin follows the "
+                         "ADC channel read before it (" +
+                         String(wiring.slope * 100.0, 1) +
+                         "% coupling), which a real sensor does not";
+            } else if (wiring.verdict == PROBE_RAILED) {
+                reason = "this pin sits at a rail: shorted, or nothing is "
+                         "dividing the supply into it";
+            } else if (wiring.verdict == PROBE_STUCK) {
+                reason = "this reading has not moved at all: the sensor is "
+                         "driving a level but no longer measuring";
             } else if (model.wateringEvents >= 2 &&
                        fabs(model.response) < 0.5) {
                 // Said BEFORE the statistical gates, because it names a

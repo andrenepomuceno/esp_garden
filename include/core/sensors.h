@@ -34,6 +34,19 @@ struct MoistureReading
 MoistureReading
 moistureReading(unsigned index);
 
+// What the settling test makes of this probe. A snapshot, published by the io
+// task under the same spinlock as the reading itself, because the alternative
+// is a request handler walking a struct the io task is writing.
+struct ProbeHealthReport
+{
+    int verdict;      ///< ProbeVerdict
+    float slope;      ///< coupling to the previous ADC channel, 0..1
+    float t;          ///< slope / standard error
+    uint32_t samples; ///< decayed, so it is evidence in hand rather than a total
+};
+
+ProbeHealthReport probeHealthReport(unsigned index);
+
 // "Dry" / "Humid" / "Wet" for probe `index`, or "" when that probe has no
 // two-point calibration. Bands are thirds of the probe's own physical span, so
 // they are comparable between probes with different gain and offset.

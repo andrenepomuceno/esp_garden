@@ -286,6 +286,13 @@ garbage. An hour went into learning that.
 
 **Unverified — written, compiles, never run on hardware:**
 
+- **The probe settling test** (firmware 2.7.0). The statistics are host-tested
+  against synthetic couplings and the payload is verified through the
+  simulator, but no ADC on this board has yet reported a coupling slope. What
+  is specifically unknown is the number a HEALTHY probe produces — every probe
+  here is disconnected — so the 5 % threshold is a bound chosen to avoid false
+  accusations, not a calibrated one.
+
 - **Per-probe polarity and probe power gating** (firmware 2.7.0). The config
   keys parse, the five envs build, and the save/load round trip is verified
   against the simulator — but no probe has yet been read with `invert` false,
@@ -870,6 +877,72 @@ separated, they are simply the wrong bands. The identity now also carries
 label is the manual lever — relabel a probe and its statistics are thrown away —
 and it is why `kind` is only written when non-empty, so an empty one does not
 discard a model on every save.
+
+### Is there a sensor on the pin? The settling test
+
+Three probes were unplugged at once, which gave the measurement this needed.
+200 history records over 4.3 h:
+
+| probe | mean | sd | median step | distinct values |
+|---|---|---|---|---|
+| 0 | 87.2 | 4.37 | 1.00 | 176 |
+| 1 | 61.1 | 2.65 | **0.02** | 30 |
+| 2 | 50.2 | 1.29 | **0.03** | 96 |
+
+**Every obvious statistic fails**, and that is the finding:
+
+- **Not the value.** All three sat mid-scale, as an earlier disconnected probe
+  did at 52.6 and later at 86.7. A rail would be easy; this is not.
+- **Not the variance.** Probe 2 is QUIETER than wet soil at sd 1.29, and a
+  disconnected probe has been measured at variance 0.01. A threshold on "too
+  noisy" and one on "too quiet" are both wrong.
+- **Not the correlation between probes.** Probes 0 and 1 track each other at
+  **+0.87** — but real probes in one garden, same schedule and same weather,
+  correlate just as hard.
+
+What separates them is not the reading, it is the **source impedance**. An
+ESP32 conversion samples onto a hold capacitor that still carries charge from
+the previous channel. A real sensor recharges it inside the sampling window and
+two back-to-back conversions agree; a floating pin cannot, and the first
+conversion is dragged toward wherever the ADC just was.
+
+So `sensorsReadIo()` reads every probe TWICE and regresses the difference on
+the step it was asked to make:
+
+```
+drive = previous channel's reading - this probe's settled reading
+delta = first reading - second reading
+slope = d(delta)/d(drive)     0 for a stiff source, positive for a floating pin
+```
+
+- **The null hypothesis is a NUMBER, not a calibration.** That is why this test
+  and not a passive one: it needs no healthy probe to compare against, and this
+  garden has none to offer.
+- **The second conversion is the reading**, so the diagnosis improves the value
+  it diagnoses. The cost is one extra conversion per probe per second, ~100 us.
+- **The verdict needs an effect AND a confidence** — slope at least 5 % with
+  t at least 5 — and the raw slope is published either way.
+  `probeHealthSlopeStdErr()` is exact OLS on centred sums; an earlier version
+  estimated the residual from the spread of the FITTED values, which is what
+  the model explains rather than what it does not.
+- **The settling test is checked BEFORE the flatline one.** A floating pin can
+  sit nearly still — probe 1 above held a median step of 0.02 — so asking "has
+  it moved" first would name the wrong fault for the commonest case. Positive
+  evidence beats an inference from absence, and the tests caught this ordering.
+- **It is decayed**, so a probe plugged back in clears its own accusation while
+  somebody is still standing at the pot.
+- **`/moisture.json` reports it ahead of every statistical gate**, for the
+  reason the watering-response check is: it names a physical cause where the
+  separation gate would say "bands overlap" days later.
+
+**The threshold is provisional.** 5 % coupling will not fire on a real sensor,
+but where exactly to draw the line wants a probe known to be connected, and
+every probe on this board is currently disconnected. Tighten it once one has
+published a slope.
+
+**A resistive probe in dry soil is genuinely high impedance** and will show a
+real slope. That is not a false positive to engineer away; it is the same
+physics, and it is the other reason the threshold is loose.
 
 ### The two-point fallback
 

@@ -1,3 +1,4 @@
+#include "core/probe_health.h"
 #include "core/sensors.h"
 #include "BuildConfig.h"
 #include "core/config.h"
@@ -55,6 +56,47 @@ static bool g_floatRaised = false;
 // because both sides are microseconds and one of them is a request handler.
 static portMUX_TYPE g_moistureSnapshotMux = portMUX_INITIALIZER_UNLOCKED;
 static MoistureReading g_moistureSnapshot[MOISTURE_MAX] = {};
+
+// Owned by the io task; only the report below crosses to another thread.
+static ProbeHealth g_probeHealth[MOISTURE_MAX];
+static ProbeHealthReport g_probeHealthSnapshot[MOISTURE_MAX] = {};
+
+// The raw count of whatever channel was converted last, which is the step the
+// next probe's first conversion has to recover from.
+static int g_lastAdcRaw = 0;
+
+// Enough readings to regress on before a verdict, and how the evidence ages.
+// At the 1 Hz io task a window of 600 with a half-life every 600 keeps roughly
+// twenty minutes of it in hand: long enough to be sure, short enough that a
+// probe plugged back in clears its own accusation while somebody is still
+// standing at the pot.
+static const uint32_t g_probeHealthMinSamples = 120;
+static const uint32_t g_probeHealthWindow = 600;
+static const double g_probeHealthDecay = 0.5;
+
+// The effect size and the confidence a verdict needs.
+//
+// PROVISIONAL, and deliberately loose. The null hypothesis is a number — a
+// stiff source couples 0 % of the previous channel — so no healthy baseline is
+// needed to run the test, but choosing where to draw the line does want one,
+// and every probe on this board is currently disconnected. 5 % coupling at
+// t >= 5 will not fire on a real sensor; it may under-report a marginal one.
+// Tighten it once a probe known to be connected has published a slope.
+static const double g_probeHealthMinSlope = 0.05;
+static const double g_probeHealthMinT = 5.0;
+
+ProbeHealthReport
+probeHealthReport(unsigned index)
+{
+    ProbeHealthReport out = { 0, 0.0f, 0.0f, 0 };
+    if (index >= MOISTURE_MAX) {
+        return out;
+    }
+    portENTER_CRITICAL(&g_moistureSnapshotMux);
+    out = g_probeHealthSnapshot[index];
+    portEXIT_CRITICAL(&g_moistureSnapshotMux);
+    return out;
+}
 
 MoistureReading
 moistureReading(unsigned index)
@@ -152,6 +194,10 @@ sensorsSetup()
         g_soilMoisture[i].setMaxLen(g_mqttTaskPeriod / g_ioTaskPeriod);
     }
 
+    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
+        probeHealthReset(g_probeHealth[i]);
+    }
+
     pinMode(config.buttonPin, INPUT);
 
     // A probe's power pin is driven OFF before it is ever driven on. Until a
@@ -240,17 +286,28 @@ sensorsReadIo()
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         const uint8_t pin = config.soilMoisturePin[i];
 
-        // The first conversion after the input changes carries charge from the
-        // previous one through the SAR capacitor. It matters for a probe that
-        // was just energised and for no other: an always-on probe was never
-        // floating, so a throw-away read there buys nothing and changes what it
-        // samples, since the kept conversion becomes the second rather than the
-        // first on an already settled input.
-        if (config.soilMoisturePowerPin[i] != ConfigFile::kNoPin) {
-            (void)analogRead(pin);
+        // TWO conversions, and the second is the reading.
+        //
+        // The first carries charge from the previous channel through the SAR
+        // hold capacitor, so on a stiff source it equals the second and on a
+        // high-impedance one it is dragged toward wherever the ADC just was.
+        // That difference is the only thing measured here that can tell a
+        // disconnected probe from soil — see core/probe_health.h for the three
+        // passive statistics that cannot.
+        //
+        // It costs one extra conversion per probe per second, about 100 us,
+        // and it improves the value it diagnoses: the second read is the
+        // settled one.
+        const int first = analogRead(pin);
+        const int second = analogRead(pin);
+        probeHealthAdd(g_probeHealth[i], g_lastAdcRaw, first, second);
+        g_lastAdcRaw = second;
+
+        if (g_probeHealth[i].samples >= g_probeHealthWindow) {
+            probeHealthDecay(g_probeHealth[i], g_probeHealthDecay);
         }
 
-        const double pct = ADC_TO_PERCENT(analogRead(pin));
+        const double pct = ADC_TO_PERCENT(second);
         // Per probe, not one sign for the board: a capacitive module reads
         // lower as the soil wets, a resistive divider reads higher, and a
         // board can carry one of each.
@@ -300,8 +357,23 @@ sensorsReadIo()
         fresh[i].samples = g_soilMoisture[i].getSamples();
     }
 
+    // Computed OUTSIDE the lock, for the reason the comment above gives: the
+    // regression walks five doubles per probe, and doing that with interrupts
+    // disabled is the mistake that panicked this board once already.
+    ProbeHealthReport health[MOISTURE_MAX];
+    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
+        health[i].verdict = probeHealthVerdict(g_probeHealth[i],
+                                               g_probeHealthMinSamples,
+                                               g_probeHealthMinSlope,
+                                               g_probeHealthMinT);
+        health[i].slope = (float)probeHealthSlope(g_probeHealth[i]);
+        health[i].t = (float)probeHealthT(g_probeHealth[i]);
+        health[i].samples = g_probeHealth[i].samples;
+    }
+
     portENTER_CRITICAL(&g_moistureSnapshotMux);
     memcpy(g_moistureSnapshot, fresh, sizeof(fresh));
+    memcpy(g_probeHealthSnapshot, health, sizeof(health));
     portEXIT_CRITICAL(&g_moistureSnapshotMux);
 
     if (config.floatFitted) {

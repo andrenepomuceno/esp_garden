@@ -495,6 +495,17 @@ def moisture_snapshot(scenario: str = None) -> dict:
             "wateringEvents": model["wateringEvents"],
             "response": model["response"],
             "tauSec": model["tauSec"],
+            # The settling test: how much of the previous ADC channel this pin
+            # carries into its first conversion. A real sensor is a stiff
+            # source and couples ~0; a floating pin is dragged. Probe 1 is the
+            # unplugged one here, so the page is exercised against a board that
+            # has one of each.
+            "health": {
+                "verdict": "floating" if i == 1 else "connected",
+                "couplingSlope": 0.31 if i == 1 else 0.004,
+                "t": 44.0 if i == 1 else 0.6,
+                "samples": 600,
+            },
             "classes": {
                 key: {
                     "weight": classes[key]["weight"],
@@ -532,8 +543,22 @@ def moisture_snapshot(scenario: str = None) -> dict:
             # ?scenario=lowWeight long after the device had stopped doing so.
             weakest = min(model["classes"][k]["weight"]
                           for k in MOISTURE_CLASSES)
+            wiring = probe["health"]["verdict"]
             if not sampled:
                 reason = "no reading from this probe yet"
+            elif wiring == "floating":
+                # Ahead of every statistical gate, exactly as on the device:
+                # it names a physical cause instead of a symptom.
+                reason = ("nothing appears to be connected: this pin follows "
+                          "the ADC channel read before it (%.1f%% coupling), "
+                          "which a real sensor does not"
+                          % (probe["health"]["couplingSlope"] * 100.0))
+            elif wiring == "railed":
+                reason = ("this pin sits at a rail: shorted, or nothing is "
+                          "dividing the supply into it")
+            elif wiring == "stuck":
+                reason = ("this reading has not moved at all: the sensor is "
+                          "driving a level but no longer measuring")
             elif model["wateringEvents"] >= 2 and abs(model["response"]) < 0.5:
                 reason = ("this probe does not respond to its pump (rise of "
                           "%.2f across waterings): check the probe, the pot it "

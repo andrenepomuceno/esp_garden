@@ -22,7 +22,7 @@ environment.
 ## What can be tested here, and what cannot
 
 `[env:native]` has no Arduino core, so only code that compiles standalone is in
-scope. Today that is `AccumulatorV2` and `core/segment_index.h`. The latter exists as a
+scope. Today that is `AccumulatorV2`, `core/segment_index.h` and `core/probe_health.h`. The middle one exists as a
 separate header precisely so it can be tested: the ring arithmetic behind
 `/history.json` reorders records rather than failing when it is wrong, and the
 rest of `IoHistory` is inseparable from LittleFS.

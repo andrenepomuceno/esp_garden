@@ -144,6 +144,15 @@
          probe.wateringEvents >= 2
            ? ' <span class="badge text-bg-warning">no response</span>' : '') +
         '</div>' +
+      '<div class="col-auto">Wiring: <strong>' +
+        esc((probe.health && probe.health.verdict) || 'unknown') + '</strong>' +
+        (probe.health && probe.health.verdict === 'connected'
+          ? '' : ' <span class="badge text-bg-warning">check</span>') +
+        (probe.health && typeof probe.health.couplingSlope === 'number'
+          ? ' <span class="hint">(' +
+            fixed(probe.health.couplingSlope * 100, 1) + '% coupling)</span>'
+          : '') +
+        '</div>' +
       '<div class="col-auto">Absorption &tau;: <strong>' +
         (probe.tauSec > 0 ? fixed(probe.tauSec / 60, 1) + ' min' : 'unmeasured') +
         '</strong></div>' +
