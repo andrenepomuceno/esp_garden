@@ -235,14 +235,18 @@ void
 sensorsReadIo()
 {
     const bool powered = moisturePowerUp();
+    (void)powered;
 
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         const uint8_t pin = config.soilMoisturePin[i];
 
         // The first conversion after the input changes carries charge from the
-        // previous one through the SAR capacitor. It matters here and not for
-        // the always-on sensors because this input was floating a moment ago.
-        if (powered) {
+        // previous one through the SAR capacitor. It matters for a probe that
+        // was just energised and for no other: an always-on probe was never
+        // floating, so a throw-away read there buys nothing and changes what it
+        // samples, since the kept conversion becomes the second rather than the
+        // first on an already settled input.
+        if (config.soilMoisturePowerPin[i] != ConfigFile::kNoPin) {
             (void)analogRead(pin);
         }
 

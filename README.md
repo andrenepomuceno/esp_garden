@@ -148,9 +148,19 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
         // two-point fallback. relay = the pump that waters this probe, an
         // index into io.relays; -1 means none, and a probe with none never
         // gets a trained model.
-        { "dry": 0, "wet": 0, "relay": 0 },
-        { "dry": 0, "wet": 0, "relay": 1 },
-        { "dry": 0, "wet": 0, "relay": 2 }
+        //
+        // invert = the reading falls as the soil wets. True for the capacitive
+        // v2 modules and the default; a resistive divider usually wants false.
+        // Get it wrong and the number runs backwards without the classifier
+        // noticing, because it accepts either direction.
+        //
+        // kind = a free label for what is in the pot. Nothing reads it to
+        // decide anything: it is part of the trained model's IDENTITY, so
+        // changing it throws that probe's statistics away. That is the way to
+        // say "different sensor now" when the pin and the pump did not change.
+        { "dry": 0, "wet": 0, "relay": 0, "invert": true, "kind": "capacitive-v2" },
+        { "dry": 0, "wet": 0, "relay": 1, "invert": true },
+        { "dry": 0, "wet": 0, "relay": 2, "invert": true }
     ],
     "io": {                      // GPIO pin overrides (optional)
         "button": 0,

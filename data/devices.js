@@ -100,7 +100,23 @@
       model.probes[$(this).data('row')].kind = $.trim(String($(this).val()));
     });
     $('.ms-invert').each(function () {
-      model.probes[$(this).data('row')].invert = $(this).is(':checked');
+      var probe = model.probes[$(this).data('row')];
+      var now = $(this).is(':checked');
+      // Flipping polarity makes the two-point anchors meaningless: they were
+      // measured under the other sign, and nothing downstream can tell. Left
+      // alone they report a saturated pot as Dry. Clearing them is the same
+      // "no badge rather than an invented one" the firmware already applies to
+      // an uncalibrated probe, and it is visible — the fields go blank, which
+      // is the prompt to measure again.
+      if (probe.invert !== now) {
+        probe.dry = '0';
+        probe.wet = '0';
+      }
+      probe.invert = now;
+    });
+    $('.ms-power-on').each(function () {
+      model.probes[$(this).data('row')].powerOn =
+        (parseInt($(this).val(), 10) === 0) ? 0 : 1;
     });
     $('.ms-power').each(function () {
       model.probes[$(this).data('row')].powerPin = pinValue($(this).val());

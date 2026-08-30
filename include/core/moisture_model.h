@@ -62,6 +62,18 @@ struct MoistureProbeModel
     uint16_t sourceTag;
     bool sourceInvert;
 
+    // Records at or before this epoch are not fitted for this probe.
+    //
+    // Discarding the model is only half of a polarity change. The history is
+    // still there — up to a full day of it — written under the OLD sign, and
+    // the very next training run streams all of it back in. Records from
+    // before the flip contribute x and records after contribute 100-x into the
+    // same dry/humid/wet Gaussians: the dry class collects both ~30 and ~70,
+    // its mean lands near 50 and its variance explodes. The separation gate
+    // would catch that and report "bands overlap", which is true and names the
+    // wrong cause.
+    uint32_t discardedAt;
+
     GaussianStats classes[MOISTURE_CLASS_COUNT];
     uint32_t wateringEvents; // cumulative, decayed like the statistics
     bool usable;             // passed the weight, ordering and separation gates

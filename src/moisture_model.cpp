@@ -72,7 +72,15 @@ static const uint32_t g_taperSec = 10 * 60;
 static const unsigned g_maxEventsPerRun = 32;
 
 static const char* const g_modelPath = "/moisture_model.bin";
-static const uint32_t g_modelMagic = 0x4D4F4931UL; // "MOI1"
+// "MOI2". Bumped when sourceTag and sourceInvert were added, because the
+// size check ALONE would not have noticed them: both fit inside the padding
+// MoistureProbeModel already carried before its 8-byte-aligned GaussianStats
+// array, so sizeof(MoistureModelState) did not move. A 2.6.1 file would have
+// been accepted and its old padding reinterpreted as the new fields — exactly
+// the "discarded on a layout change, not reinterpreted" contract this header
+// exists to keep. The size check is necessary and not sufficient; any field
+// that lands in padding needs the magic bumped with it.
+static const uint32_t g_modelMagic = 0x4D4F4932UL; // "MOI2"
 
 static MoistureModelState g_state = {};
 
@@ -211,11 +219,39 @@ discardMovedProbes()
                            " is not the probe this model was fitted to (" +
                            why + " ); discarding it");
         }
+
+        // A POLARITY change also invalidates the stored history for this
+        // probe, which the next training run would otherwise fold straight
+        // back in under the wrong sign. Only a polarity change: moving a probe
+        // to another pin or relabelling it leaves its readings meaning what
+        // they meant. And only when a model existed to disagree with — after a
+        // layout bump there is no previous identity to compare, and the
+        // history was written under whatever config is live now.
+        const bool flipped = (g_state.trainedAt != 0) &&
+                             (model.sourceInvert != invert);
+
+        // The two-point anchors live in config, not here, so they survive this
+        // and are now measured under the opposite sign. Nothing downstream can
+        // tell, and the fallback would report a saturated pot as Dry. The web
+        // UI clears them when the tick box changes; a hand-edited config does
+        // not go through it, so it gets said here.
+        const bool calibrated = (config.moistureDry[p] != config.moistureWet[p]);
+        if (flipped && calibrated) {
+            logger.warning(
+              "[moisture] probe " + String(p) +
+              " changed polarity but still carries dry/wet anchors taken under "
+              "the old sign; its Dry/Humid/Wet badge will be INVERTED until "
+              "they are measured again.");
+        }
+
         memset(&model, 0, sizeof(model));
         model.sourcePin = pin;
         model.sourceRelay = relay;
         model.sourceTag = tag;
         model.sourceInvert = invert;
+        if (flipped) {
+            model.discardedAt = (uint32_t)time(NULL);
+        }
     }
 }
 
@@ -482,6 +518,12 @@ accumulate(const IoRecord& record, uint32_t, void* ctx)
         const double value = record.moisture[p];
         if (!isfinite(value)) {
             continue; // not fitted at the time, or the slot was never written
+        }
+
+        // Written before this probe's polarity changed: the same soil, the
+        // other sign.
+        if (record.timestamp <= g_state.probe[p].discardedAt) {
+            continue;
         }
 
         if (spent) {

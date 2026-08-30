@@ -136,7 +136,7 @@ loadProbePower(JSONVar node, ConfigFile& cfg, unsigned i)
     if (entry.hasOwnProperty("powerOn")) {
         cfg.soilMoisturePowerOn[i] = ((int)entry["powerOn"] != 0) ? 1 : 0;
     }
-    if (entry.hasOwnProperty("settleMs")) {
+    if (JSON.typeof(entry["settleMs"]) == "number") {
         const int ms = (int)entry["settleMs"];
         // Capped: this delay runs inside the 1 Hz io task, which is the same
         // cooperative pump MQTT and TalkBack share. A probe that genuinely

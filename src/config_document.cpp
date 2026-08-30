@@ -105,6 +105,35 @@ documentPinsAreUsable(JSONVar& document, String& problem)
                           String(pin) + " (not an ADC1 channel)";
                 return false;
             }
+
+            // The power pin DRIVES, so it needs the output rules — and it needs
+            // them here rather than only at boot, which is the whole point of
+            // this function: by the time validatePins() complains the document
+            // is already on flash. GPIO 6-11 is the SPI flash, and toggling one
+            // of those every second does not misbehave, it hangs; 34-39 are
+            // input-only, where pinMode and digitalWrite are silent no-ops and
+            // the probe simply never gets powered.
+            JSONVar probe = probes[i];
+            if (JSON.typeof(probe) == "object" &&
+                probe.hasOwnProperty("powerPin")) {
+                const int power = (int)probe["powerPin"];
+                if (power >= 0) {
+                    if (!pinNumberIsPlausible(power)) {
+                        problem = "io.soilMoisture[" + String(i) +
+                                  "].powerPin GPIO " + String(power) +
+                                  " (no such pin on an ESP32)";
+                        return false;
+                    }
+                    const uint8_t p = (uint8_t)power;
+                    if (!pinIsBonded(p) || pinIsFlash(p) ||
+                        pinIsInputOnly(p)) {
+                        problem = "io.soilMoisture[" + String(i) +
+                                  "].powerPin GPIO " + String(power) +
+                                  " cannot drive an output";
+                        return false;
+                    }
+                }
+            }
         }
     } else if (documentPin(probes, pin) && !pinIsADC1(pin)) {
         problem = "io.soilMoisture on GPIO " + String(pin) + " (not ADC1)";

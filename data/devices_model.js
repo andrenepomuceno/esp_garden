@@ -296,7 +296,11 @@
     if (!model) return taken;
     if (typeof model.button === 'number') taken[model.button] = true;
     $.each(model.relays, function (_, r) { if (r.pin !== null) taken[r.pin] = true; });
-    $.each(model.probes, function (_, p) { if (p.pin !== null) taken[p.pin] = true; });
+    $.each(model.probes, function (_, p) {
+      if (p.pin !== null) taken[p.pin] = true;
+      // A power rail is spent too, so suggestedPin() must not offer it again.
+      if (typeof p.powerPin === 'number') taken[p.powerPin] = true;
+    });
     $.each(model.sensors, function (key, s) {
       if (key === exceptSensorKey) return;
       if (s.fitted && s.pin !== null) taken[s.pin] = true;
@@ -483,6 +487,18 @@
     $.each(model.probes, function (i, p) {
       var owner = probeOwner(i);
       checkPin(p.pin, 'analog', owner, '.ms-pin[data-row="' + i + '"]');
+      if (typeof p.powerPin === 'number') {
+        checkPin(p.powerPin, 'output', owner + ' power',
+                 '.ms-power[data-row="' + i + '"]');
+      }
+      var settle = numeric(p.settleMs);
+      if (p.settleMs !== '' && (settle === null || isNaN(settle) ||
+                                settle < 0 || settle > 250)) {
+        // Unchecked, a non-number reached the device as JSON null and was read
+        // as a 0 ms settle: every reading taken before the module had come up.
+        problems.push(owner + ': settle time must be 0-250 ms.');
+        flagged['.ms-settle[data-row="' + i + '"]'] = true;
+      }
       $.each([['dry', p.dry], ['wet', p.wet]], function (_, pair) {
         if (isNaN(numeric(pair[1]))) {
           problems.push(owner + ': ' + pair[0] + ' calibration is not a number.');

@@ -384,10 +384,53 @@ ConfigFile::loadFile(unsigned deviceID)
                 }
             }
             if (entry.hasOwnProperty("invert")) {
-                moistureInvert[i] = (bool)entry["invert"];
+                // NOT a bare (bool) cast. Arduino_JSON's operator bool is true
+                // only for the JSON literal `true`, so `"invert": 1` — the
+                // obvious hand-edit for "yes" — would have read as FALSE and
+                // mirrored every reading from this probe: the dashboard, the
+                // history, the charts and the telemetry all backwards, with no
+                // log line anywhere. The other (bool) casts in this file
+                // disable a feature when they get it wrong, which is visible;
+                // this one inverts a measurement while everything keeps
+                // working.
+                JSONVar node = entry["invert"];
+                const String kind = JSON.typeof(node);
+                if (kind == "boolean") {
+                    moistureInvert[i] = (bool)node;
+                } else if (kind == "number") {
+                    moistureInvert[i] = ((double)node != 0.0);
+                } else {
+                    logger.warning("moisture[" + String(i) +
+                                   "].invert is not a boolean; keeping " +
+                                   String(moistureInvert[i] ? "true" : "false"));
+                }
             }
             if (JSON.typeof(entry["kind"]) == "string") {
                 moistureKind[i] = (const char*)JSONVar(entry["kind"]);
+            }
+        }
+    }
+
+    // Two probes on one MOSFET is the normal wiring and validatePins() allows
+    // the shared pin deliberately — but they have to agree on which level
+    // energises it. They did not have to before, and the result was silent and
+    // exactly inverted: moisturePowerUp() wrote HIGH then LOW, so the first
+    // probe was DE-energised during its own conversion, and moisturePowerDown()
+    // left the pin HIGH, so its module stayed powered between readings. That
+    // second half is the electrolysis this feature exists to prevent.
+    for (unsigned i = 0; i < moistureCount; ++i) {
+        if (soilMoisturePowerPin[i] == kNoPin) {
+            continue;
+        }
+        for (unsigned j = 0; j < i; ++j) {
+            if (soilMoisturePowerPin[j] == soilMoisturePowerPin[i] &&
+                soilMoisturePowerOn[j] != soilMoisturePowerOn[i]) {
+                logger.warning(
+                  "moisture probes " + String(j) + " and " + String(i) +
+                  " share power GPIO " + String(soilMoisturePowerPin[i]) +
+                  " but disagree on the active level; using probe " +
+                  String(j) + "'s.");
+                soilMoisturePowerOn[i] = soilMoisturePowerOn[j];
             }
         }
     }

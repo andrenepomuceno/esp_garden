@@ -198,6 +198,15 @@
           '<td>' + pinSelect('ms-power', 'data-row="' + i + '"', 'output',
                              (typeof p.powerPin === 'number') ? p.powerPin : null,
                              'always on') +
+            // The active level, exactly as a relay row offers one: a probe
+            // switched by a P-channel MOSFET is energised LOW, and without
+            // this the only route to that was the raw JSON editor.
+            '<select class="form-select form-select-sm ms-power-on mt-1"' +
+            ' data-row="' + i + '" title="the level that energises the probe">' +
+            '<option value="1"' + (p.powerOn === 0 ? '' : ' selected') +
+              '>on = HIGH</option>' +
+            '<option value="0"' + (p.powerOn === 0 ? ' selected' : '') +
+              '>on = LOW</option></select>' +
             '<input type="text" inputmode="numeric" autocomplete="off"' +
             ' class="form-control form-control-sm ms-settle mt-1"' +
             ' data-row="' + i + '" value="' + esc(p.settleMs || '10') + '"' +
