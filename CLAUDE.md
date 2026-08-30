@@ -957,7 +957,12 @@ slope = d(delta)/d(drive)     0 for a stiff source, positive for a floating pin
   reason the watering-response check is: it names a physical cause where the
   separation gate would say "bands overlap" days later.
 
-**The threshold is provisional.** 5 % coupling will not fire on a real sensor,
+**Two thresholds, and only one of them is a guess.** The VARIANCE line is 400
+ADC counts, about 10 % of full scale: thirty times the worst connected reading
+measured here and a third of the quietest floating one, with both sides
+measured on this board at the same moment.
+
+**The COUPLING threshold is provisional.** 5 % will not fire on a real sensor,
 but where exactly to draw the line wants a probe known to be connected, and
 every probe on this board is currently disconnected. Tighten it once one has
 published a slope.
