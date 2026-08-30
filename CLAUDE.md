@@ -286,6 +286,14 @@ garbage. An hour went into learning that.
 
 **Unverified — written, compiles, never run on hardware:**
 
+- **Per-probe polarity and probe power gating** (firmware 2.7.0). The config
+  keys parse, the five envs build, and the save/load round trip is verified
+  against the simulator — but no probe has yet been read with `invert` false,
+  and no `powerPin` has ever been driven, because the resistive sensors have
+  not arrived. What is specifically untested on hardware is the settle time: 10
+  ms is a default chosen from how a divider and an LM393 behave, not from a
+  measurement on the WD-38 that is coming.
+
 - **The history boot-loop interlock.** The RTC strike counter compiles and
   ships, and the path that clears it after ten minutes has run — but no panic
   has been counted against it, so the refusal itself has never fired. It exists
