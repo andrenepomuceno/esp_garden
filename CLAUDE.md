@@ -891,18 +891,38 @@ Three probes were unplugged at once, which gave the measurement this needed.
 | 1 | 61.1 | 2.65 | **0.02** | 30 |
 | 2 | 50.2 | 1.29 | **0.03** | 96 |
 
-**Every obvious statistic fails**, and that is the finding:
+Those are the per-minute AVERAGES the history stores, and read that way two of
+the obvious statistics do fail:
 
 - **Not the value.** All three sat mid-scale, as an earlier disconnected probe
   did at 52.6 and later at 86.7. A rail would be easy; this is not.
-- **Not the variance.** Probe 2 is QUIETER than wet soil at sd 1.29, and a
-  disconnected probe has been measured at variance 0.01. A threshold on "too
-  noisy" and one on "too quiet" are both wrong.
 - **Not the correlation between probes.** Probes 0 and 1 track each other at
   **+0.87** — but real probes in one garden, same schedule and same weather,
   correlate just as hard.
 
-What separates them is not the reading, it is the **source impedance**. An
+**The variance does separate, and this file said otherwise first.** The mistake
+was reading the spread of the per-minute means, which is exactly what averaging
+removes, instead of the spread WITHIN a window — the number `/data.json`
+publishes and the history record does not store. Sampled live, with the
+luminosity channel as a connected control on the same ADC at the same moment:
+
+| channel | state | var | sd |
+|---|---|---|---|
+| Luminosidade | **connected** | 0.02 | 0.14 |
+| Umidade Zona 1 | floating | ~800 | 27.9 |
+| Umidade Zona 2 | floating | ~1990 | 44.6 |
+| Umidade Zona 3 | floating | ~1980 | 44.5 |
+
+The probes swing 0.00 to 100.00 within seconds — four orders of magnitude from
+a control on the same chip. Water content does not move forty-five points in a
+minute, so a spread like that is not a reading at all. It is the FIRST check
+now, and the fastest: one window, no regression to converge.
+
+It is used **one-sided** and only that. High variance condemns; low variance
+clears nothing, because this same board has held a disconnected probe at
+variance 0.01, quieter than any of its connected ones. That asymmetry is why a
+second test is needed for the quiet case — and what separates that one is not
+the reading at all, it is the **source impedance**. An
 ESP32 conversion samples onto a hold capacitor that still carries charge from
 the previous channel. A real sensor recharges it inside the sampling window and
 two back-to-back conversions agree; a floating pin cannot, and the first
