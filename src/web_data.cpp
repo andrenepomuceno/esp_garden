@@ -3,6 +3,8 @@
 #include "core/accumulator_v2.h"
 #include "core/config.h"
 #include <esp_heap_caps.h>
+#include "core/probe_health.h"
+#include "core/sensors.h"
 #include "core/tasks.h"
 #include "network/mqtt.h"
 #include "network/thingsboard.h"
@@ -171,6 +173,18 @@ webUpdateDataCache()
         const String state = moistureState(i);
         if (state.length() > 0) {
             inputsJson[name.c_str()]["state"] = state;
+        }
+
+        // Present ONLY when something is wrong, the same way `state` is absent
+        // rather than empty. The dashboard is read at a glance, and a column
+        // that says "connected" on every healthy probe trains the eye to skip
+        // the one case that matters. /moisture.json carries the evidence; this
+        // is the flag that sends you there.
+        const ProbeHealthReport health = probeHealthReport(i);
+        if (health.verdict != PROBE_UNKNOWN &&
+            health.verdict != PROBE_CONNECTED) {
+            inputsJson[name.c_str()]["fault"] =
+              probeVerdictName(health.verdict);
         }
     }
 

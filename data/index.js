@@ -66,6 +66,23 @@
     $('#tbody-status').html(rows);
   }
 
+  // Short enough for a tooltip; /moisture.html carries the numbers.
+  function faultHint(fault) {
+    if (fault === 'noisy')
+      return 'The reading swings further inside one minute than soil can. ' +
+             'Nothing is measuring here.';
+    if (fault === 'floating')
+      return 'This pin follows the ADC channel read before it, which a ' +
+             'connected sensor does not. Most likely nothing is attached.';
+    if (fault === 'railed')
+      return 'Pinned at 0 or full scale: shorted, or nothing is dividing the ' +
+             'supply into it.';
+    if (fault === 'stuck')
+      return 'The reading has not moved at all: driving a level but no ' +
+             'longer measuring.';
+    return 'This probe is not reading correctly.';
+  }
+
   function fillInputs(data) {
     var rows = '';
     for (var key in data) {
@@ -74,6 +91,14 @@
               '<th scope="row" class="fw-normal">' + esc(key) + '</th>' +
               '<td class="text-end num-badge">' + esc(d.val || '') +
               (d.state ? ' <span class="badge text-bg-secondary">' + esc(d.state) + '</span>' : '') +
+              // A fault is only ever sent when there IS one, so its presence is
+              // the whole message. Red rather than amber: a probe reading
+              // nothing is not a warning about the future, it is a measurement
+              // that is already wrong.
+              (d.fault
+                ? ' <span class="badge text-bg-danger" title="' +
+                  esc(faultHint(d.fault)) + '">' + esc(d.fault) + '</span>'
+                : '') +
               '</td>' +
               '<td class="text-end num-badge text-muted">' + esc(d.avg || '') + '</td>' +
               '<td class="text-end num-badge text-muted">' + esc(d.var || '') + '</td>' +

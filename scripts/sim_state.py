@@ -331,6 +331,13 @@ class DeviceState:
                 state = moisture_state(i, sensor.average, models)
                 if state:
                     entry["state"] = state
+                # Same gate as the device: sent only when there IS a fault, so
+                # the badge's presence is the whole message. Probe 1 is the
+                # unplugged one in this mock and probe 2 the wildly noisy one,
+                # which is what the dashboard has to be styled against.
+                fault = {1: "floating", 2: "noisy"}.get(i)
+                if fault:
+                    entry["fault"] = fault
                 inputs[label] = entry
             for name, s in self._sensors.items():
                 if name not in fitted:

@@ -585,6 +585,12 @@ OTA details: `/updateEnable` arms a module-level `g_otaEnabled` which `handleUpd
   "Channel": "1348790" }
 ```
 
+A moisture entry also carries **`fault`** — `noisy`, `floating`, `railed` or
+`stuck` — and ONLY when there is one, exactly as `state` is absent rather than
+empty. A dashboard is read at a glance, and a column saying "connected" on
+every healthy probe trains the eye to skip the one case that matters.
+`/moisture.json` carries the evidence behind it.
+
 `Inputs` and `Outputs` keys are **human-readable labels, not identifiers** — `Outputs` is keyed by the configurable `relayName`, so it is display-only. Anything that needs to *address* a relay uses the `Relays` array and its `index`. With one probe the moisture label stays `"Soil Moisture"` (no suffix) so existing dashboards keep working; with two it becomes `"Soil Moisture 1"` / `"Soil Moisture 2"`.
 
 The current UI (`data/index.html`) loads **Bootstrap and jQuery from CDNs**, so the dashboard degrades without internet — on a device whose whole point is surviving connectivity loss. `fullbot-frontend` bundles everything with Webpack and ships gzipped assets into `data/frontend/`; that is the fix.
