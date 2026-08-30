@@ -87,12 +87,20 @@ static const double g_probeHealthMinT = 5.0;
 
 // Reading spread, in ADC counts, above which this stops being soil.
 //
-// Both sides of THIS one are measured, on this board, at the same moment: the
-// connected luminosity channel holds sd 0.14 % (about 6 counts) while the
-// three unplugged probes hold 27.9-44.6 % (1140-1830 counts). 400 counts is
-// ~10 % of full scale — thirty times the worst connected reading and a third
-// of the quietest floating one. Soil does not move ten points of water content
-// in a minute.
+// Both sides are measured on this board, and the margin is narrower than the
+// first reading of it suggested. A connected channel is not always quiet: the
+// luminosity input sits at 6 counts at midday but reached 164 while the light
+// was actually changing. The three unplugged probes hold 1113-1773.
+//
+//   worst CONNECTED observed     164 counts
+//   threshold                    400 counts   (2.4x above, 2.8x below)
+//   lowest FLOATING observed    1113 counts
+//
+// 400 is close to the geometric mean of those two extremes (428), which is
+// where a one-sided threshold belongs when both sides are known. Soil moisture
+// cannot change like sunset light, so the real headroom for a probe is larger
+// than the luminosity figure implies — but the figure is what was measured,
+// and it is the one quoted.
 static const double g_probeHealthMaxSd = 400.0;
 
 ProbeHealthReport

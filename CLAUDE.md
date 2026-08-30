@@ -284,16 +284,24 @@ garbage. An hour went into learning that.
     segments`. Segment CREATION is now well exercised; the first recycle is
     still ahead, at 1440.
 
+- **The probe health check, on the device** (2026-08-25, firmware 2.7.0, over
+  the air). All three unplugged probes were flagged within minutes:
+  `/data.json` carries `fault: "noisy"` on each, and `/moisture.json` names the
+  spread — 1113, 1773 and 1753 ADC counts inside one window. Every connected
+  sensor on the same board passed: temperature 4 counts, air humidity 20,
+  luminosity 164 while the light was changing. The dashboard badge and the
+  refusal text both render from the device.
+
 **Unverified — written, compiles, never run on hardware:**
 
-- **The probe settling test** (firmware 2.7.0). The statistics are host-tested
-  and the payload is verified through the simulator, but no ADC on this board
-  has yet reported a coupling slope, because the firmware carrying it has not
-  been flashed. The VARIANCE half of the same check is different: both sides of
-  its threshold were measured live, on this board, against the connected
-  luminosity channel. What is still unknown is the coupling a HEALTHY probe
-  produces, so the 5 % figure is a bound chosen to avoid false accusations
-  rather than a calibrated one.
+- **The COUPLING half of the probe health check.** The variance half is now
+  verified on hardware (see above); the settling regression is not. On the
+  three probes that are flagged it reported -0.001, -0.011 and -0.279, all
+  meaningless because a node swinging 1700 counts between conversions drowns
+  the charge-sharing signal. What is still unknown is what a HEALTHY probe
+  reports, so the 5 % threshold remains a bound chosen to avoid false
+  accusations rather than a calibrated one. The first connected sensor to
+  arrive settles it.
 
 - **Per-probe polarity and probe power gating** (firmware 2.7.0). The config
   keys parse, the five envs build, and the save/load round trip is verified
@@ -926,7 +934,14 @@ now, and the fastest: one window, no regression to converge.
 
 It is used **one-sided** and only that. High variance condemns; low variance
 clears nothing, because this same board has held a disconnected probe at
-variance 0.01, quieter than any of its connected ones. That asymmetry is why a
+variance 0.01, quieter than any of its connected ones.
+
+**On a wildly noisy node the coupling number is meaningless**, and the device
+proved it: the three flagged probes reported couplings of -0.001, -0.011 and
+-0.279. With the node swinging 1700 counts between conversions, the difference
+between the first and the second is dominated by the signal moving, not by
+charge sharing. The two tests have disjoint domains — variance for the wild
+case, coupling for the quiet one — and neither is a check on the other. That asymmetry is why a
 second test is needed for the quiet case — and what separates that one is not
 the reading at all, it is the **source impedance**. An
 ESP32 conversion samples onto a hold capacitor that still carries charge from
@@ -964,9 +979,24 @@ slope = d(delta)/d(drive)     0 for a stiff source, positive for a floating pin
   separation gate would say "bands overlap" days later.
 
 **Two thresholds, and only one of them is a guess.** The VARIANCE line is 400
-ADC counts, about 10 % of full scale: thirty times the worst connected reading
-measured here and a third of the quietest floating one, with both sides
-measured on this board at the same moment.
+ADC counts, and both of its sides are measured on this board — but the margin
+is narrower than the first look suggested, because a connected channel is not
+always quiet:
+
+| | sd, ADC counts |
+|---|---|
+| Temperature, Air Humidity | 4 - 20 |
+| Luminosidade, steady at midday | 6 |
+| **Luminosidade, while the light was changing** | **164** |
+| threshold | **400** |
+| **three unplugged probes, on the device** | **1113 - 1773** |
+
+That is 2.4x above the worst connected reading and 2.8x below the quietest
+floating one — close to the geometric mean of the two (428), which is where a
+one-sided threshold belongs when both extremes are known. Soil moisture cannot
+change like sunset light, so a probe's real headroom is larger than the
+luminosity figure implies; the figure is quoted because it is what was
+measured.
 
 **The COUPLING threshold is provisional.** 5 % will not fire on a real sensor,
 but where exactly to draw the line wants a probe known to be connected, and
