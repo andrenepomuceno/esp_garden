@@ -42,6 +42,7 @@ struct ProbeHealthReport
     int verdict;      ///< ProbeVerdict
     float slope;      ///< coupling to the previous ADC channel, 0..1
     float t;          ///< slope / standard error
+    float sd;         ///< within-window spread of the reading, in ADC counts
     uint32_t samples; ///< decayed, so it is evidence in hand rather than a total
 };
 

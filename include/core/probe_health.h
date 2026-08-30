@@ -18,9 +18,11 @@
 // - **Not the value.** All three sat mid-scale. An earlier measurement caught
 //   a disconnected probe at 52.6 and, hours later, at 86.7. A rail would be
 //   easy; mid-scale is indistinguishable from a real reading.
-// - **Not the variance.** Probe 2 is QUIETER than wet soil, sd 1.29, and an
-//   earlier sample of a disconnected probe had a variance of 0.01. A threshold
-//   on "too noisy" and one on "too quiet" are both wrong.
+// - **Not the variance OF THOSE MEANS.** Probe 2 looks quieter than wet soil
+//   at sd 1.29 — but that is the spread of per-minute AVERAGES, which is
+//   precisely what averaging removes. Reading it as "the variance" was a
+//   mistake this file made first. The WITHIN-window variance is a different
+//   number entirely, and it separates decisively; see below.
 // - **Not the correlation between probes.** Probes 0 and 1 track each other at
 //   +0.87 here, but real probes in one garden — same schedule, same weather —
 //   correlate just as hard. It cannot separate them.
@@ -28,7 +30,26 @@
 // Those three are why this file exists at all: every passive summary of the
 // reading is a description of a number that is already plausible.
 //
-// WHAT DOES WORK: SOURCE IMPEDANCE
+// WHAT WORKS FIRST: THE WITHIN-WINDOW VARIANCE
+//
+// Measured live on this board, all three probes unplugged at the connector,
+// against the luminosity channel on the same ADC at the same moment:
+//
+//   Luminosidade  (CONNECTED)   var    0.02   sd  0.14
+//   Umidade 1     (floating)    var  ~800     sd 27.9
+//   Umidade 2     (floating)    var ~1990     sd 44.6
+//   Umidade 3     (floating)    var ~1980     sd 44.5
+//
+// The probes swing 0.00 to 100.00 within seconds. Five orders of magnitude,
+// with a control on the same chip. Soil cannot do it — water content does not
+// move forty-five points in a minute — so a spread like that is not a reading.
+//
+// It is a ONE-SIDED test and is only ever used as one. High variance condemns.
+// Low variance clears NOTHING: this same board has held a disconnected probe
+// at variance 0.01, quieter than any of its connected ones. That asymmetry is
+// the whole reason the impedance test below still exists.
+//
+// WHAT WORKS WHEN IT IS QUIET: SOURCE IMPEDANCE
 //
 // The ADC gives it away. An ESP32 conversion samples onto a small hold
 // capacitor, and that capacitor still carries charge from the PREVIOUS
@@ -57,10 +78,13 @@
 //
 // A resistive probe in dry soil is genuinely high impedance, so it will show a
 // real slope. That is not a false positive to engineer away; it is the same
-// physics. The threshold is therefore deliberately loose and the raw slope is
-// published, so a verdict can be tightened against a probe known to be
-// connected — which is a measurement this project has not been able to make
-// yet.
+// physics. The slope threshold is therefore deliberately loose and the raw
+// number is published either way, to be tightened once a probe known to be
+// connected has reported one.
+//
+// The VARIANCE threshold needs no such apology: the luminosity channel is a
+// connected control on the same ADC, and it sits four orders of magnitude
+// below the floating probes.
 
 // A short of the pin to a rail, which IS distinguishable and is a different
 // failure from the floating one above.
@@ -81,6 +105,13 @@ struct ProbeHealth
     uint32_t railHigh;
     int32_t minRaw;
     int32_t maxRaw;
+
+    // Sum and sum of squares of the settled reading, for the within-window
+    // spread. In ADC counts, so the threshold is stated in the units the
+    // hardware actually produces rather than in a percentage that a per-probe
+    // polarity or calibration could move.
+    double sumV;
+    double sumVV;
 };
 
 void probeHealthReset(ProbeHealth& health);
@@ -112,17 +143,26 @@ double probeHealthT(const ProbeHealth& health);
 enum ProbeVerdict
 {
     PROBE_UNKNOWN = 0,  ///< not enough evidence yet
-    PROBE_CONNECTED,    ///< stiff source: the settling test found nothing
+    PROBE_CONNECTED,    ///< nothing found: stiff, plausible, and moving
+    PROBE_NOISY,        ///< swinging further and faster than soil physically can
     PROBE_FLOATING,     ///< high source impedance; most likely nothing attached
     PROBE_RAILED,       ///< pinned at 0 or full scale: shorted, or no divider
     PROBE_STUCK         ///< has not moved at all over the whole window
 };
 
+// Standard deviation of the settled reading, in ADC counts.
+double probeHealthSd(const ProbeHealth& health);
+
 // `minSamples` guards against judging a probe on a handful of readings;
 // `minSlope` and `minT` are the effect size and the confidence the settling
 // test has to reach before it accuses anything.
+// `maxSd` is the spread, in ADC counts, above which the signal stops being
+// something soil could produce. Measured on this board: a connected channel
+// holds about 6 counts, a floating one 1100-1800. Everything between is a wide
+// and empty margin.
 int probeHealthVerdict(const ProbeHealth& health,
                        uint32_t minSamples,
+                       double maxSd,
                        double minSlope,
                        double minT);
 

@@ -36,7 +36,7 @@ test_a_stiff_source_shows_no_settling()
 
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, probeHealthSlope(h));
     TEST_ASSERT_EQUAL_INT(PROBE_CONNECTED,
-                          probeHealthVerdict(h, 30, 0.05, 5.0));
+                          probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
 }
 
 static void
@@ -50,7 +50,7 @@ test_a_floating_pin_is_dragged_toward_the_previous_channel()
 
     TEST_ASSERT_DOUBLE_WITHIN(0.02, 0.30, probeHealthSlope(h));
     TEST_ASSERT_EQUAL_INT(PROBE_FLOATING,
-                          probeHealthVerdict(h, 30, 0.05, 5.0));
+                          probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
 }
 
 static void
@@ -65,7 +65,7 @@ test_the_verdict_needs_both_an_effect_and_a_confidence()
 
     TEST_ASSERT_TRUE(probeHealthSlope(h) < 0.05);
     TEST_ASSERT_EQUAL_INT(PROBE_CONNECTED,
-                          probeHealthVerdict(h, 30, 0.05, 5.0));
+                          probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
 }
 
 static void
@@ -77,7 +77,7 @@ test_too_few_samples_is_unknown_not_healthy()
     probeHealthReset(h);
     feed(h, 400, 2000, 0.30, 10);
 
-    TEST_ASSERT_EQUAL_INT(PROBE_UNKNOWN, probeHealthVerdict(h, 30, 0.05, 5.0));
+    TEST_ASSERT_EQUAL_INT(PROBE_UNKNOWN, probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
 }
 
 static void
@@ -95,7 +95,7 @@ test_no_spread_in_the_drive_cannot_accuse_anything()
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, probeHealthT(h));
     // Identical every time, so this is caught as STUCK rather than passed as
     // connected — a module that died while still driving a level.
-    TEST_ASSERT_EQUAL_INT(PROBE_STUCK, probeHealthVerdict(h, 30, 0.05, 5.0));
+    TEST_ASSERT_EQUAL_INT(PROBE_STUCK, probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
 }
 
 static void
@@ -106,13 +106,13 @@ test_a_pin_at_a_rail_is_named_as_such()
     for (unsigned i = 0; i < 60; ++i) {
         probeHealthAdd(h, 1000 + (int)(i % 5) * 200, 4095, 4095);
     }
-    TEST_ASSERT_EQUAL_INT(PROBE_RAILED, probeHealthVerdict(h, 30, 0.05, 5.0));
+    TEST_ASSERT_EQUAL_INT(PROBE_RAILED, probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
 
     probeHealthReset(h);
     for (unsigned i = 0; i < 60; ++i) {
         probeHealthAdd(h, 1000 + (int)(i % 5) * 200, 0, 0);
     }
-    TEST_ASSERT_EQUAL_INT(PROBE_RAILED, probeHealthVerdict(h, 30, 0.05, 5.0));
+    TEST_ASSERT_EQUAL_INT(PROBE_RAILED, probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
 }
 
 static void
@@ -143,7 +143,7 @@ test_a_probe_plugged_back_in_can_clear_its_own_accusation()
     probeHealthReset(h);
     feed(h, 400, 2000, 0.30, 100);
     TEST_ASSERT_EQUAL_INT(PROBE_FLOATING,
-                          probeHealthVerdict(h, 30, 0.05, 5.0));
+                          probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
 
     for (int run = 0; run < 20; ++run) {
         probeHealthDecay(h, 0.5);
@@ -152,12 +152,49 @@ test_a_probe_plugged_back_in_can_clear_its_own_accusation()
 
     TEST_ASSERT_TRUE(probeHealthSlope(h) < 0.05);
     TEST_ASSERT_EQUAL_INT(PROBE_CONNECTED,
-                          probeHealthVerdict(h, 30, 0.05, 5.0));
+                          probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
+}
+
+static void
+test_a_reading_that_swings_further_than_soil_can_is_condemned()
+{
+    // Measured live: three unplugged probes swinging 0.00 to 100.00 within
+    // seconds, sd 1140-1830 ADC counts, against a CONNECTED luminosity channel
+    // on the same ADC at sd 6. Water content does not move ten points in a
+    // minute, so a spread like this is not a reading at all.
+    ProbeHealth h;
+    probeHealthReset(h);
+    for (unsigned i = 0; i < 200; ++i) {
+        const int v = (i % 2) ? 4000 : 90;
+        probeHealthAdd(h, 2000, v, v);
+    }
+
+    TEST_ASSERT_TRUE(probeHealthSd(h) > 400.0);
+    TEST_ASSERT_EQUAL_INT(PROBE_NOISY,
+                          probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
+}
+
+static void
+test_a_quiet_floating_pin_still_needs_the_impedance_test()
+{
+    // The asymmetry that keeps both tests. High variance condemns; low
+    // variance clears nothing — this board has held a disconnected probe at
+    // variance 0.01, quieter than any of its connected ones. Only the coupling
+    // catches that one.
+    ProbeHealth h;
+    probeHealthReset(h);
+    feed(h, 400, 2000, 0.30, 200);
+
+    TEST_ASSERT_TRUE(probeHealthSd(h) < 400.0);
+    TEST_ASSERT_EQUAL_INT(PROBE_FLOATING,
+                          probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
 }
 
 void
 run_probe_health_tests(void)
 {
+    RUN_TEST(test_a_reading_that_swings_further_than_soil_can_is_condemned);
+    RUN_TEST(test_a_quiet_floating_pin_still_needs_the_impedance_test);
     RUN_TEST(test_a_stiff_source_shows_no_settling);
     RUN_TEST(test_a_floating_pin_is_dragged_toward_the_previous_channel);
     RUN_TEST(test_the_verdict_needs_both_an_effect_and_a_confidence);

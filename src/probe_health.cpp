@@ -13,6 +13,8 @@ probeHealthReset(ProbeHealth& health)
     health.samples = 0;
     health.railLow = 0;
     health.railHigh = 0;
+    health.sumV = 0.0;
+    health.sumVV = 0.0;
     // Deliberately inverted, so the first sample sets both.
     health.minRaw = 5000;
     health.maxRaw = -1;
@@ -34,6 +36,8 @@ probeHealthAdd(ProbeHealth& health, int previousRaw, int first, int second)
     health.sumYY += delta * delta;
 
     ++health.samples;
+    health.sumV += (double)second;
+    health.sumVV += (double)second * (double)second;
     if (second <= PROBE_RAIL_LOW) {
         ++health.railLow;
     }
@@ -71,6 +75,8 @@ probeHealthDecay(ProbeHealth& health, double factor)
     health.samples = (uint32_t)(health.samples * factor);
     health.railLow = (uint32_t)(health.railLow * factor);
     health.railHigh = (uint32_t)(health.railHigh * factor);
+    health.sumV *= factor;
+    health.sumVV *= factor;
 
     // The observed range is a running extreme, not a sum, so it cannot be
     // scaled. It is collapsed back onto the midpoint instead, which lets a
@@ -132,6 +138,22 @@ probeHealthSlopeStdErr(const ProbeHealth& health)
 }
 
 double
+probeHealthSd(const ProbeHealth& health)
+{
+    if (health.n < 2.0) {
+        return 0.0;
+    }
+    const double mean = health.sumV / health.n;
+    double var = health.sumVV / health.n - mean * mean;
+    // E[x^2] - E[x]^2 can go slightly negative on a nearly constant signal,
+    // which is exactly when the answer should be zero.
+    if (var <= 0.0) {
+        return 0.0;
+    }
+    return sqrt(var);
+}
+
+double
 probeHealthT(const ProbeHealth& health)
 {
     const double se = probeHealthSlopeStdErr(health);
@@ -144,11 +166,19 @@ probeHealthT(const ProbeHealth& health)
 int
 probeHealthVerdict(const ProbeHealth& health,
                    uint32_t minSamples,
+                   double maxSd,
                    double minSlope,
                    double minT)
 {
     if (health.samples < minSamples) {
         return PROBE_UNKNOWN;
+    }
+
+    // First, because it is the strongest evidence available and it arrives
+    // within one window rather than needing a regression to converge. Soil
+    // does not move this fast; nothing that does is a soil reading.
+    if (probeHealthSd(health) > maxSd) {
+        return PROBE_NOISY;
     }
 
     // Checked before the settling test because it is unambiguous: a pin held
@@ -187,6 +217,8 @@ probeVerdictName(int verdict)
     switch (verdict) {
         case PROBE_CONNECTED:
             return "connected";
+        case PROBE_NOISY:
+            return "noisy";
         case PROBE_FLOATING:
             return "floating";
         case PROBE_RAILED:

@@ -85,6 +85,16 @@ static const double g_probeHealthDecay = 0.5;
 static const double g_probeHealthMinSlope = 0.05;
 static const double g_probeHealthMinT = 5.0;
 
+// Reading spread, in ADC counts, above which this stops being soil.
+//
+// Both sides of THIS one are measured, on this board, at the same moment: the
+// connected luminosity channel holds sd 0.14 % (about 6 counts) while the
+// three unplugged probes hold 27.9-44.6 % (1140-1830 counts). 400 counts is
+// ~10 % of full scale — thirty times the worst connected reading and a third
+// of the quietest floating one. Soil does not move ten points of water content
+// in a minute.
+static const double g_probeHealthMaxSd = 400.0;
+
 ProbeHealthReport
 probeHealthReport(unsigned index)
 {
@@ -364,10 +374,12 @@ sensorsReadIo()
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
         health[i].verdict = probeHealthVerdict(g_probeHealth[i],
                                                g_probeHealthMinSamples,
+                                               g_probeHealthMaxSd,
                                                g_probeHealthMinSlope,
                                                g_probeHealthMinT);
         health[i].slope = (float)probeHealthSlope(g_probeHealth[i]);
         health[i].t = (float)probeHealthT(g_probeHealth[i]);
+        health[i].sd = (float)probeHealthSd(g_probeHealth[i]);
         health[i].samples = g_probeHealth[i].samples;
     }
 

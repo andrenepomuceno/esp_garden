@@ -59,6 +59,7 @@ handleMoistureJson(AsyncWebServerRequest* request)
           probeVerdictName(health.verdict);
         doc["probes"][p]["health"]["couplingSlope"] = (double)health.slope;
         doc["probes"][p]["health"]["t"] = (double)health.t;
+        doc["probes"][p]["health"]["sd"] = (double)health.sd;
         doc["probes"][p]["health"]["samples"] = (int)health.samples;
 
         double totalWeight = 0.0;
@@ -131,6 +132,13 @@ handleMoistureJson(AsyncWebServerRequest* request)
                          "ADC channel read before it (" +
                          String(wiring.slope * 100.0, 1) +
                          "% coupling), which a real sensor does not";
+            } else if (wiring.verdict == PROBE_NOISY) {
+                // The strongest and fastest of the three, and the only one
+                // with a measured control on the same ADC: the luminosity
+                // channel sits four orders of magnitude below this.
+                reason = "this reading swings " + String(wiring.sd, 0) +
+                         " ADC counts inside one window, which soil cannot do "
+                         "- the sensor is not measuring anything";
             } else if (wiring.verdict == PROBE_RAILED) {
                 reason = "this pin sits at a rail: shorted, or nothing is "
                          "dividing the supply into it";

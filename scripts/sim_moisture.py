@@ -501,7 +501,9 @@ def moisture_snapshot(scenario: str = None) -> dict:
             # unplugged one here, so the page is exercised against a board that
             # has one of each.
             "health": {
-                "verdict": "floating" if i == 1 else "connected",
+                "verdict": ("noisy" if i == 2 else
+                            ("floating" if i == 1 else "connected")),
+                "sd": 1830.0 if i == 2 else 6.0,
                 "couplingSlope": 0.31 if i == 1 else 0.004,
                 "t": 44.0 if i == 1 else 0.6,
                 "samples": 600,
@@ -553,6 +555,10 @@ def moisture_snapshot(scenario: str = None) -> dict:
                           "the ADC channel read before it (%.1f%% coupling), "
                           "which a real sensor does not"
                           % (probe["health"]["couplingSlope"] * 100.0))
+            elif wiring == "noisy":
+                reason = ("this reading swings %.0f ADC counts inside one "
+                          "window, which soil cannot do - the sensor is not "
+                          "measuring anything" % probe["health"]["sd"])
             elif wiring == "railed":
                 reason = ("this pin sits at a rail: shorted, or nothing is "
                           "dividing the supply into it")

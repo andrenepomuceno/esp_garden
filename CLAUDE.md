@@ -287,11 +287,13 @@ garbage. An hour went into learning that.
 **Unverified — written, compiles, never run on hardware:**
 
 - **The probe settling test** (firmware 2.7.0). The statistics are host-tested
-  against synthetic couplings and the payload is verified through the
-  simulator, but no ADC on this board has yet reported a coupling slope. What
-  is specifically unknown is the number a HEALTHY probe produces — every probe
-  here is disconnected — so the 5 % threshold is a bound chosen to avoid false
-  accusations, not a calibrated one.
+  and the payload is verified through the simulator, but no ADC on this board
+  has yet reported a coupling slope, because the firmware carrying it has not
+  been flashed. The VARIANCE half of the same check is different: both sides of
+  its threshold were measured live, on this board, against the connected
+  luminosity channel. What is still unknown is the coupling a HEALTHY probe
+  produces, so the 5 % figure is a bound chosen to avoid false accusations
+  rather than a calibrated one.
 
 - **Per-probe polarity and probe power gating** (firmware 2.7.0). The config
   keys parse, the five envs build, and the save/load round trip is verified
