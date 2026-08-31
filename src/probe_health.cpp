@@ -13,8 +13,10 @@ probeHealthReset(ProbeHealth& health)
     health.samples = 0;
     health.railLow = 0;
     health.railHigh = 0;
-    health.sumV = 0.0;
-    health.sumVV = 0.0;
+    health.sumD = 0.0;
+    health.sumDD = 0.0;
+    health.prevRaw = 0;
+    health.hasPrev = false;
     // Deliberately inverted, so the first sample sets both.
     health.minRaw = 5000;
     health.maxRaw = -1;
@@ -36,8 +38,13 @@ probeHealthAdd(ProbeHealth& health, int previousRaw, int first, int second)
     health.sumYY += delta * delta;
 
     ++health.samples;
-    health.sumV += (double)second;
-    health.sumVV += (double)second * (double)second;
+    if (health.hasPrev) {
+        const double step = (double)second - (double)health.prevRaw;
+        health.sumD += step;
+        health.sumDD += step * step;
+    }
+    health.prevRaw = second;
+    health.hasPrev = true;
     if (second <= PROBE_RAIL_LOW) {
         ++health.railLow;
     }
@@ -75,8 +82,8 @@ probeHealthDecay(ProbeHealth& health, double factor)
     health.samples = (uint32_t)(health.samples * factor);
     health.railLow = (uint32_t)(health.railLow * factor);
     health.railHigh = (uint32_t)(health.railHigh * factor);
-    health.sumV *= factor;
-    health.sumVV *= factor;
+    health.sumD *= factor;
+    health.sumDD *= factor;
 
     // The observed range is a running extreme, not a sum, so it cannot be
     // scaled. It is collapsed back onto the midpoint instead, which lets a
@@ -138,19 +145,36 @@ probeHealthSlopeStdErr(const ProbeHealth& health)
 }
 
 double
-probeHealthSd(const ProbeHealth& health)
+probeHealthStepSd(const ProbeHealth& health)
 {
-    if (health.n < 2.0) {
+    // n counts readings; there is one fewer difference than that.
+    const double steps = health.n - 1.0;
+    if (steps < 2.0) {
         return 0.0;
     }
-    const double mean = health.sumV / health.n;
-    double var = health.sumVV / health.n - mean * mean;
+    const double mean = health.sumD / steps;
+    double var = health.sumDD / steps - mean * mean;
     // E[x^2] - E[x]^2 can go slightly negative on a nearly constant signal,
     // which is exactly when the answer should be zero.
     if (var <= 0.0) {
         return 0.0;
     }
     return sqrt(var);
+}
+
+int
+probeHealthRail(const ProbeHealth& health)
+{
+    if (health.samples == 0) {
+        return 0;
+    }
+    if (health.railHigh >= health.samples) {
+        return 1;
+    }
+    if (health.railLow >= health.samples) {
+        return -1;
+    }
+    return 0;
 }
 
 double
@@ -176,15 +200,22 @@ probeHealthVerdict(const ProbeHealth& health,
 
     // First, because it is the strongest evidence available and it arrives
     // within one window rather than needing a regression to converge. Soil
-    // does not move this fast; nothing that does is a soil reading.
-    if (probeHealthSd(health) > maxSd) {
+    // does not move this far BETWEEN CONSECUTIVE READINGS, however fast it is
+    // wetted; nothing that does is a soil reading.
+    if (probeHealthStepSd(health) > maxSd) {
         return PROBE_NOISY;
     }
 
-    // Checked before the settling test because it is unambiguous: a pin held
-    // at a rail is shorted, or has no divider on it at all, and the regression
-    // has nothing to work with anyway since every conversion reads the same.
-    if (health.railLow >= health.samples || health.railHigh >= health.samples) {
+    // A pin that never leaves a rail. The regression has nothing to work with
+    // anyway, since every conversion reads the same.
+    //
+    // The two rails do NOT mean the same thing, which is why the caller is
+    // given the direction. At ground the reading is unambiguous: shorted, or
+    // the module has no supply. At 3V3 it is not — measured here, a healthy
+    // capacitive probe lifted into the air reads 4095, exactly like the pin
+    // that was tied to 3V3 next to it, and no statistic can separate them
+    // because there is nothing to separate.
+    if (probeHealthRail(health) != 0) {
         return PROBE_RAILED;
     }
 

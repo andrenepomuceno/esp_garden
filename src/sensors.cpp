@@ -85,7 +85,7 @@ static const double g_probeHealthDecay = 0.5;
 static const double g_probeHealthMinSlope = 0.05;
 static const double g_probeHealthMinT = 5.0;
 
-// Reading spread, in ADC counts, above which this stops being soil.
+// Sample-to-sample spread, in ADC counts, above which this stops being soil.
 //
 // Both sides are measured on this board, and the margin is narrower than the
 // first reading of it suggested. A connected channel is not always quiet: the
@@ -387,7 +387,8 @@ sensorsReadIo()
                                                g_probeHealthMinT);
         health[i].slope = (float)probeHealthSlope(g_probeHealth[i]);
         health[i].t = (float)probeHealthT(g_probeHealth[i]);
-        health[i].sd = (float)probeHealthSd(g_probeHealth[i]);
+        health[i].stepSd = (float)probeHealthStepSd(g_probeHealth[i]);
+        health[i].rail = (int8_t)probeHealthRail(g_probeHealth[i]);
         health[i].samples = g_probeHealth[i].samples;
     }
 

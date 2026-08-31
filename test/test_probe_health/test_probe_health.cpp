@@ -169,7 +169,7 @@ test_a_reading_that_swings_further_than_soil_can_is_condemned()
         probeHealthAdd(h, 2000, v, v);
     }
 
-    TEST_ASSERT_TRUE(probeHealthSd(h) > 400.0);
+    TEST_ASSERT_TRUE(probeHealthStepSd(h) > 400.0);
     TEST_ASSERT_EQUAL_INT(PROBE_NOISY,
                           probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
 }
@@ -185,14 +185,74 @@ test_a_quiet_floating_pin_still_needs_the_impedance_test()
     probeHealthReset(h);
     feed(h, 400, 2000, 0.30, 200);
 
-    TEST_ASSERT_TRUE(probeHealthSd(h) < 400.0);
+    TEST_ASSERT_TRUE(probeHealthStepSd(h) < 400.0);
     TEST_ASSERT_EQUAL_INT(PROBE_FLOATING,
                           probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
+}
+
+static void
+test_one_large_real_change_is_not_a_fault()
+{
+    // The false positive this statistic was changed to fix, from hardware: a
+    // healthy probe lifted out of wet soil into the air went 287 -> 4095
+    // counts and the spread of the LEVEL called it noisy at sd 1889. A
+    // watering does the same thing more gently, so the most important event in
+    // the system would have looked like a fault.
+    //
+    // One step of the full span among 300 readings contributes S/sqrt(N),
+    // which stays far under the line; continuous swinging does not.
+    ProbeHealth h;
+    probeHealthReset(h);
+    for (unsigned i = 0; i < 300; ++i) {
+        const int v = (i < 150) ? 287 : 4095;
+        probeHealthAdd(h, 2000, v, v);
+    }
+
+    TEST_ASSERT_TRUE(probeHealthStepSd(h) < 400.0);
+    TEST_ASSERT_TRUE(probeHealthVerdict(h, 30, 400.0, 0.05, 5.0) != PROBE_NOISY);
+}
+
+static void
+test_a_watering_is_not_a_fault()
+{
+    // 1200 counts over five minutes at 1 Hz: four counts per reading, which is
+    // nothing at all next to the threshold.
+    ProbeHealth h;
+    probeHealthReset(h);
+    for (unsigned i = 0; i < 300; ++i) {
+        probeHealthAdd(h, 2000, 1000 + (int)(i * 4), 1000 + (int)(i * 4));
+    }
+
+    TEST_ASSERT_TRUE(probeHealthStepSd(h) < 400.0);
+    TEST_ASSERT_EQUAL_INT(PROBE_CONNECTED,
+                          probeHealthVerdict(h, 30, 400.0, 0.05, 5.0));
+}
+
+static void
+test_the_rail_direction_is_reported()
+{
+    // A capacitive probe in air and a pin tied to 3V3 both read full scale and
+    // cannot be told apart, so the caller is given the direction and says so.
+    ProbeHealth h;
+    probeHealthReset(h);
+    for (unsigned i = 0; i < 60; ++i) {
+        probeHealthAdd(h, 1000 + (int)(i % 5) * 200, 4095, 4095);
+    }
+    TEST_ASSERT_EQUAL_INT(1, probeHealthRail(h));
+
+    probeHealthReset(h);
+    for (unsigned i = 0; i < 60; ++i) {
+        probeHealthAdd(h, 1000 + (int)(i % 5) * 200, 0, 0);
+    }
+    TEST_ASSERT_EQUAL_INT(-1, probeHealthRail(h));
 }
 
 void
 run_probe_health_tests(void)
 {
+    RUN_TEST(test_one_large_real_change_is_not_a_fault);
+    RUN_TEST(test_a_watering_is_not_a_fault);
+    RUN_TEST(test_the_rail_direction_is_reported);
     RUN_TEST(test_a_reading_that_swings_further_than_soil_can_is_condemned);
     RUN_TEST(test_a_quiet_floating_pin_still_needs_the_impedance_test);
     RUN_TEST(test_a_stiff_source_shows_no_settling);

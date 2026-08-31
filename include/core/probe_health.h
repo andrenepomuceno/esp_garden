@@ -30,24 +30,29 @@
 // Those three are why this file exists at all: every passive summary of the
 // reading is a description of a number that is already plausible.
 //
-// WHAT WORKS FIRST: THE WITHIN-WINDOW VARIANCE
+// WHAT WORKS FIRST: HOW FAR IT MOVES BETWEEN CONSECUTIVE READINGS
 //
-// Measured live on this board, all three probes unplugged at the connector,
-// against the luminosity channel on the same ADC at the same moment:
+// Measured live, all three probes unplugged at the connector, against the
+// luminosity channel on the same ADC at the same moment:
 //
 //   Luminosidade  (CONNECTED)   var    0.02   sd  0.14
 //   Umidade 1     (floating)    var  ~800     sd 27.9
 //   Umidade 2     (floating)    var ~1990     sd 44.6
 //   Umidade 3     (floating)    var ~1980     sd 44.5
 //
-// The probes swing 0.00 to 100.00 within seconds. Five orders of magnitude,
-// with a control on the same chip. Soil cannot do it — water content does not
-// move forty-five points in a minute — so a spread like that is not a reading.
+// The probes swing 0.00 to 100.00 within seconds — four orders of magnitude
+// from a control on the same chip.
 //
-// It is a ONE-SIDED test and is only ever used as one. High variance condemns.
-// Low variance clears NOTHING: this same board has held a disconnected probe
-// at variance 0.01, quieter than any of its connected ones. That asymmetry is
-// the whole reason the impedance test below still exists.
+// The statistic is the SAMPLE-TO-SAMPLE difference, not the spread of the
+// level, and the difference between those two is a false accusation this made
+// on real hardware: see the note on sumD below. Soil cannot jump between
+// consecutive conversions however fast it is watered; a floating pin does
+// nothing else.
+//
+// It is a ONE-SIDED test and is only ever used as one. A large jump condemns.
+// A small one clears NOTHING: this same board has held a disconnected probe at
+// variance 0.01, quieter than any of its connected ones. That asymmetry is the
+// whole reason the impedance test below still exists.
 //
 // WHAT WORKS WHEN IT IS QUIET: SOURCE IMPEDANCE
 //
@@ -82,9 +87,14 @@
 // number is published either way, to be tightened once a probe known to be
 // connected has reported one.
 //
-// The VARIANCE threshold needs no such apology: the luminosity channel is a
+// The JUMP threshold needs no such apology: the luminosity channel is a
 // connected control on the same ADC, and it sits four orders of magnitude
 // below the floating probes.
+//
+// Neither test can separate a healthy capacitive probe LIFTED INTO THE AIR
+// from a pin shorted to 3V3. Both read 4095, both are perfectly still, and
+// there is nothing there to separate — which is why the RAILED verdict reports
+// the direction and says so rather than guessing.
 
 // A short of the pin to a rail, which IS distinguishable and is a different
 // failure from the floating one above.
@@ -106,12 +116,31 @@ struct ProbeHealth
     int32_t minRaw;
     int32_t maxRaw;
 
-    // Sum and sum of squares of the settled reading, for the within-window
-    // spread. In ADC counts, so the threshold is stated in the units the
-    // hardware actually produces rather than in a percentage that a per-probe
-    // polarity or calibration could move.
-    double sumV;
-    double sumVV;
+    // Sum and sum of squares of the SAMPLE-TO-SAMPLE difference, in ADC counts.
+    //
+    // The difference and not the level. Measuring the spread of the level was
+    // the first attempt and it condemned a healthy probe: lifted out of wet
+    // soil into the air, Zona 1 went 287 -> 4095 counts inside the window and
+    // was reported `noisy` at sd 1889. That is a real change in a real
+    // quantity, and a WATERING does the same thing more gently — which would
+    // have made the most important event in the system look like a fault.
+    //
+    // What a floating pin actually does is swing between CONSECUTIVE
+    // conversions. Soil cannot, however fast it is wetted. The same 400-count
+    // threshold then separates every case measured or modelled here:
+    //
+    //   watering, 1200 counts over 5 min at 1 Hz        4
+    //   connected probe, level sd 80 (white noise)    113
+    //   probe moved from soil to air by hand          204
+    //   ---- threshold ----                           400
+    //   floating pin alternating rail to rail        3910
+    //
+    // A single large step contributes S/sqrt(N), which is why moving a probe
+    // by hand stays well under the line while continuous swinging does not.
+    double sumD;
+    double sumDD;
+    int32_t prevRaw;
+    bool hasPrev;
 };
 
 void probeHealthReset(ProbeHealth& health);
@@ -150,14 +179,19 @@ enum ProbeVerdict
     PROBE_STUCK         ///< has not moved at all over the whole window
 };
 
-// Standard deviation of the settled reading, in ADC counts.
-double probeHealthSd(const ProbeHealth& health);
+// Standard deviation of the difference between consecutive readings, in ADC
+// counts. See the struct for why this and not the spread of the level.
+double probeHealthStepSd(const ProbeHealth& health);
+
+// Which rail the reading is stuck against: +1 high, -1 low, 0 neither. The two
+// mean different things and only one of them is unambiguous.
+int probeHealthRail(const ProbeHealth& health);
 
 // `minSamples` guards against judging a probe on a handful of readings;
 // `minSlope` and `minT` are the effect size and the confidence the settling
 // test has to reach before it accuses anything.
-// `maxSd` is the spread, in ADC counts, above which the signal stops being
-// something soil could produce. Measured on this board: a connected channel
+// `maxSd` is the sample-to-sample spread, in ADC counts, above which the signal
+// stops being something soil could produce. Measured on this board: a connected channel
 // holds about 6 counts, a floating one 1100-1800. Everything between is a wide
 // and empty margin.
 int probeHealthVerdict(const ProbeHealth& health,
