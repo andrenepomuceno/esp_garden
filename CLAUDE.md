@@ -95,7 +95,44 @@ a rebuild from the same sources does not match, because the app image embeds
 its own hash — and without it `espcoredump` refuses and the backtrace is
 garbage. An hour went into learning that.
 
-**Verified on hardware (device `9e7c`, espgarden1):**
+**The board was replaced on 2026-08-31.** The NodeMCU-32S died; the garden now
+runs an **ESP32 DevKit v1 built by `[env:espgarden2]`, device id `6224`**, at
+192.168.1.55. Everything below that says `9e7c` was measured on the dead board
+and still describes this firmware — the two carry the same ESP32-WROOM-32, so
+nothing about the readings, the pins or the timings changed with it.
+
+### Swapping the board
+
+**No pin changes were needed, and that is worth knowing before anyone invents
+some.** `espgarden1` and `espgarden2` differ by exactly one line — `board =
+nodemcu-32s` against `board = esp32doit-devkit-v1` — and the `-D ESPGARDENn`
+flags they also carry are read by nothing in the tree. Same module, same 4 MB,
+same `LED_BUILTIN` on GPIO 2. Every pin the config uses (relays 15/16/17/18,
+probes 36/35/32, DHT 23, luminosity 39, water 34, flow 27, float 26) exists on
+both. On a 30-pin DevKit v1 GPIO 0 is not on the header, which does not matter:
+`io.button` is a `pinMode(INPUT)` nothing reads.
+
+**What DOES have to change is `id`, and getting it wrong bricks the board.**
+`ConfigFile::loadFile()` rejects the whole document when `id` does not match
+`ESP.getEfuseMac() % 0x10000`, so the old config on a new chip means compiled
+defaults, `ssid "undefined"`, and a device that cannot associate or be reached
+to fix. Read the id from the firmware's own `ID:` boot line rather than deriving
+it from esptool — that line is by definition the number the check compares
+against. Every other field carries over, and carrying the ThingsBoard
+credentials over is what keeps the cloud device, and its telemetry history, the
+same one.
+
+Do it with the relay board DISCONNECTED. Every reset floats the GPIOs and these
+relays are active-low.
+
+**`open(): /littlefs/<asset> does not exist` on every page load is NOISE.**
+AsyncFileResponse probes the plain name before falling back to `.gz`, and the
+ESP-IDF VFS logs that first miss at error level whatever happens next. Since the
+assets ship gzipped, every page produces a burst of them and every one is
+followed by a 200. Verified on 6224: `/index.html` 200 gzip 1694 B while the log
+called it missing three times.
+
+**Verified on hardware (devices `9e7c` and, from 2026-08-31, `6224`):**
 
 - Nonce + SHA-256 login, roles, per-IP lockout, persistent sessions.
 - ThingSpeak *and* ThingsBoard MQTT over TLS. Channel 1348790 entry 304860 was
@@ -284,6 +321,20 @@ garbage. An hour went into learning that.
     segments`. Segment CREATION is now well exercised; the first recycle is
     still ahead, at 1440.
 
+- **The board swap, end to end** (2026-08-31, device `6224`). A virgin DevKit
+  v1 took the firmware, printed `ID: 6224`, and the config rewritten with that
+  one field loaded: `Loading done`, WiFi up, `MQTT Link: connected` and a
+  publish accepted 9 s later — so the ThingsBoard device and its history
+  survived the hardware. Login worked against a `/users.json` seeded from
+  `ota.*` on first boot, and every asset served gzipped.
+
+- **The probe health check, on a second chip** (2026-08-31). The verdict formed
+  exactly as designed: `fault` absent while `samples < 120` — no evidence is
+  not health — and all three unplugged probes flagged `noisy` from 3 minutes
+  in, at sd 885/1745/885 counts against temperature at 0.00-0.03. One probe
+  read `var 0.00` in the instant it was still flagged, which is the decayed
+  evidence deciding rather than the current window.
+
 - **The probe health check, on the device** (2026-08-25, firmware 2.7.0, over
   the air). All three unplugged probes were flagged within minutes:
   `/data.json` carries `fault: "noisy"` on each, and `/moisture.json` names the
@@ -406,7 +457,9 @@ $pio = "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe"
 - Envs: `espgarden1` (NodeMCU-32S — moisture + luminosity + DHT), `espgarden2`, `espgarden3`, `espgarden4`, `espgarden5` (hardware v2 — 2 probes + LDR + DHT + 4 relays). CI builds all five in a matrix.
 - **The filesystem image is BUILT from `data/`, never packed from it.** `[platformio] data_dir = .pio/assets` and a `pre:` hook run `scripts/build_assets.py` on every invocation, so there is no step to forget. Run it by hand with `python scripts/build_assets.py --list` to see what it would produce.
 - **`pio run` does not need `data/config.json`**; `-t buildfs` / `-t uploadfs` do. `data/config.json` is gitignored. CI does `cp data/config.template.json data/config.json` — **never replicate that locally**, it destroys the real Wi-Fi/ThingSpeak/OTA credentials of a physical device.
-- The ESP32 currently attached is on **COM7** (Silicon Labs CP210x). `upload_port`/`monitor_port` are unset, so PlatformIO auto-detects; pass `--upload-port COM7` when several boards are attached.
+- The ESP32 currently attached is on **COM7** (Silicon Labs CP210x). It is an
+ESP32 DevKit v1 built by `[env:espgarden2]` since the NodeMCU-32S died on
+2026-08-31 — build with `-e espgarden2`, not `espgarden1`. `upload_port`/`monitor_port` are unset, so PlatformIO auto-detects; pass `--upload-port COM7` when several boards are attached.
 - **Host tests:** `pio test -e native` (CI gates the firmware build on them). `native` is the env; `test_*` is a filter, so `pio test -e test_accumulator` fails.
 - **`[platformio] default_envs` excludes `native`**, so a bare `pio run` builds only the five firmware envs. Without it `pio run` tries to build the test environment as firmware and dies on Unity's config header.
 - **There is no lint and no static-analysis configured.** `.clang-format` exists (Mozilla base, 4-space indent) but nothing enforces it — format only the lines you touch.
