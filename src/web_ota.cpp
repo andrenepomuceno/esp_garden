@@ -2,6 +2,7 @@
 #include "core/logger.h"
 #include "core/relays.h"
 #include "network/thingsboard.h"
+#include "core/tasks.h"
 #include "network/web_ota.h"
 #include <ESPAsyncWebServer.h>
 #include <Update.h>
@@ -55,11 +56,26 @@ handleUpdateRequest(AsyncWebServerRequest* request)
         return;
     }
 
-    bool error = Update.hasError();
-    int code = error ? 500 : 200;
-    const char* content = error ? "FAIL" : "OK";
-    AsyncWebServerResponse* response =
-      request->beginResponse(code, "text/plain", content);
+    // FINISHED, not merely "no error recorded".
+    //
+    // Update.hasError() is false when Update.begin() was never reached at all,
+    // so an upload that died partway used to land here clean and reboot the
+    // board on a half-written partition. Every failed attempt therefore
+    // restarted the garden, and the restart then killed the connection of the
+    // next attempt — which is how one bad upload became a run of five
+    // `software (ESP.restart)` boots in the log with the firmware unchanged.
+    const bool finished = Update.isFinished() && !Update.hasError();
+
+    // A partial write leaves Update RUNNING, and the next Update.begin() then
+    // refuses because one is already in progress — so a single interrupted
+    // upload poisons every retry until the board is power-cycled. Clear it.
+    if (!finished && Update.isRunning()) {
+        Update.abort();
+        logger.warning("[OTA] upload did not complete; partial update aborted");
+    }
+
+    AsyncWebServerResponse* response = request->beginResponse(
+      finished ? 200 : 500, "text/plain", finished ? "OK" : "FAIL");
     response->addHeader("Connection", "close");
     response->addHeader("Access-Control-Allow-Origin", "*");
     request->send(response);
@@ -68,9 +84,15 @@ handleUpdateRequest(AsyncWebServerRequest* request)
     // long as the device stays up.
     g_otaEnabled = false;
 
-    if (!error) {
-        delay(500);
-        ESP.restart();
+    if (finished) {
+        // NOT delay(500) + ESP.restart(). request->send() only QUEUES the
+        // response, and the async_tcp task that would flush it is the one this
+        // handler runs on — so blocking it for half a second and then resetting
+        // guarantees the browser sees a connection reset instead of "OK".
+        // CLAUDE.md records the same trap for /control, where moving the
+        // restart after the send was tried and was not enough. requestRestart()
+        // reboots from loop() once the response is actually out.
+        requestRestart();
     }
 }
 
@@ -102,6 +124,7 @@ handleUpdateUpload(AsyncWebServerRequest* request,
     if (len) {
         if (Update.write(data, len) != len) {
             logger.error(String("[OTA] ") + Update.errorString());
+            Update.abort();
             return request->send(400, "text/plain", "OTA could not write");
         }
     }
@@ -109,8 +132,9 @@ handleUpdateUpload(AsyncWebServerRequest* request,
     if (final) {
         if (!Update.end(true)) {
             logger.error(String("[OTA] ") + Update.errorString());
+            Update.abort();
             return request->send(400, "text/plain", "OTA could not end");
         }
-        logger.info("[OTA] Complete!");
+        logger.info("[OTA] Complete! " + String(index + len) + " bytes");
     }
 }

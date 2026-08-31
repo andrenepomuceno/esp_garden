@@ -632,6 +632,25 @@ or the uptime resets, not by the upload's return value** — and run the upload
 in the background, because a 10-minute tool timeout landing mid-write is how
 this session already corrupted a filesystem once.
 
+**TRAP — a failed browser OTA used to reboot the board, and then poison the
+retry.** Three faults in one path, all found while an operator was trying to
+flash from `/update.html` and getting `ERR_CONNECTION_RESET`:
+
+- `handleUpdateRequest` restarted on `!Update.hasError()`, which is FALSE when
+  `Update.begin()` was never reached. An upload that died partway therefore
+  rebooted the device on a half-written partition, and that reset killed the
+  next attempt's connection — five `software (ESP.restart)` boots in the log
+  with the firmware unchanged. It now requires `Update.isFinished()`.
+- A partial write leaves `Update` RUNNING, so the next `Update.begin()` refuses
+  because one is already in progress: a single interrupted upload poisoned
+  every retry until a power cycle. Every failure path now calls
+  `Update.abort()`.
+- The reboot was `delay(500); ESP.restart()` inside the handler. `send()` only
+  QUEUES the response and the `async_tcp` task that flushes it is the one the
+  handler runs on, so the browser was guaranteed to see a reset rather than
+  "OK" — the same trap this file already records for `/control`. It now calls
+  `requestRestart()`.
+
 OTA details: `/updateEnable` arms a module-level `g_otaEnabled` which `handleUpdateRequest` clears again, so one arm buys one upload. `handleUpdateUpload` picks `U_SPIFFS` when the uploaded *filename* is exactly `filesystem`, else `U_FLASH`; `data/update.js` renames the file to the selected radio value (`firmware` | `filesystem`) and sends an `MD5` form field computed client-side with SparkMD5. On success the device `delay(500)` then `ESP.restart()`.
 
 `/data.json` shape — the contract shared by `data/index.js`, `scripts/dev_server.py` and any future frontend:
