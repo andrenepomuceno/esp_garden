@@ -372,8 +372,17 @@ class Handler(BaseHTTPRequestHandler):
             STATE.log("info", "[OTA] Enabled OTA")
             self._send(HTTPStatus.OK, b"ok")
         elif path == "/update":
-            # Pretend to accept; do nothing real.
+            # Accepts, and then does the one thing the page actually watches
+            # for: reports a different firmware version afterwards. A firmware
+            # image bumps it; a filesystem image deliberately does not, because
+            # on the device it does not either -- which is the case the page
+            # has to fall back to a reboot for.
             STATE.log("info", f"[OTA] Received {length} bytes (simulated)")
+            if b'filename="filesystem"' not in raw:
+                parts = STATE.firmware.split(".")
+                parts[-1] = str(int(parts[-1]) + 1)
+                STATE.firmware = ".".join(parts)
+                STATE.log("info", f"[OTA] Now reporting {STATE.firmware}")
             self._send(HTTPStatus.OK, b"OK")
         elif path == "/spiffs/upload":
             self._handle_file_upload(raw)

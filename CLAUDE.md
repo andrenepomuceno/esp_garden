@@ -651,6 +651,19 @@ flash from `/update.html` and getting `ERR_CONNECTION_RESET`:
   "OK" — the same trap this file already records for `/control`. It now calls
   `requestRestart()`.
 
+**The page no longer believes the upload's return value.** A finished flash
+ends in a reboot and the reboot kills the connection the browser is waiting on,
+so a successful update arrives at the client as an error — an operator watched
+`/update.html` report "Upload failed" at 100 % three times while the firmware
+on the board had in fact changed. `update.js` now reads the version before
+sending, and afterwards polls `/data.json` until it changes: a different version
+is success, a 401 means the reboot signed the browser out (also success, said as
+such), and only a deadline with nothing changed is reported as a failure. A
+4xx from the device is still shown verbatim, because that is a real refusal with
+a real reason and the device is still up to be asked. `scripts/dev_server.py`
+bumps its reported version on a simulated firmware upload so the page can be
+exercised against the mock at all.
+
 OTA details: `/updateEnable` arms a module-level `g_otaEnabled` which `handleUpdateRequest` clears again, so one arm buys one upload. `handleUpdateUpload` picks `U_SPIFFS` when the uploaded *filename* is exactly `filesystem`, else `U_FLASH`; `data/update.js` renames the file to the selected radio value (`firmware` | `filesystem`) and sends an `MD5` form field computed client-side with SparkMD5. On success the device `delay(500)` then `ESP.restart()`.
 
 `/data.json` shape — the contract shared by `data/index.js`, `scripts/dev_server.py` and any future frontend:

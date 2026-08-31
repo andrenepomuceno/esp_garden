@@ -31,6 +31,11 @@ class DeviceState:
         self.hostname = "espgarden-sim"
         self.channel = "1348790"
         self.mqtt_enabled = True
+        # Bumped by a simulated firmware upload. /update.html judges the
+        # outcome by what the DEVICE reports afterwards, not by the upload's
+        # return value, so a mock that never changes version would leave the
+        # page waiting on something that cannot happen.
+        self.firmware = "2.0.0"
         self.packages_sent = 0
         self.last_publish = 0  # epoch of the last accepted publish, 0 = never
         self.watering_cycles = 0
@@ -267,7 +272,7 @@ class DeviceState:
 
             status = {
                 "Hostname": self.hostname,
-                "Firmware": "2.0.0",
+                "Firmware": self.firmware,
                 "Date/Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "Uptime": f"{days}d {hours}h {minutes}m {seconds}s",
                 "Internet": "online",

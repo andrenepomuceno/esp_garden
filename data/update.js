@@ -16,7 +16,85 @@ function resetUI() {
     $('#button-upload').html('&#x1F680; Upload').prop('disabled', false);
 }
 
+// The firmware the device reported before the upload started, so the outcome
+// can be judged against what actually changed.
+var versionBefore = null;
+
+function readVersion() {
+    return $.getJSON('/data.json').then(function (info) {
+        return (info && info.Status && info.Status.Firmware) || null;
+    });
+}
+
+// THE UPLOAD'S RETURN VALUE IS NOT THE VERDICT.
+//
+// A finished flash ends in a reboot, and the reboot kills the connection the
+// browser is still waiting on — so a successful update arrives here as an
+// error. That is not hypothetical: an operator watched this page report
+// "Upload failed: error" at 100 % three times while the firmware on the board
+// had in fact changed. The device is the only thing that knows, so ask it.
+//
+// It may refuse to answer. Sessions live in RAM unless the login was made with
+// "remember", so a reboot usually signs the browser out and /data.json returns
+// 401. That is still information: the device is up, it restarted, and the page
+// says exactly that rather than inventing an outcome.
+function confirmOutcome(reachedEnd) {
+    var deadline = Date.now() + 120000;
+    var sawItGo = false;
+
+    setStatus('info', reachedEnd
+        ? 'Upload complete. Waiting for the device to come back...'
+        : 'Connection lost. Checking whether the device took the update...');
+
+    function poll() {
+        if (Date.now() > deadline) {
+            setStatus('danger', reachedEnd
+                ? 'The whole image was sent, but the device never reported a ' +
+                  'new version. Check /logs, then try again.'
+                : 'The upload did not complete and the device did not change ' +
+                  'firmware. Nothing was flashed; try again.');
+            $('#button-upload').html('&#x21A9; Back').prop('disabled', false);
+            return;
+        }
+
+        readVersion().done(function (now) {
+            if (!now) return setTimeout(poll, 3000);
+            if (versionBefore && now !== versionBefore) {
+                setStatus('success', 'Updated. The device is running ' + now + '.');
+                $('#button-upload').html('&#x21A9; Done').prop('disabled', false);
+                return;
+            }
+            // Same version answering again. For a FILESYSTEM image that is the
+            // expected outcome — the firmware does not change — so a reboot we
+            // watched happen is the only evidence available.
+            if (sawItGo) {
+                setStatus('success', 'The device restarted and is answering on ' +
+                    now + '. A filesystem update does not change the ' +
+                    'firmware version, so this is what success looks like for one.');
+                $('#button-upload').html('&#x21A9; Done').prop('disabled', false);
+                return;
+            }
+            setTimeout(poll, 3000);
+        }).fail(function (jqXHR) {
+            // Unreachable, or signed out by the reboot. Both mean it went away.
+            sawItGo = true;
+            if (jqXHR && jqXHR.status === 401) {
+                setStatus('warning', 'The device restarted, which signed this ' +
+                    'browser out. Sign in again to confirm the version — the ' +
+                    'update itself most likely succeeded.');
+                $('#button-upload').html('&#x21A9; Back').prop('disabled', false);
+                return;
+            }
+            setTimeout(poll, 3000);
+        });
+    }
+
+    setTimeout(poll, 4000);
+}
+
 function uploadFile(formData) {
+    var reachedEnd = false;
+
     $.ajax({
         url: '/update',
         type: 'POST',
@@ -29,6 +107,10 @@ function uploadFile(formData) {
                 xhr.upload.addEventListener('progress', function (evt) {
                     if (evt.lengthComputable) {
                         setProgress((evt.loaded / evt.total) * 100);
+                        // Whether the whole body left the browser is the one
+                        // thing this side genuinely knows, and it separates a
+                        // reboot that ate the reply from an upload that died.
+                        if (evt.loaded >= evt.total) reachedEnd = true;
                     }
                 }, false);
             }
@@ -38,16 +120,23 @@ function uploadFile(formData) {
             $('#progress-card').show();
             setProgress(0);
             setStatus('info', 'Uploading...');
+            $('#button-upload').prop('disabled', true);
         },
         success: function () {
             setProgress(100);
-            setStatus('success', 'Upload successful! Device will restart...');
-            $('#button-upload').html('&#x21A9; Done').prop('disabled', false);
+            confirmOutcome(true);
         },
         error: function (jqXHR, textStatus, errorThrown) {
-            var msg = jqXHR.responseText || errorThrown || textStatus || 'Unknown error';
-            setStatus('danger', 'Upload failed: ' + msg);
-            $('#button-upload').html('&#x21A9; Back').prop('disabled', false);
+            // A 4xx from the device is a real refusal with a real reason, and
+            // it is worth reporting verbatim: the device is still up, so there
+            // is nothing to confirm.
+            if (jqXHR && jqXHR.status >= 400 && jqXHR.status < 500) {
+                var msg = jqXHR.responseText || errorThrown || textStatus;
+                setStatus('danger', 'Refused by the device: ' + msg);
+                $('#button-upload').html('&#x21A9; Back').prop('disabled', false);
+                return;
+            }
+            confirmOutcome(reachedEnd);
         },
     });
 }
@@ -173,6 +262,9 @@ $(function () {
                 maxPathLength = caps.maxPathLength;
             }
         });
+
+    // Read before any upload starts: the outcome is judged by what changed.
+    readVersion().done(function (v) { versionBefore = v; });
 
     $('#file-input').on('change', function () {
         var file = this.files[0];
