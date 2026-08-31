@@ -350,6 +350,14 @@ called it missing three times.
   luminosity 164 while the light was changing. The dashboard badge and the
   refusal text both render from the device.
 
+- **The OTA fixes and the honest upload report** (2026-08-31, firmware 2.7.3,
+  device 6224). The three faults were found because `/update.html` reported
+  `ERR_CONNECTION_RESET` on every attempt while the flash was in fact landing:
+  attempt 2 "failed at 100 %" and the board came up on the new firmware. After
+  2.7.3 the firmware and then `update.js.gz` both went up through the page and
+  the log reads `[upload] wrote /update.js.gz (5085 B)`. The board is on 2.7.3
+  with all three probes reading and no false faults.
+
 **Unverified — written, compiles, never run on hardware:**
 
 - **Per-probe polarity and probe power gating** (firmware 2.7.0). The config

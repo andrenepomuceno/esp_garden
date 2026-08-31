@@ -139,8 +139,12 @@ handleFileUpload(AsyncWebServerRequest* request,
         }
 
         g_uploadMD5.begin();
+        // `raw`, not `incoming`: the latter is rounded up to whole LittleFS
+        // blocks with a margin for the space CHECK, and printing it made a
+        // 5 KB asset announce itself as 12288 B. A log line that overstates by
+        // 2.4x is a log line somebody will one day debug against.
         logger.info("[upload] receiving " + g_uploadTarget + " (" +
-                    String(incoming) + " B)");
+                    String(raw) + " B)");
     }
 
     if (g_uploadError.length() > 0) {
