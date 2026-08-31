@@ -328,6 +328,13 @@ called it missing three times.
   survived the hardware. Login worked against a `/users.json` seeded from
   `ota.*` on first boot, and every asset served gzipped.
 
+- **The polarity default, against ground truth** (2026-08-31). With the soil
+  reported wet by the operator, both connected capacitive probes read 128 ADC
+  counts (0.10 V) and the dashboard showed 96.87 — the wet end. `invert` true
+  is therefore right for the capacitive v2, confirmed against the pot rather
+  than against a datasheet. It is also the first end-to-end check that the
+  conversion, the polarity and the displayed number agree.
+
 - **The probe health check, on a second chip** (2026-08-31). The verdict formed
   exactly as designed: `fault` absent while `samples < 120` — no evidence is
   not health — and all three unplugged probes flagged `noisy` from 3 minutes
@@ -345,14 +352,11 @@ called it missing three times.
 
 **Unverified — written, compiles, never run on hardware:**
 
-- **The COUPLING half of the probe health check.** The variance half is now
-  verified on hardware (see above); the settling regression is not. On the
-  three probes that are flagged it reported -0.001, -0.011 and -0.279, all
-  meaningless because a node swinging 1700 counts between conversions drowns
-  the charge-sharing signal. What is still unknown is what a HEALTHY probe
-  reports, so the 5 % threshold remains a bound chosen to avoid false
-  accusations rather than a calibrated one. The first connected sensor to
-  arrive settles it.
+- **The COUPLING threshold against a RESISTIVE probe.** Its lower anchor is now
+  measured — two connected capacitive probes couple +0.005 and -0.017, so the
+  5 % line has three times the headroom over them — but a resistive divider in
+  dry soil is genuinely higher impedance and may sit much closer to it. Nothing
+  says how close until the WD-38 is in a pot.
 
 - **Per-probe polarity and probe power gating** (firmware 2.7.0). The config
   keys parse, the five envs build, and the save/load round trip is verified
@@ -1051,10 +1055,29 @@ change like sunset light, so a probe's real headroom is larger than the
 luminosity figure implies; the figure is quoted because it is what was
 measured.
 
-**The COUPLING threshold is provisional.** 5 % will not fire on a real sensor,
-but where exactly to draw the line wants a probe known to be connected, and
-every probe on this board is currently disconnected. Tighten it once one has
-published a slope.
+**The COUPLING threshold now has a lower anchor, measured** (2026-08-31, device
+6224, two capacitive probes connected in wet soil and a third pin tied to 3V3):
+
+| probe | state | verdict | sd, counts | coupling | t |
+|---|---|---|---|---|---|
+| Zona 1 | connected | `connected` | 40.5 | **+0.0054** | +0.8 |
+| Zona 2 | pin tied to 3V3 | **`railed`** | 0.0 | 0.0000 | 0.0 |
+| Zona 3 | connected | `connected` | 60.4 | **-0.0170** | -2.8 |
+
+A healthy probe couples within **±1.7 %**, so the 5 % line sits about three
+times above the worst of them. It is deliberately NOT tightened: a resistive
+probe in dry soil is genuinely higher impedance than these capacitive modules,
+and the WD-38 has not arrived to say how much. Tighten it against that sensor,
+not against these.
+
+Note the sign. Zona 3's coupling is NEGATIVE and marginally significant
+(t = -2.8), which is why the test is one-sided — `slope >= minSlope` — and not
+a test on the magnitude. A healthy probe wandering slightly negative must not
+become an accusation.
+
+The RAILED branch is also verified by that middle row: a pin held at 3V3 reads
+4095, every conversion agrees, and it is named as shorted rather than run
+through a regression that has nothing to work with.
 
 **A resistive probe in dry soil is genuinely high impedance** and will show a
 real slope. That is not a false positive to engineer away; it is the same
