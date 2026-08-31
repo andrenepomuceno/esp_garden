@@ -146,11 +146,11 @@
         '</div>' +
       '<div class="col-auto">Wiring: <strong>' +
         esc((probe.health && probe.health.verdict) || 'unknown') + '</strong>' +
-        (probe.health && probe.health.verdict === 'connected'
-          ? '' : ' <span class="badge text-bg-warning">check</span>') +
-        (probe.health && typeof probe.health.couplingSlope === 'number'
-          ? ' <span class="hint">(' +
-            fixed(probe.health.couplingSlope * 100, 1) + '% coupling)</span>'
+        (probe.health && probe.health.verdict === 'noisy'
+          ? ' <span class="badge text-bg-danger">check</span>' : '') +
+        (probe.health && typeof probe.health.stepSd === 'number'
+          ? ' <span class="hint">(' + fixed(probe.health.stepSd, 0) +
+            ' counts between readings)</span>'
           : '') +
         '</div>' +
       '<div class="col-auto">Absorption &tau;: <strong>' +

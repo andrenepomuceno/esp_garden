@@ -40,10 +40,7 @@ moistureReading(unsigned index);
 struct ProbeHealthReport
 {
     int verdict;      ///< ProbeVerdict
-    float slope;      ///< coupling to the previous ADC channel, 0..1
-    float t;          ///< slope / standard error
     float stepSd;     ///< spread BETWEEN consecutive readings, in ADC counts
-    int8_t rail;      ///< +1 stuck at full scale, -1 at ground, 0 neither
     uint32_t samples; ///< decayed, so it is evidence in hand rather than a total
 };
 

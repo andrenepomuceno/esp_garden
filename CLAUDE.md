@@ -352,12 +352,6 @@ called it missing three times.
 
 **Unverified — written, compiles, never run on hardware:**
 
-- **The COUPLING threshold against a RESISTIVE probe.** Its lower anchor is now
-  measured — two connected capacitive probes couple +0.005 and -0.017, so the
-  5 % line has three times the headroom over them — but a resistive divider in
-  dry soil is genuinely higher impedance and may sit much closer to it. Nothing
-  says how close until the WD-38 is in a pot.
-
 - **Per-probe polarity and probe power gating** (firmware 2.7.0). The config
   keys parse, the five envs build, and the save/load round trip is verified
   against the simulator — but no probe has yet been read with `invert` false,
@@ -951,137 +945,77 @@ label is the manual lever — relabel a probe and its statistics are thrown away
 and it is why `kind` is only written when non-empty, so an empty one does not
 discard a model on every save.
 
-### Is there a sensor on the pin? The settling test
+### Is there a sensor on the pin? One test, and only one
 
-Three probes were unplugged at once, which gave the measurement this needed.
-200 history records over 4.3 h:
+**Every obvious statistic fails.** 200 history records over 4.3 h with all three
+probes unplugged:
 
 | probe | mean | sd | median step | distinct values |
 |---|---|---|---|---|
 | 0 | 87.2 | 4.37 | 1.00 | 176 |
-| 1 | 61.1 | 2.65 | **0.02** | 30 |
-| 2 | 50.2 | 1.29 | **0.03** | 96 |
-
-Those are the per-minute AVERAGES the history stores, and read that way two of
-the obvious statistics do fail:
+| 1 | 61.1 | 2.65 | 0.02 | 30 |
+| 2 | 50.2 | 1.29 | 0.03 | 96 |
 
 - **Not the value.** All three sat mid-scale, as an earlier disconnected probe
-  did at 52.6 and later at 86.7. A rail would be easy; this is not.
-- **Not the correlation between probes.** Probes 0 and 1 track each other at
-  **+0.87** — but real probes in one garden, same schedule and same weather,
-  correlate just as hard.
+  did at 52.6 and later at 86.7.
+- **Not the correlation between probes.** 0 and 1 track at **+0.87**, but real
+  probes in one garden, same schedule and weather, correlate just as hard.
+- **Not the spread of those per-minute means.** That is what averaging removes.
 
-**The variance does separate, and this file said otherwise first.** The mistake
-was reading the spread of the per-minute means, which is exactly what averaging
-removes, instead of the spread WITHIN a window — the number `/data.json`
-publishes and the history record does not store. Sampled live, with the
-luminosity channel as a connected control on the same ADC at the same moment:
+What works is the spread **between CONSECUTIVE conversions**. Measured live
+against the luminosity channel on the same ADC at the same moment:
 
 | channel | state | var | sd |
 |---|---|---|---|
 | Luminosidade | **connected** | 0.02 | 0.14 |
-| Umidade Zona 1 | floating | ~800 | 27.9 |
-| Umidade Zona 2 | floating | ~1990 | 44.6 |
-| Umidade Zona 3 | floating | ~1980 | 44.5 |
+| Umidade 1–3 | floating | ~800–1990 | 27.9–44.6 |
 
-The probes swing 0.00 to 100.00 within seconds — four orders of magnitude from
-a control on the same chip. Water content does not move forty-five points in a
-minute, so a spread like that is not a reading at all. It is the FIRST check
-now, and the fastest: one window, no regression to converge.
-
-It is used **one-sided** and only that. High variance condemns; low variance
-clears nothing, because this same board has held a disconnected probe at
-variance 0.01, quieter than any of its connected ones.
-
-**On a wildly noisy node the coupling number is meaningless**, and the device
-proved it: the three flagged probes reported couplings of -0.001, -0.011 and
--0.279. With the node swinging 1700 counts between conversions, the difference
-between the first and the second is dominated by the signal moving, not by
-charge sharing. The two tests have disjoint domains — variance for the wild
-case, coupling for the quiet one — and neither is a check on the other. That asymmetry is why a
-second test is needed for the quiet case — and what separates that one is not
-the reading at all, it is the **source impedance**. An
-ESP32 conversion samples onto a hold capacitor that still carries charge from
-the previous channel. A real sensor recharges it inside the sampling window and
-two back-to-back conversions agree; a floating pin cannot, and the first
-conversion is dragged toward wherever the ADC just was.
-
-So `sensorsReadIo()` reads every probe TWICE and regresses the difference on
-the step it was asked to make:
+Four orders of magnitude, with a control on the same chip. Soil cannot jump
+between one conversion and the next however fast it is watered; a floating pin
+does nothing else. The threshold is **400 ADC counts**, and the same number
+separates every case measured or modelled:
 
 ```
-drive = previous channel's reading - this probe's settled reading
-delta = first reading - second reading
-slope = d(delta)/d(drive)     0 for a stiff source, positive for a floating pin
+watering, 1200 counts over 5 min at 1 Hz        4
+connected probe, level sd 80 (white noise)    113
+probe moved from soil to air by hand          204
+---- threshold ----                           400
+floating pin alternating rail to rail        3910
 ```
 
-- **The null hypothesis is a NUMBER, not a calibration.** That is why this test
-  and not a passive one: it needs no healthy probe to compare against, and this
-  garden has none to offer.
-- **The second conversion is the reading**, so the diagnosis improves the value
-  it diagnoses. The cost is one extra conversion per probe per second, ~100 us.
-- **The verdict needs an effect AND a confidence** — slope at least 5 % with
-  t at least 5 — and the raw slope is published either way.
-  `probeHealthSlopeStdErr()` is exact OLS on centred sums; an earlier version
-  estimated the residual from the spread of the FITTED values, which is what
-  the model explains rather than what it does not.
-- **The settling test is checked BEFORE the flatline one.** A floating pin can
-  sit nearly still — probe 1 above held a median step of 0.02 — so asking "has
-  it moved" first would name the wrong fault for the commonest case. Positive
-  evidence beats an inference from absence, and the tests caught this ordering.
-- **It is decayed**, so a probe plugged back in clears its own accusation while
-  somebody is still standing at the pot.
-- **`/moisture.json` reports it ahead of every statistical gate**, for the
-  reason the watering-response check is: it names a physical cause where the
-  separation gate would say "bands overlap" days later.
+A single large step contributes `S/sqrt(N)`, which is why moving a probe by hand
+stays well under the line while continuous swinging does not.
 
-**Two thresholds, and only one of them is a guess.** The VARIANCE line is 400
-ADC counts, and both of its sides are measured on this board — but the margin
-is narrower than the first look suggested, because a connected channel is not
-always quiet:
+**Three other tests were built and removed, because they accused working
+hardware.** With two probes connected and a third pin tied to 3V3:
 
-| | sd, ADC counts |
-|---|---|
-| Temperature, Air Humidity | 4 - 20 |
-| Luminosidade, steady at midday | 6 |
-| **Luminosidade, while the light was changing** | **164** |
-| threshold | **400** |
-| **three unplugged probes, on the device** | **1113 - 1773** |
+```
+Umidade Zona 1   railed     <- healthy, simply lifted out of the soil
+Umidade Zona 2   railed     <- a real fault
+Umidade Zona 3   floating   <- healthy, sitting in wet soil
+```
 
-That is 2.4x above the worst connected reading and 2.8x below the quietest
-floating one — close to the geometric mean of the two (428), which is where a
-one-sided threshold belongs when both extremes are known. Soil moisture cannot
-change like sunset light, so a probe's real headroom is larger than the
-luminosity figure implies; the figure is quoted because it is what was
-measured.
+Two false accusations out of three. A capacitive module in air reads full scale
+and is genuinely indistinguishable from a pin shorted to 3V3 — there is nothing
+there for a statistic to separate — and the source-impedance regression crossed
+its 5 % threshold on a probe that was working. **A detector that cries wolf on a
+good sensor is worse than one that occasionally stays quiet**, so the coupling
+regression, the rail check and the flatline check are gone.
 
-**The COUPLING threshold now has a lower anchor, measured** (2026-08-31, device
-6224, two capacitive probes connected in wet soil and a third pin tied to 3V3):
+The statistic was also changed once for the same reason: it measured the spread
+of the LEVEL, and a healthy probe lifted from wet soil into the air went
+287 → 4095 counts inside the window and was reported `noisy` at sd 1889. A
+watering does the same thing more gently, which would have made the most
+important event in the system look like a fault.
 
-| probe | state | verdict | sd, counts | coupling | t |
-|---|---|---|---|---|---|
-| Zona 1 | connected | `connected` | 40.5 | **+0.0054** | +0.8 |
-| Zona 2 | pin tied to 3V3 | **`railed`** | 0.0 | 0.0000 | 0.0 |
-| Zona 3 | connected | `connected` | 60.4 | **-0.0170** | -2.8 |
+**What it deliberately does not catch:** a disconnected pin that happens to sit
+quiet. This board has held one at variance 0.01, quieter than any of its
+connected probes. That is the price of not accusing working sensors; such a
+probe is still caught days later by the watering-response check and the
+separation gate, through its failure to answer its own pump.
 
-A healthy probe couples within **±1.7 %**, so the 5 % line sits about three
-times above the worst of them. It is deliberately NOT tightened: a resistive
-probe in dry soil is genuinely higher impedance than these capacitive modules,
-and the WD-38 has not arrived to say how much. Tighten it against that sensor,
-not against these.
-
-Note the sign. Zona 3's coupling is NEGATIVE and marginally significant
-(t = -2.8), which is why the test is one-sided — `slope >= minSlope` — and not
-a test on the magnitude. A healthy probe wandering slightly negative must not
-become an accusation.
-
-The RAILED branch is also verified by that middle row: a pin held at 3V3 reads
-4095, every conversion agrees, and it is named as shorted rather than run
-through a regression that has nothing to work with.
-
-**A resistive probe in dry soil is genuinely high impedance** and will show a
-real slope. That is not a false positive to engineer away; it is the same
-physics, and it is the other reason the threshold is loose.
+`/data.json` carries `fault: "noisy"` on the probe entry only when there is one,
+and `/moisture.json` carries the jump in ADC counts behind it.
 
 ### The two-point fallback
 

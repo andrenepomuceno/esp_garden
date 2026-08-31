@@ -69,17 +69,9 @@
   // Short enough for a tooltip; /moisture.html carries the numbers.
   function faultHint(fault) {
     if (fault === 'noisy')
-      return 'The reading swings further inside one minute than soil can. ' +
-             'Nothing is measuring here.';
-    if (fault === 'floating')
-      return 'This pin follows the ADC channel read before it, which a ' +
-             'connected sensor does not. Most likely nothing is attached.';
-    if (fault === 'railed')
-      return 'Pinned at 0 or full scale: shorted, or nothing is dividing the ' +
-             'supply into it.';
-    if (fault === 'stuck')
-      return 'The reading has not moved at all: driving a level but no ' +
-             'longer measuring.';
+      return 'This reading jumps between consecutive samples further than ' +
+             'soil can, however fast it is watered. Most likely the sensor ' +
+             'is disconnected.';
     return 'This probe is not reading correctly.';
   }
 

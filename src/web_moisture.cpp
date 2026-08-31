@@ -57,10 +57,7 @@ handleMoistureJson(AsyncWebServerRequest* request)
         const ProbeHealthReport health = probeHealthReport(p);
         doc["probes"][p]["health"]["verdict"] =
           probeVerdictName(health.verdict);
-        doc["probes"][p]["health"]["couplingSlope"] = (double)health.slope;
-        doc["probes"][p]["health"]["t"] = (double)health.t;
         doc["probes"][p]["health"]["stepSd"] = (double)health.stepSd;
-        doc["probes"][p]["health"]["rail"] = (int)health.rail;
         doc["probes"][p]["health"]["samples"] = (int)health.samples;
 
         double totalWeight = 0.0;
@@ -125,37 +122,14 @@ handleMoistureJson(AsyncWebServerRequest* request)
 
             if (!sampled) {
                 reason = "no reading from this probe yet";
-            } else if (wiring.verdict == PROBE_FLOATING) {
+            } else if (wiring.verdict == PROBE_NOISY) {
                 // Ahead of everything statistical, for the reason the response
                 // check is: it names a physical cause. The separation gate
                 // would refuse this probe too, days later, as "bands overlap".
-                reason = "nothing appears to be connected: this pin follows the "
-                         "ADC channel read before it (" +
-                         String(wiring.slope * 100.0, 1) +
-                         "% coupling), which a real sensor does not";
-            } else if (wiring.verdict == PROBE_NOISY) {
-                // The strongest and fastest of the three, and the only one
-                // with a measured control on the same ADC: the luminosity
-                // channel sits four orders of magnitude below this.
                 reason = "this reading jumps " + String(wiring.stepSd, 0) +
                          " ADC counts between consecutive readings, which soil "
                          "cannot do however fast it is watered - the sensor is "
                          "not measuring anything";
-            } else if (wiring.verdict == PROBE_RAILED) {
-                // The two rails do not mean the same thing, and saying so is
-                // the difference between a diagnosis and a guess: a healthy
-                // capacitive probe lifted out of the soil reads full scale
-                // too, exactly like a pin tied to 3V3.
-                reason = (wiring.rail > 0)
-                           ? "this pin sits at the supply rail. Either it is "
-                             "shorted to 3V3, or the probe is out of the soil "
-                             "or in bone-dry ground - a capacitive module "
-                             "reads full scale in air"
-                           : "this pin sits at ground: shorted, or the sensor "
-                             "module has no supply";
-            } else if (wiring.verdict == PROBE_STUCK) {
-                reason = "this reading has not moved at all: the sensor is "
-                         "driving a level but no longer measuring";
             } else if (model.wateringEvents >= 2 &&
                        fabs(model.response) < 0.5) {
                 // Said BEFORE the statistical gates, because it names a

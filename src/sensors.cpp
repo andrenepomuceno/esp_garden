@@ -61,10 +61,6 @@ static MoistureReading g_moistureSnapshot[MOISTURE_MAX] = {};
 static ProbeHealth g_probeHealth[MOISTURE_MAX];
 static ProbeHealthReport g_probeHealthSnapshot[MOISTURE_MAX] = {};
 
-// The raw count of whatever channel was converted last, which is the step the
-// next probe's first conversion has to recover from.
-static int g_lastAdcRaw = 0;
-
 // Enough readings to regress on before a verdict, and how the evidence ages.
 // At the 1 Hz io task a window of 600 with a half-life every 600 keeps roughly
 // twenty minutes of it in hand: long enough to be sure, short enough that a
@@ -73,17 +69,6 @@ static int g_lastAdcRaw = 0;
 static const uint32_t g_probeHealthMinSamples = 120;
 static const uint32_t g_probeHealthWindow = 600;
 static const double g_probeHealthDecay = 0.5;
-
-// The effect size and the confidence a verdict needs.
-//
-// PROVISIONAL, and deliberately loose. The null hypothesis is a number — a
-// stiff source couples 0 % of the previous channel — so no healthy baseline is
-// needed to run the test, but choosing where to draw the line does want one,
-// and every probe on this board is currently disconnected. 5 % coupling at
-// t >= 5 will not fire on a real sensor; it may under-report a marginal one.
-// Tighten it once a probe known to be connected has published a slope.
-static const double g_probeHealthMinSlope = 0.05;
-static const double g_probeHealthMinT = 5.0;
 
 // Sample-to-sample spread, in ADC counts, above which this stops being soil.
 //
@@ -106,7 +91,7 @@ static const double g_probeHealthMaxSd = 400.0;
 ProbeHealthReport
 probeHealthReport(unsigned index)
 {
-    ProbeHealthReport out = { 0, 0.0f, 0.0f, 0 };
+    ProbeHealthReport out = { 0, 0.0f, 0 };
     if (index >= MOISTURE_MAX) {
         return out;
     }
@@ -304,22 +289,18 @@ sensorsReadIo()
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         const uint8_t pin = config.soilMoisturePin[i];
 
-        // TWO conversions, and the second is the reading.
+        // TWO conversions, and the second is the reading. The first carries
+        // charge from the previous channel through the SAR hold capacitor, so
+        // discarding it is simply a better measurement; it costs one extra
+        // conversion per probe per second, about 100 us.
         //
-        // The first carries charge from the previous channel through the SAR
-        // hold capacitor, so on a stiff source it equals the second and on a
-        // high-impedance one it is dragged toward wherever the ADC just was.
-        // That difference is the only thing measured here that can tell a
-        // disconnected probe from soil — see core/probe_health.h for the three
-        // passive statistics that cannot.
-        //
-        // It costs one extra conversion per probe per second, about 100 us,
-        // and it improves the value it diagnoses: the second read is the
-        // settled one.
-        const int first = analogRead(pin);
+        // The difference between them used to be regressed against the step
+        // the ADC was asked to make, as a source-impedance test. That test
+        // accused a probe sitting in wet soil and was removed — see
+        // core/probe_health.h.
+        (void)analogRead(pin);
         const int second = analogRead(pin);
-        probeHealthAdd(g_probeHealth[i], g_lastAdcRaw, first, second);
-        g_lastAdcRaw = second;
+        probeHealthAdd(g_probeHealth[i], second);
 
         if (g_probeHealth[i].samples >= g_probeHealthWindow) {
             probeHealthDecay(g_probeHealth[i], g_probeHealthDecay);
@@ -382,13 +363,8 @@ sensorsReadIo()
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
         health[i].verdict = probeHealthVerdict(g_probeHealth[i],
                                                g_probeHealthMinSamples,
-                                               g_probeHealthMaxSd,
-                                               g_probeHealthMinSlope,
-                                               g_probeHealthMinT);
-        health[i].slope = (float)probeHealthSlope(g_probeHealth[i]);
-        health[i].t = (float)probeHealthT(g_probeHealth[i]);
+                                               g_probeHealthMaxSd);
         health[i].stepSd = (float)probeHealthStepSd(g_probeHealth[i]);
-        health[i].rail = (int8_t)probeHealthRail(g_probeHealth[i]);
         health[i].samples = g_probeHealth[i].samples;
     }
 

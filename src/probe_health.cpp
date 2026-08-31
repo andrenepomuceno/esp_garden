@@ -5,58 +5,25 @@ void
 probeHealthReset(ProbeHealth& health)
 {
     health.n = 0.0;
-    health.sumX = 0.0;
-    health.sumY = 0.0;
-    health.sumXX = 0.0;
-    health.sumXY = 0.0;
-    health.sumYY = 0.0;
-    health.samples = 0;
-    health.railLow = 0;
-    health.railHigh = 0;
     health.sumD = 0.0;
     health.sumDD = 0.0;
     health.prevRaw = 0;
     health.hasPrev = false;
-    // Deliberately inverted, so the first sample sets both.
-    health.minRaw = 5000;
-    health.maxRaw = -1;
+    health.samples = 0;
 }
 
 void
-probeHealthAdd(ProbeHealth& health, int previousRaw, int first, int second)
+probeHealthAdd(ProbeHealth& health, int settled)
 {
-    // The settled value is the SECOND conversion. Everything below that judges
-    // the level uses it; only the regression uses the first.
-    const double drive = (double)previousRaw - (double)second;
-    const double delta = (double)first - (double)second;
-
-    health.n += 1.0;
-    health.sumX += drive;
-    health.sumY += delta;
-    health.sumXX += drive * drive;
-    health.sumXY += drive * delta;
-    health.sumYY += delta * delta;
-
-    ++health.samples;
     if (health.hasPrev) {
-        const double step = (double)second - (double)health.prevRaw;
+        const double step = (double)settled - (double)health.prevRaw;
+        health.n += 1.0;
         health.sumD += step;
         health.sumDD += step * step;
     }
-    health.prevRaw = second;
+    health.prevRaw = settled;
     health.hasPrev = true;
-    if (second <= PROBE_RAIL_LOW) {
-        ++health.railLow;
-    }
-    if (second >= PROBE_RAIL_HIGH) {
-        ++health.railHigh;
-    }
-    if (second < health.minRaw) {
-        health.minRaw = second;
-    }
-    if (second > health.maxRaw) {
-        health.maxRaw = second;
-    }
+    ++health.samples;
 }
 
 void
@@ -68,92 +35,28 @@ probeHealthDecay(ProbeHealth& health, double factor)
         factor = 1.0;
     }
 
-    // Every sum scales together, so the slope this evidence implies does not
-    // move — only how much of it there is. That is the same contract
-    // gaussianDecay() keeps, and the reason a decayed accumulator can be read
-    // at any time without a discontinuity.
+    // All three scale together, so the spread this evidence implies does not
+    // move — only how much of it there is. That is the contract gaussianDecay()
+    // keeps, and the reason a decayed accumulator can be read at any moment
+    // without a discontinuity.
     health.n *= factor;
-    health.sumX *= factor;
-    health.sumY *= factor;
-    health.sumXX *= factor;
-    health.sumXY *= factor;
-    health.sumYY *= factor;
-
-    health.samples = (uint32_t)(health.samples * factor);
-    health.railLow = (uint32_t)(health.railLow * factor);
-    health.railHigh = (uint32_t)(health.railHigh * factor);
     health.sumD *= factor;
     health.sumDD *= factor;
+    health.samples = (uint32_t)(health.samples * factor);
 
-    // The observed range is a running extreme, not a sum, so it cannot be
-    // scaled. It is collapsed back onto the midpoint instead, which lets a
-    // probe that has started moving again escape a STUCK verdict.
-    if (health.maxRaw >= health.minRaw) {
-        const int32_t mid = (health.minRaw + health.maxRaw) / 2;
-        health.minRaw = mid;
-        health.maxRaw = mid;
-    }
-}
-
-// Denominator of the least-squares slope: n * Sxx - Sx^2, which is n^2 times
-// the variance of `drive`. It is zero when every reading followed the same
-// step, and then there is no slope to speak of.
-static double
-spread(const ProbeHealth& health)
-{
-    return health.n * health.sumXX - health.sumX * health.sumX;
-}
-
-double
-probeHealthSlope(const ProbeHealth& health)
-{
-    const double sxx = spread(health);
-    if (health.n < 3.0 || sxx <= 1e-9) {
-        return 0.0;
-    }
-    return (health.n * health.sumXY - health.sumX * health.sumY) / sxx;
-}
-
-double
-probeHealthSlopeStdErr(const ProbeHealth& health)
-{
-    if (health.n < 4.0) {
-        return 0.0;
-    }
-
-    // Ordinary least squares, on centred sums. Exact rather than bounded: an
-    // earlier version dodged accumulating Syy and estimated the residual from
-    // the spread of the FITTED values, which is not a bound on anything —
-    // fitted spread is what the model explains, and the standard error is
-    // about what it does not.
-    const double sxxC = health.sumXX - health.sumX * health.sumX / health.n;
-    const double syyC = health.sumYY - health.sumY * health.sumY / health.n;
-    const double sxyC = health.sumXY - health.sumX * health.sumY / health.n;
-    if (sxxC <= 1e-9) {
-        return 0.0;
-    }
-
-    // RSS = Syy - slope * Sxy, both centred. Clamped at zero: the sums are
-    // incremental and catastrophic cancellation can push it slightly negative
-    // on a near-perfect fit, which is exactly when it should be ~0 anyway.
-    double rss = syyC - (sxyC / sxxC) * sxyC;
-    if (rss < 0.0) {
-        rss = 0.0;
-    }
-
-    return sqrt(rss / ((health.n - 2.0) * sxxC));
+    // Deliberately NOT reset: the last reading is still the right baseline for
+    // the next difference. Clearing it would manufacture one enormous step out
+    // of nothing every time the evidence ages.
 }
 
 double
 probeHealthStepSd(const ProbeHealth& health)
 {
-    // n counts readings; there is one fewer difference than that.
-    const double steps = health.n - 1.0;
-    if (steps < 2.0) {
+    if (health.n < 2.0) {
         return 0.0;
     }
-    const double mean = health.sumD / steps;
-    double var = health.sumDD / steps - mean * mean;
+    const double mean = health.sumD / health.n;
+    double var = health.sumDD / health.n - mean * mean;
     // E[x^2] - E[x]^2 can go slightly negative on a nearly constant signal,
     // which is exactly when the answer should be zero.
     if (var <= 0.0) {
@@ -163,80 +66,19 @@ probeHealthStepSd(const ProbeHealth& health)
 }
 
 int
-probeHealthRail(const ProbeHealth& health)
-{
-    if (health.samples == 0) {
-        return 0;
-    }
-    if (health.railHigh >= health.samples) {
-        return 1;
-    }
-    if (health.railLow >= health.samples) {
-        return -1;
-    }
-    return 0;
-}
-
-double
-probeHealthT(const ProbeHealth& health)
-{
-    const double se = probeHealthSlopeStdErr(health);
-    if (se <= 0.0) {
-        return 0.0;
-    }
-    return probeHealthSlope(health) / se;
-}
-
-int
 probeHealthVerdict(const ProbeHealth& health,
                    uint32_t minSamples,
-                   double maxSd,
-                   double minSlope,
-                   double minT)
+                   double maxStepSd)
 {
+    // "Not enough evidence" and "evidence of health" are different claims, and
+    // the caller has to be able to tell them apart: a probe is not declared
+    // sound because nobody has looked yet.
     if (health.samples < minSamples) {
         return PROBE_UNKNOWN;
     }
 
-    // First, because it is the strongest evidence available and it arrives
-    // within one window rather than needing a regression to converge. Soil
-    // does not move this far BETWEEN CONSECUTIVE READINGS, however fast it is
-    // wetted; nothing that does is a soil reading.
-    if (probeHealthStepSd(health) > maxSd) {
+    if (probeHealthStepSd(health) > maxStepSd) {
         return PROBE_NOISY;
-    }
-
-    // A pin that never leaves a rail. The regression has nothing to work with
-    // anyway, since every conversion reads the same.
-    //
-    // The two rails do NOT mean the same thing, which is why the caller is
-    // given the direction. At ground the reading is unambiguous: shorted, or
-    // the module has no supply. At 3V3 it is not — measured here, a healthy
-    // capacitive probe lifted into the air reads 4095, exactly like the pin
-    // that was tied to 3V3 next to it, and no statistic can separate them
-    // because there is nothing to separate.
-    if (probeHealthRail(health) != 0) {
-        return PROBE_RAILED;
-    }
-
-    // The settling test comes BEFORE the flatline one, because it is positive
-    // evidence and the other is an inference from absence. A floating pin can
-    // sit nearly still for a long stretch — measured on this board, one held a
-    // median step of 0.02 % between minutes — so checking "has not moved"
-    // first would name the wrong fault for the commonest case. `drive` still
-    // varies while the node does not, so the regression is estimable either
-    // way.
-    const double slope = probeHealthSlope(health);
-    const double t = probeHealthT(health);
-    if (slope >= minSlope && t >= minT) {
-        return PROBE_FLOATING;
-    }
-
-    // Not one ADC count of movement across the whole window, and no coupling
-    // to the previous channel either: a module that died while still driving a
-    // level, which a floating pin does not look like.
-    if (health.maxRaw >= 0 && health.maxRaw == health.minRaw) {
-        return PROBE_STUCK;
     }
 
     return PROBE_CONNECTED;
@@ -250,12 +92,6 @@ probeVerdictName(int verdict)
             return "connected";
         case PROBE_NOISY:
             return "noisy";
-        case PROBE_FLOATING:
-            return "floating";
-        case PROBE_RAILED:
-            return "railed";
-        case PROBE_STUCK:
-            return "stuck";
         default:
             return "";
     }
