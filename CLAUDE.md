@@ -630,6 +630,17 @@ Facts worth knowing before touching it:
 
 **Registration order is load-bearing.** ESPAsyncWebServer matches handlers in the order added, and `AsyncURIMatcher::prefix` is a prefix match — the 403 shadows for `/spiffs/users`, `/spiffs/sessions` and `/spiffs/config` must stay *above* the `serveStatic("/spiffs", …)` line, or the credential store, the live bearer tokens and the plaintext WiFi/MQTT passwords are served to any admin session.
 
+**A slow OTA is almost certainly SELF-INFLICTED.** The web UI pushes a 1.2 MB
+image in under a minute; a script here took ~7 minutes for the same image, and
+the difference was that script's own wait loop from a previous run, still
+logging in every 5 s while the upload was in flight. The board serves HTTP from
+a single `async_tcp` task, so anything polled during an upload competes with it
+— and `kMaxSessions` is 4, so a loop that authenticates also evicts whoever is
+using the browser. This file already recorded the same mistake once, under the
+filesystem upload; it was made again. **Wait on liveness with an unauthenticated
+GET of a public path, authenticate once at the end, and send nothing else while
+an upload is running.**
+
 **TRAP — an OTA client that times out has NOT necessarily failed.** A 1.2 MB
 upload takes minutes; the device writes, verifies the MD5 and reboots, and by
 then the HTTP connection the client was waiting on is long gone. Reading the
