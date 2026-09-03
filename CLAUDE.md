@@ -358,34 +358,61 @@ called it missing three times.
   the log reads `[upload] wrote /update.js.gz (5085 B)`. The board is on 2.7.3
   with all three probes reading and no false faults.
 
+- **Firmware 2.8.0's telemetry change, over the air** (2026-09-03, device
+  6224). One clean boot, `software (ESP.restart)`, no panic: the last 2.7.3
+  point is 18:42:52 and the first 2.8.0 point 18:43:13, so the board was
+  unreachable for **21 s**. Heap 110 KB free, 93 KB low-water at 16 minutes,
+  with the larger accumulator windows already allocated.
+
+  - **`mqtt.publishSec` = 300 holds.** Publishes at 18:48:12, 18:53:12 and
+    18:58:12 - 300 s apart, the first 301 s after boot - so `setPeriod()` and
+    `enableDelayed()` both take the configured value and not the compiled 60 s.
+  - **The instantaneous twins are stored, and the averages kept their meaning.**
+    All six of `temperatureNow`, `airHumidityNow`, `luminosityNow`,
+    `moisture1Now`, `moisture2Now`, `pingNow` arrive beside the original names,
+    which still carry `getAverage()`. The ThingsBoard key count went 37 -> 43.
+    No stored series changed meaning, which was the expensive thing to get
+    wrong.
+  - **Step values are off the periodic tick.** The 18:58:12 payload carried
+    exactly 12 keys, every one continuous. The nine step keys - `relay1..3`,
+    `relay1..3Ran`, `relayMask`, `relayRanMask`, `connectionLoss`,
+    `dhtErrorRate`, `wateringCycles` - appear once at 18:58:13, which is the
+    **900 s heartbeat** firing 902 s after boot. `firmware` published once at
+    boot and not since.
+  - **Composition, with both sides now measured:** 12 continuous keys x 288
+    ticks + 9 step keys x 96 heartbeats = **~4 320 datapoints/day**, against the
+    **25 100/day** measured on 2.7.3. About **-83 %**, on a board carrying two
+    probes and no water level.
+
+  **The OTA client called this a failure and was wrong again.** The upload sent
+  1.2 MB in 12 s at 100 KB/s and the device answered `200 OK`; the script's
+  180 s liveness wait then expired and it printed "the web server never came
+  back" while the board had been serving for minutes. What settled it in
+  seconds was the DURABLE record - `bootReason` and `firmware` in
+  `backups/telemetry.sqlite` - showing a single boot and a 21 s gap. A client
+  that cannot reach the board has established nothing about the board, and this
+  file has now recorded that three times.
+
 **Unverified — written, compiles, never run on hardware:**
 
-- **Everything in firmware 2.8.0's telemetry change.** Five envs build, 70 host
-  tests pass including the new `test_step_publisher`, and no part of it has been
-  on the board. Specifically unexercised:
-  - **`mqtt.publishSec`** — the clamp, the `setPeriod()` call, and above all the
-    re-sizing of every accumulator window in `sensorsSetup()`. A window sized
-    from the wrong number does not fail; it silently averages over an interval
-    it is not published on, which is the failure mode with no symptom.
-  - **Change-based step publishing.** The deadbands, the heartbeat and the
-    `millis()` rollover are host-tested as arithmetic; what has never run is
-    the whole path — a relay transition reaching the broker through
-    `tbPublishEvent()` at 1 Hz instead of the periodic payload. The number of
-    datapoints this saves is arithmetic from the measured baseline, not a
-    measurement of the new firmware.
-  - **`moistureNFault`.** The verdict it publishes is the same one `/data.json`
-    has carried on the device since 2.7.0; the telemetry key, and the single
-    publish when a fault CLEARS, are new and unseen.
-  - **The instantaneous twins** (`temperatureNow` and the rest). Nothing has
-    confirmed the cloud stores them or that the averages kept their meaning
-    across the change — which is the one thing that would be expensive to
-    discover late.
+- **The parts of firmware 2.8.0 that have NOT run.** The periodic path, the
+  heartbeat, the twins and the accumulator re-sizing are verified above. These
+  are not:
+  - **A relay transition through `tbPublishEvent()`.** No relay has been
+    switched since the flash, so the change-driven half of step publishing -
+    the whole reason it is asynchronous - has never fired. The heartbeat has;
+    they are different code paths.
+  - **The deadbands.** `flowRate` 0.05, `flowTotalLitres` 0.005 and
+    `dhtErrorRate` 0.5 are host-tested as arithmetic only. `dhtErrorRate` has
+    published on the heartbeat alone, at a constant 0.
+  - **`moistureNFault`.** Both probes read healthy, so neither the key nor the
+    single publish when a fault CLEARS has been seen on the device.
   - **The DHT plausibility gate.** No out-of-range reading has been rejected on
-    hardware, and the rate at which `dhtErrorRate` will now move is unknown: it
-    is a derived value with a 0.5-point deadband, so a genuinely faulty sensor
-    could make it a noisier key than it was.
-  - **The dropped bare `relay` key.** No dashboard here is known to read it, but
-    nothing was checked against the cloud either.
+    hardware. Note also that the 45.04 C reading which prompted it is INSIDE
+    the rated 0-50 C band and this gate would NOT have rejected it; only the
+    15.1 % RH case is caught, so the temperature spike remains unexplained.
+  - **The dropped bare `relay` key.** Nothing here is known to read it, but no
+    consumer was checked.
 
 - **Per-probe polarity and probe power gating** (firmware 2.7.0). The config
   keys parse, the five envs build, and the save/load round trip is verified
