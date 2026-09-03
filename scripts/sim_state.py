@@ -374,6 +374,17 @@ class DeviceState:
                     "avg": f"{s.average:.2f}",
                     "var": f"{s.variance:.4f}",
                 }
+                # The sky state rides the luminosity entry, gated exactly as
+                # web_data.cpp gates it: present only when cloud.enabled is on
+                # AND the model has an answer. The mock cycles the three states
+                # off the same clock the sensor uses, because a dashboard badge
+                # that only ever renders one value is a badge nobody styled.
+                if name == "Luminosity" and SIM_CONFIG.get("cloud", {}).get(
+                    "enabled"
+                ):
+                    inputs[name]["state"] = ["clear", "partly cloudy", "overcast"][
+                        int(time.time() / 30) % 3
+                    ]
             if "flow" in io_cfg:
                 inputs["Flow"] = {
                     "val": f"{self._sensors['Flow'].value:.2f}",

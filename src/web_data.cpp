@@ -1,6 +1,7 @@
 #include "core/filesystem.h"
 #include "BuildConfig.h"
 #include "core/accumulator_v2.h"
+#include "core/cloud_model.h"
 #include "core/config.h"
 #include <esp_heap_caps.h>
 #include "core/probe_health.h"
@@ -193,7 +194,18 @@ webUpdateDataCache()
     // confident "0.00" — and /devices.html builds its inventory from these
     // keys, so it would list hardware nobody installed.
     if (config.luminosityFitted) {
-        addAccumulator(inputsJson, config.luminosityName.c_str(), g_luminosity);
+        const char* const name = config.luminosityName.c_str();
+        addAccumulator(inputsJson, name, g_luminosity);
+
+        // Same convention as a probe's `state`: absent rather than empty. The
+        // model reports nothing outside its fitted daylight window and nothing
+        // at all when cloud.enabled is off, and a badge reading "unknown" from
+        // dusk to dawn is a field the eye learns to skip.
+        const CloudReport cloud = cloudReport();
+        const char* const sky = cloudStateName(cloud.state);
+        if (sky[0] != '\0') {
+            inputsJson[name]["state"] = sky;
+        }
     }
 
     // One pin, two channels: a name given to the DHT reads as a prefix so both

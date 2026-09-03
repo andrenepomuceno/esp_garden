@@ -106,6 +106,19 @@ class ConfigFile
     // whether it moved or not.
     unsigned mqttHeartbeatSec;
 
+    // Whether the cloud-cover model runs at all ("cloud": {"enabled": ...}).
+    //
+    // DEFAULT FALSE, and that is the load-bearing part. The clear-sky reference
+    // in include/core/clear_sky_table.h is an upper envelope of ONE sensor's
+    // own history at ONE mounting, fitted by scripts/cloud_fit.py; on another
+    // board, or on this one after the sensor moves, it is a curve the hardware
+    // never produced and every reading under it reads as cloud. Nothing on the
+    // device can detect that, so enabling it is a claim its owner makes after
+    // running the fit against that device's own archive. Same reasoning as
+    // floatInterlock, which is off by default because an unwired float reads
+    // as empty.
+    bool cloudEnabled;
+
     // pins
     uint8_t buttonPin;
 

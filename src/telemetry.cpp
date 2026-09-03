@@ -1,5 +1,6 @@
 #include "core/telemetry.h"
 #include "BuildConfig.h"
+#include "core/cloud_model.h"
 #include "core/config.h"
 #include "core/logger.h"
 #include "core/probe_health.h"
@@ -72,6 +73,7 @@ enum StepSlot
     STEP_FLOW_RATE,
     STEP_FLOW_TOTAL,
     STEP_RESERVOIR_RAISED,
+    STEP_CLOUD_STATE,
     STEP_COUNT
 };
 
@@ -194,6 +196,34 @@ telemetryPublishStepChanges()
                 heartbeat)) {
         telemetry["wateringCycles"] = (int)g_wateringCycles;
         ++keys;
+    }
+
+    // The sky state: it sits still for tens of minutes and then steps, which is
+    // exactly what publish-on-change is for. Two rules it does not share with
+    // the other step keys:
+    //
+    //  - It is only published while the model HAS an answer. Outside the fitted
+    //    daylight window there is no clear-sky reference and therefore no
+    //    state, and a heartbeat re-stating "no reference" every fifteen minutes
+    //    all night is the waste this whole mechanism exists to remove.
+    //  - The transition back is still said once, the same exception
+    //    addProbeFault() makes: without it the cloud shows yesterday's sky for
+    //    ever, and an operator reading "latest" at midnight is told it is clear.
+    {
+        const CloudReport cloud = cloudReport();
+        const bool known = cloud.state != CLOUD_UNKNOWN;
+        const bool wasKnown = g_step[STEP_CLOUD_STATE].valid &&
+                              g_step[STEP_CLOUD_STATE].value !=
+                                (double)CLOUD_UNKNOWN;
+        if ((known || wasKnown) && stepDue(STEP_CLOUD_STATE,
+                                           (double)cloud.state,
+                                           g_stepExact,
+                                           now,
+                                           heartbeat)) {
+            telemetry["cloudState"] =
+              known ? cloudStateName(cloud.state) : "no reference";
+            ++keys;
+        }
     }
 
     if (g_dhtTotalReads > 0) {
@@ -339,7 +369,7 @@ addProbeFault(JSONVar& telemetry, unsigned index)
 // telemetryPublishStepChanges() the moment they move. What is left is the set
 // of channels that genuinely has something new to say on every tick.
 static String
-buildThingsBoardPayload()
+buildThingsBoardPayload(float cloudVariability)
 {
     JSONVar telemetry;
 
@@ -364,6 +394,32 @@ buildThingsBoardPayload()
     }
 
     addContinuous(telemetry, "luminosity", g_luminosity);
+
+    // The one cloud quantity that is a LEVEL, so the one that rides this tick.
+    //
+    // At a 300 s period the stored `luminosity` mean keeps almost nothing about
+    // what happened INSIDE the window: measured on the 60 s archive resampled
+    // to 300 s, the difference between consecutive published means recovers
+    // 5.1 % of the windows whose clearness index moved by 0.10 or more, at a
+    // 1 % false-positive rate. The within-window spread recovers 80 %. Without
+    // this key the archive cannot answer "was the sky flickering" at all.
+    //
+    // It is the mean |dk| per minute and NOT the accumulator's variance,
+    // because the variance is of the LEVEL and the level ramps all morning:
+    // over five-minute windows with a range of five points or more, a smooth
+    // ramp and a flickering sky both sit at a level sd of 3.2, while the
+    // normalised step statistic separates them 1.1 against 3.6. probe_health.h
+    // records making the same mistake once, on the same kind of signal.
+    //
+    // Taken by the caller, not here: cloudTakeVariability() is take-and-clear
+    // and must have exactly ONE caller for the reason relayStickyTake() does.
+    // telemetryPublish() drains it on every tick, including the ticks this
+    // function is never reached on, so the mean always covers one publish
+    // period rather than however long the backend happened to be ThingSpeak or
+    // publishing happened to be switched off.
+    if (cloudVariability >= 0.0f) {
+        telemetry["cloudVariability"] = (double)cloudVariability;
+    }
     addContinuous(telemetry, "temperature", g_temperature);
     addContinuous(telemetry, "airHumidity", g_airHumidity);
     addContinuous(telemetry, "waterLevel", g_waterLevel);
@@ -398,6 +454,10 @@ telemetryPublish()
 {
     static std::list<String> msgQueue;
 
+    // Drained on EVERY tick, above every early return. See
+    // buildThingsBoardPayload().
+    const float cloudVariability = cloudTakeVariability();
+
     // The payload is BUILT AND QUEUED before the connectivity check, not after.
     //
     // The early return used to sit above both push_back calls, so a thirty
@@ -417,7 +477,7 @@ telemetryPublish()
     }
 
     if (mqttIsThingsBoard()) {
-        msgQueue.push_back(buildThingsBoardPayload());
+        msgQueue.push_back(buildThingsBoardPayload(cloudVariability));
         g_mqttMessage = ""; // the ThingSpeak accumulator is unused here
     } else {
 

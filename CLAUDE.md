@@ -33,12 +33,13 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | TalkBack | `src/talkback.cpp` | Hand-rolled HTTP/1.1 POST to `api.thingspeak.com` (**plain HTTP, port 80**) |
 | History | `src/io_history.cpp`, `include/core/segment_index.h` | Append-only segments of I/O snapshots on LittleFS, served by `/history.json` |
 | Moisture model | `src/moisture_classifier.cpp` (pure maths, host-tested), `src/moisture_model.cpp` (training, persistence) | Gaussian naive Bayes per probe, labelled by watering events. See [Soil moisture](#soil-moisture-a-classifier-trained-on-watering-events) |
+| Cloud cover | `src/cloud_cover.cpp` (pure maths, host-tested), `src/cloud_model.cpp` (clock, minute bucket, snapshot), `include/core/clear_sky_table.h` (**generated**) | Clearness index against an empirical clear-sky envelope. See [Cloud cover](#cloud-cover-an-empirical-clear-sky-reference-and-what-the-data-could-not-settle) |
 | Stats | `src/accumulator_v2.cpp` | Rolling window mean + variance over a `std::list<float>` |
 | Web sources | `data/` | Plain, diffable, served as-is by the simulator. `index.*`, `login.*`, `config.*`, `users.*`, `update.*`, `auth.js`; vendored `jquery.js`, `sha256.js`, `spark-md5.js`, `bootstrap.css` (all MIT, shipped `.gz`); `favicon.ico`, `*.pem`, `config.template.json` |
 | Filesystem image | `scripts/build_assets.py` → `.pio/assets/` | Bundles each page's scripts into one file and gzips everything the web server serves. `data_dir` points the image here, so `-t buildfs` cannot pack the unbundled sources |
 | Partitions | `partitions/esp_garden_4mb.csv` | 1.69 MB per OTA slot, 512 KB LittleFS. **Cannot be changed over OTA** |
 | Filesystem | `include/core/filesystem.h` | The one line naming the driver. Everything else says `FILESYSTEM`, never `LittleFS` |
-| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `feeds_plot.py`, `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`, wide CSV on `--csv`), `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090** — charts, the dead-key inventory, boots and gaps; it imports `tb_export`'s seam constant and its sync rather than restating either) |
+| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `cloud_fit.py` (fits the clear-sky reference from the archive and writes the generated header), `feeds_plot.py`, `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`, wide CSV on `--csv`), `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090** — charts, the dead-key inventory, boots and gaps; it imports `tb_export`'s seam constant and its sync rather than restating either) |
 
 **No source file exceeds 1000 lines, and `python scripts/check_lines.py` is what
 says so.** The rule sat in this file unenforced for long enough that two files
@@ -48,7 +49,7 @@ split is expensive, and the useful signal is the file three commits away from
 crossing. `tasks.cpp` (1123), `web.cpp` (1004), `config.cpp` (1125) and
 `devices.js` (1155) were all split at that threshold. `tasks.cpp` kept every `DECLARE_TASK` and every handler and `web.cpp` kept `webSetup()`, in both cases because the ordering *inside* those functions is load-bearing — see the boot sequence and the route-order note below.
 
-Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict and the step-publisher change detection — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`) rather than to stub the platform: both are small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md), including why the JSON logic must not be trusted to a hand-written stub.
+Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict, the cloud-cover classifier and the step-publisher change detection — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`) rather than to stub the platform: both are small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md), including why the JSON logic must not be trusted to a hand-written stub.
 
 ---
 
@@ -395,6 +396,34 @@ called it missing three times.
 
 **Unverified — written, compiles, never run on hardware:**
 
+- **The whole cloud-cover model** (firmware 2.9.0). Fitted on the archive,
+  host-tested in `test_cloud_cover`, built in all five envs, and **shipped
+  OFF**: `cloud.enabled` defaults to false, so on the board today it computes
+  nothing and publishes nothing. What has never happened is a single minute of
+  it running on the device — not one clear-sky lookup against the real clock,
+  not one state, not one episode. Specifically untested on hardware:
+
+  - **That the device's minute mean matches the archive's.** The argument that
+    it does is structural — while `mqtt.publishSec` was 60 the stored
+    `luminosity` series WAS the mean of each minute's 1 Hz samples — but it is
+    an argument, not a measurement, and nothing has compared the two.
+  - **The local clock path.** `localtime_r` against `config.timezone` decides
+    which bin every reading lands in, and a whole-bin error at the morning ramp
+    is eight points of reference. The fit assumed UTC-3 and reproduced the
+    hourly means this file was given, which is evidence about the ARCHIVE.
+  - **The thresholds against a sky somebody looked at.** Every class boundary
+    was fitted to six days of one sensor's numbers. No human has confirmed that
+    the badge said "overcast" while it was overcast.
+  - **The episode rate in the field.** Replay says 0-1 a day settled and 3-7 on
+    a mixed day; the device has produced none.
+  - **`cloudVariability` and `cloudState` in a real payload.** Neither key has
+    reached ThingsBoard.
+
+  And the standing warning, which is the reason for the default: the compiled
+  clear-sky table describes ONE sensor at ONE mounting in ONE season, the
+  archive already contains a mounting change six days before the fit, and
+  **nothing on the device can detect the next one**.
+
 - **`relayStop` on the device** (firmware 2.8.1). The whole contract is
   verified against the simulator — relay started for 20 s, stopped on demand,
   and a repeated stop on an idle relay accepted as harmless — and `index.js`
@@ -594,7 +623,7 @@ Three traps that used to live here are fixed; do not re-introduce them:
 |---|---|---|---|
 | `relays` | 50 ms | **critical** | Switches each relay off when its timer expires |
 | `ledBlink` | 1 s | **critical** | Only blinks while `g_ledBlinkEnabled` |
-| `io` | 1 s | background | All ADC reads, `webUpdateDataCache()`, then the relay / float / **step-value** events |
+| `io` | 1 s | background | All ADC reads, `webUpdateDataCache()`, then the relay / float / **cloud** / **step-value** events. The cloud model rides this tick rather than taking a slot of its own — 59 ticks in 60 only add to a running sum |
 | `dht` | 1 s | background | Enabled only when `config.dhtFitted`; tracks `g_dhtReadErrors` / `g_dhtTotalReads`, and a reading outside the DHT11's rated range is discarded and counted as an error |
 | `checkInternet` | 15 s | background | |
 | `history` | `history.periodSec` (60 s) | background | One `IoRecord` appended to the newest segment; the 60 s here is only the fallback until `tasksSetup()` calls `setPeriod()` |
@@ -644,6 +673,13 @@ Facts worth knowing before touching it:
   - **Every accumulator window is sized from it in `sensorsSetup()`, scalars included.** The scalars used to take their window from `g_mqttTaskPeriod` at *file scope*, which was right only while that period was a constant. Static initialisers run long before `config.json` is read — the exact trap that made a file-scope `DHT_Unified` run for ever on the compiled default pin. `g_pingTime` lives in `tasks.cpp` and is re-sized in `tasksSetup()` for the same reason.
   - **The publish queue depth is `3600000 / mqttPublishPeriodMs()`**, i.e. an hour of buffer at whatever period is configured: 60 messages at the floor, 12 at the ceiling, and it cannot reach zero for any value the clamp allows.
 - **`mqtt.heartbeatSec` (60..3600, default 900) is the floor under change-based publishing**, not a publish period. See [Sampling vs events](#sampling-vs-events--the-rule-and-where-it-was-broken).
+- **`cloud.enabled` (default FALSE) gates the cloud-cover model entirely** — the
+  computation, the `/data.json` badge, `cloudState` and `cloudVariability`. The
+  default is off for the same reason `floatInterlock` is: the clear-sky table
+  compiled into the firmware is an upper envelope of one sensor's own history at
+  one mounting, and on any other board every reading under it reads as cloud.
+  Enabling it is a claim its owner makes after running `scripts/cloud_fit.py`
+  against that device's own archive.
 - **Sensor and relay names are LABELS, not identifiers.** `/data.json` keys `Inputs` and `Outputs` by them, so renaming changes the dashboard immediately — but the `Relays` array stays index-addressed, the history record is positional, and the ThingsBoard telemetry keys stay `moisture1..N`. Renaming therefore never rewrites stored history. A name on `io.dht` is a *prefix*, because one pin produces two channels.
 - **`"version"` in the JSON is still never read** — the template says `2` but nothing enforces or migrates on it. `log.level` *is* read now (clamped to `LOG_DISABLE..LOG_TRACE`) and applied in `loadConfigFile()`.
 - **`loadFile()` mutates fields as it parses and only returns `false` at the end**, so a rejected config leaves a half-populated object behind.
@@ -760,6 +796,11 @@ OTA details: `/updateEnable` arms a module-level `g_otaEnabled` which `handleUpd
   "Relays":  [ { "index": 0, "name": "Watering", "on": 0, "remaining": 0 }, ... ],
   "Channel": "1348790" }
 ```
+
+The luminosity entry carries **`state`** — `clear`, `partly cloudy` or
+`overcast` — and only while `cloud.enabled` is on AND the local time is inside
+the model's fitted daylight window. Absent, not empty, exactly as a probe's
+`state` is.
 
 A moisture entry also carries **`fault`** — `noisy`, `floating`, `railed` or
 `stuck` — and ONLY when there is one, exactly as `state` is absent rather than
@@ -1172,6 +1213,188 @@ why they cannot share a threshold.
 
 ---
 
+## Cloud cover: an empirical clear-sky reference, and what the data could not settle
+
+**Nothing here has run on hardware.** The model is fitted, host-tested, builds
+in all five envs and is **off by default** (`cloud.enabled`). Everything below
+is a measurement on the ARCHIVE, or arithmetic from one — not on the board.
+
+Two sources, in this order, exactly as the moisture badge ladders:
+
+1. **The clearness index** `k = measured / clearSkyReference(time of day)`,
+   turned into `clear` / `partly cloudy` / `overcast`.
+2. **Nothing.** Outside the fitted daylight window, and whenever
+   `cloud.enabled` is false, `/data.json` omits `state` entirely rather than
+   showing a badge it cannot support.
+
+### The archive contains TWO sensor geometries, and that is the biggest finding
+
+Between **2026-08-27 and 2026-08-28** the luminosity channel stepped. First
+light moved from 06:16-06:19 to 06:36-06:51, and every hour's maximum fell by a
+factor that depends only on the time of day:
+
+```
+hour   08-24  08-25  08-26  08-27 | 08-28  08-29  08-30  09-01  09-02  09-03
+   7    2.53   2.38   2.82   2.20 |  0.54   1.03   0.90   0.73   0.74   0.88
+  10    1.34   1.32   1.20   1.36 |  0.39   1.00   0.60   0.61   0.84   0.66
+  13    1.42   1.41   1.31   1.36 |  0.92   1.01   0.95   0.91   0.99   0.97
+  16    1.07   1.17   1.15   1.08 |  0.96   0.95   0.93   0.95   0.92   1.01
+        (that hour's maximum divided by the fitted envelope's)
+```
+
+**That is not weather.** The same time-of-day-locked attenuation repeats across
+six days whose conditions had nothing in common — 31 % RH and 70 % RH, clear
+afternoons and cloudy ones — and the dim mornings are SMOOTH: minute-to-minute
+|delta| p90 of 0.25-0.99 points, against 0.98-2.54 on the bright ones. Fog at
+31 % RH does not exist, and a smooth ramp to a low ceiling is a shadow, not a
+cloud. Something began shading the sensor's morning, or it was moved, around
+the maintenance window that also produced eleven watchdog reboots between 01:03
+and 02:16 on 08-28.
+
+**What this costs:** the usable archive is **six daylight days**, not ten, and
+the morning half of the envelope rests on the two clearest of them. Every number
+below carries that. `scripts/cloud_fit.py` prints the table above on every run
+for exactly this reason — it is how the NEXT geometry change becomes visible,
+and nothing on the device can detect one.
+
+### Why the reference is empirical and not astronomical
+
+The repo owner chose this, and the data agrees. This sensor peaks at about
+**15:00 local, three hours after solar noon**, and its 07:00 reference is 20 %
+of its 15:00 one. A solar-position model would attribute all of that to cloud,
+every morning, for ever — geometry wearing a weather label, which is the same
+failure as a classifier that reads the pump schedule.
+
+The reference is the **98th percentile of every reading in each 10-minute bin**,
+smoothed once with a (1, 2, 1) kernel and **interpolated between bin centres**.
+
+- **144 bins of 10 minutes.** Measured against 5 / 15 / 20 / 30-minute bins,
+  this gave the flattest per-bin median clearness index (sd 0.106), and it is
+  288 bytes.
+- **A moving maximum was tried first and withdrawn.** It drags the brightest
+  sample in a bin up to a bin earlier, and on the morning ramp — which climbs
+  1.6 points a minute at its steepest — that shifts the whole reference. With
+  it, the last bin of the day had a median k of 0.31; without it, 0.48.
+- **Interpolation is not decoration.** At that ramp rate, treating a 10-minute
+  bin as a constant biases every reading in it by up to eight points, which is
+  larger than the gap between two of the three states.
+- **The daylight window is the run of bins around the peak whose reference is
+  at least a quarter of it** — fitted at **07:40-17:39 local**. Below that the
+  ratio stops meaning anything, and this garden's artificial light reaches 13-14
+  points on its own between 19:30 and 21:30, which a plain value floor would
+  have let straight in.
+
+Fitted on 2026-08-28..09-03: peak **95.88 %** at 15:20, k p5/p50/p95 =
+**0.389 / 0.733 / 0.995**, and **3.97 %** of readings sit above the reference —
+which is the point. It is an envelope, not a ceiling.
+
+### The thresholds are on the SENSOR'S scale, not the solar literature's
+
+`k` here is not an irradiance ratio. An LDR read as a fraction of full scale
+compresses irradiance, so the overcast day in this archive sits at k around
+0.52 where a true irradiance ratio would put it near 0.2. Borrowing the solar
+literature's K_t bands would have called every ordinary day overcast.
+
+| | Threshold | What it came from |
+|---|---|---|
+| **clear** | `k >= 0.85` | Four settled fine days (2026-08-24..27, the OTHER geometry, fitted with their own envelope) sit at k p25..p95 = **0.83..1.00** |
+| **overcast** | `k < 0.50` | The one overcast day spent **41.5 %** of its daylight below 0.50; the three brightest post-break days spent **0.3-3.9 %**, and the four fine days 1.5-8.0 % |
+| hysteresis | +-0.05 with a 5-minute dwell | Cuts state changes from 14/day to 2-10/day. Every flap is a published datapoint |
+| smoothing | EWMA alpha = 0.30 on k | |
+
+**The two internal boundaries are the weak part and it should be said plainly.**
+They are fitted to six days, one of which supplies the entire overcast evidence.
+What would move them is more days — specifically a genuinely overcast one and a
+genuinely clear one under the CURRENT geometry.
+
+### The transient is an event, and it had to be
+
+A cloud edge lasts seconds to minutes; the periodic payload is built every
+300 s. [Sampling vs events](#sampling-vs-events--the-rule-and-where-it-was-broken)
+says that must be an event or a sticky flag and never a sample — so it is an
+**episode**: one message when it opens, one when it closes, carrying the length
+nothing else could reconstruct. Publishing per-minute would have been ~500
+datapoints a day on a budget this repo had just cut by 83 %.
+
+- The statistic is an **EWMA (alpha = 0.30) of |dk| between consecutive
+  minutes**: enter above **0.070**, exit below **0.035** held for **3 minutes**.
+- **|dk| and not |d(reading)|.** Dividing by the reference is what removes the
+  diurnal ramp. Measured: over 5-minute windows with a range of 5 points or
+  more, a monotonic ramp and a flickering sky are **indistinguishable by the
+  spread of the level** — both at sd 3.2 — while the step statistic separates
+  them 1.10 against 3.61. `probe_health.h` records making exactly this mistake
+  once, on exactly this kind of signal.
+- **It goes quiet in settled weather, which is the property that matters.**
+  Replayed against the four fine pre-break days with their own envelope:
+  **0, 1, 1, 0 episodes a day.** Against the six fitted days: **3, 4, 5, 6, 7,
+  7** — about 14 events a day at the worst, 0.3 % of the daily budget.
+
+### The 300 s publish period, measured
+
+The question was what the periodic payload's window MEAN costs now that
+`mqtt.publishSec` is 300, and whether publishing the within-window spread buys
+it back. Resampling the 60 s archive into aligned 300 s windows inside the
+fitted daylight window (619 windows), against a ground truth of "the clearness
+index moved by 0.10 or more inside this window" (18.6 % of them), each detector
+thresholded to give 1 % false positives:
+
+| What is published | Recall | Correlation with the within-window k-range |
+|---|---|---|
+| the difference between consecutive 300 s means — **what ships today** | **5.1 %** | 0.455 |
+| the within-window spread of the LEVEL | 86.1 % | 0.958 |
+| the within-window mean \|dk\| — **what was added** | 80.0 % | 0.958 |
+
+**The mean alone loses nineteen transients in twenty.** So `cloudVariability`
+rides the periodic tick: it is a level, and a level is what the third mechanism
+in the sampling table is for. It costs **+288 datapoints/day** on a ~4 320/day
+base, **+6.7 %**.
+
+The level spread scores marginally higher here only because this ground truth is
+itself a within-window quantity; across times of day it cannot tell a ramp from
+a flicker at all, and a stored series whose meaning depends on the hour is worth
+less than six points of recall.
+
+**Two limits on this measurement, both structural.** The 60 s archive is exactly
+the mean of each minute's 1 Hz samples — which is why the device's own minute
+bucket reproduces the fitted quantity with nothing assumed — but the device sees
+300 samples per publish window where this test saw 5, so the recovered recall is
+a **lower bound**. The same fact cuts the other way: now that the device
+publishes at 300 s, **the transient thresholds can no longer be re-fitted from
+the archive** without temporarily dropping `mqtt.publishSec` back to 60.
+
+### What it costs on the chip
+
+Measured from `espgarden2`'s ELF symbol table, not estimated:
+
+| | Bytes |
+|---|---|
+| `g_clearSkyTable` (144 x `uint16_t`, hundredths of a percent) | **288** flash |
+| `g_cloudParams` | 48 flash |
+| the pure classifier's code (8 functions) | 873 flash |
+| the Arduino half's code (4 functions) | 1 032 flash |
+| `CloudModel` + the snapshot + the minute bucket, resident | **100 RAM** |
+| **whole change, every file:** 1 242 585 -> 1 246 489 | **+3 904 flash, +136 static RAM** |
+
+**No task was added.** It rides the 1 Hz io task, and 59 ticks in 60 do nothing
+but add to a running sum — which matters, because `addTask()` silently drops
+past `CRITICALTASKSCHEDULER_MAX_TASKS`.
+
+### What the data could not settle
+
+- **Whether the 2026-08-28 break is a moved sensor or a new obstruction.** It is
+  certainly geometry; which one needs somebody standing at the garden.
+- **The overcast threshold**, resting on one overcast day.
+- **A genuinely clear day under the CURRENT geometry.** The best fitted day has
+  a daylight median k of 0.913, so the envelope's morning is anchored on two
+  days, not six.
+- **Anything seasonal.** Ten days at the end of one winter, of which six are
+  usable. Day length and solar elevation move underneath this table and nothing
+  re-fits it automatically.
+- **The last bin of the day.** 17:30-17:39 has a fitted median k of 0.48 against
+  0.73 across the window, so the model leans toward `overcast` in the final ten
+  minutes. Four of the six fitted days genuinely had cloudy late afternoons, and
+  six days cannot separate that from a reference set too high.
+
 ## Web assets — bundled and gzipped, because requests are the scarce resource
 
 `devices.html` stopped loading, and the browser said
@@ -1515,7 +1738,15 @@ So these leave through `tbPublishEvent()` the moment they move, from the io task
 at 1 Hz, and are absent from the periodic payload entirely: `relay1..N`,
 `relay1..NRan`, `relayMask`, `relayRanMask`, `connectionLoss`,
 `wateringCycles`, `dhtErrorRate`, `flowRate`, `flowTotalLitres`,
-`reservoirRaised`.
+`reservoirRaised`, `cloudState`.
+
+**`cloudState` carries one exception the others do not**, and it is the same
+one `moistureNFault` carries: it is published only while the model HAS an
+answer. Outside the fitted daylight window there is no clear-sky reference and
+therefore no state, and a heartbeat restating "no reference" every fifteen
+minutes all night is precisely the waste this mechanism exists to remove. The
+transition BACK is still spent — one publish of `no reference` at dusk — or an
+operator reading "latest" at midnight is told the sky is clear.
 
 - **`mqtt.heartbeatSec` (default 900) is the floor under it.** A key that never
   changes would otherwise be absent from the cloud for as long as it stays put,
@@ -1579,6 +1810,13 @@ the version could possibly have changed.
   fault for ever, so that single datapoint is spent.
 - **`Min Free Heap`** — already a low-water mark, which is the sticky form of a
   quantity. A spike between publishes is caught. `Free Heap` alone would not.
+- **`cloudVariability`** — the mean |dk| per minute over the publish period,
+  and the only cloud quantity that is a LEVEL rather than a transition. It is
+  here because at 300 s the window mean alone recovers 5.1 % of the transients
+  in the window against the spread's 80 %; see
+  [Cloud cover](#cloud-cover-an-empirical-clear-sky-reference-and-what-the-data-could-not-settle).
+  It is take-and-clear with exactly ONE caller, for the reason
+  `relayStickyTake()` has exactly one.
 - **The moisture CLASS** (Dry/Humid/Wet) — sampled. Defensible while the soil
   moves slowly, but a watering causes a fast transition, so a class-change
   event is the obvious next one if a badge is ever seen to skip a state.

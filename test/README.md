@@ -22,10 +22,16 @@ environment.
 ## What can be tested here, and what cannot
 
 `[env:native]` has no Arduino core, so only code that compiles standalone is in
-scope. Today that is `AccumulatorV2`, `core/segment_index.h` and `core/probe_health.h`. The middle one exists as a
+scope. Today that is `AccumulatorV2`, `core/segment_index.h`,
+`core/probe_health.h`, `core/step_publisher.h`, `core/moisture_classifier.h`,
+`core/fw_version.h` and `core/cloud_cover.h`. `segment_index.h` exists as a
 separate header precisely so it can be tested: the ring arithmetic behind
 `/history.json` reorders records rather than failing when it is wrong, and the
-rest of `IoHistory` is inseparable from LittleFS.
+rest of `IoHistory` is inseparable from LittleFS. `cloud_cover.cpp` is split
+from `cloud_model.cpp` for the same reason the moisture classifier is split
+from its trainer — a wrong clearness index reports the wrong sky rather than
+crashing, and `test_cloud_cover` builds its own reference table so a suite does
+not start failing whenever the weather does.
 
 `fullbot-firmware` covers the rest with a stub layer in
 `test/support/native_includes/` (in-memory LittleFS/SD, a `JSONVar`

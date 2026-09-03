@@ -53,6 +53,7 @@ SIM_CONFIG = {
         "publishSec": 300,
         "heartbeatSec": 900,
     },
+    "cloud": {"enabled": True},
     "log": {"level": 4},
     "history": {"records": 1440, "periodSec": 60},
     "io": {

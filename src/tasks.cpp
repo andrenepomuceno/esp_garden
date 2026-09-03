@@ -1,5 +1,6 @@
 #include "core/tasks.h"
 #include "BuildConfig.h"
+#include "core/cloud_model.h"
 #include "core/io_history.h"
 #include "core/moisture_model.h"
 #include "network/thingsboard.h"
@@ -211,6 +212,42 @@ publishFloatEvents()
     lastRaised = raised;
 }
 
+// A cloud transient lasts seconds to minutes and the periodic payload is built
+// once every five minutes, so sampling it would miss most of them entirely --
+// the rule this tree wrote down after the telemetry spent months sampling
+// relays. An episode is therefore an EVENT: one message when it opens and one
+// when it closes, carrying the length nothing else could reconstruct.
+//
+// The STATE is not here. A sky state sits still for tens of minutes and then
+// steps, which is the third mechanism -- publish on change with a heartbeat
+// under it -- and it leaves through telemetryPublishStepChanges() with the
+// relay states and the reservoir contact.
+static void
+publishCloudEvents(int events)
+{
+    if ((events & (CLOUD_EVENT_TRANSIENT_BEGAN | CLOUD_EVENT_TRANSIENT_ENDED)) ==
+        0) {
+        return;
+    }
+
+    const CloudReport report = cloudReport();
+
+    JSONVar event;
+    event["cloudEvent"] =
+      (events & CLOUD_EVENT_TRANSIENT_BEGAN) ? "transient began" : "transient ended";
+    event["cloudVariability"] = (double)report.variability;
+    if (report.clearness >= 0.0f) {
+        event["cloudClearness"] = (double)report.clearness;
+    }
+    if (events & CLOUD_EVENT_TRANSIENT_ENDED) {
+        // Only meaningful at the close: the peak and the length are what an
+        // operator reads the episode by, and neither is knowable while it runs.
+        event["cloudTransientMin"] = (int)report.transientMinutes;
+        event["cloudTransientPeak"] = (double)report.transientPeak;
+    }
+    tbPublishEvent(JSON.stringify(event));
+}
+
 // Seam with src/relays.cpp: startRelay() calls this once the relay is
 // energised, so relay switching itself stays free of the watering bookkeeping.
 void
@@ -264,6 +301,7 @@ ioTaskHandler()
     // messages, on a background task where building a String is allowed.
     publishRelayEvents();
     publishFloatEvents();
+    publishCloudEvents(cloudModelTick());
 
     // Every step VALUE that moved, on the same 1 Hz beat and for the same
     // reason: an asynchronous change belongs in asynchronous telemetry, not in
@@ -636,6 +674,8 @@ tasksSetup()
     g_pingTime.setMaxLen(mqttPeriod / g_checkInternetTaskPeriod);
 
     sensorsSetup();
+
+    cloudModelSetup();
 
     relaysSetup();
 

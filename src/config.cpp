@@ -94,6 +94,7 @@ ConfigFile::ConfigFile()
     // out the moment they happen.
     mqttPublishSec = 300;
     mqttHeartbeatSec = 900;
+    cloudEnabled = false;
 
     // pins
     buttonPin = 0;
@@ -374,6 +375,13 @@ ConfigFile::loadFile(unsigned deviceID)
                            String(mqttHeartbeatSec));
         } else {
             mqttHeartbeatSec = (unsigned)sec;
+        }
+    }
+
+    if (configJson.hasOwnProperty("cloud")) {
+        JSONVar cloud = configJson["cloud"];
+        if (cloud.hasOwnProperty("enabled")) {
+            cloudEnabled = (bool)cloud["enabled"];
         }
     }
 

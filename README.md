@@ -12,6 +12,10 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
 - **Per-probe moisture classification** — Dry / Humid / Wet from a Gaussian
   naive Bayes model trained on the probe's own watering record, falling back to
   a two-point calibration and then to no badge at all
+- **Cloud cover from the light sensor** — clear / partly cloudy / overcast
+  against an empirical clear-sky reference fitted from the device's own
+  archive, plus a cloud-transient episode on the event path. Off by default;
+  see [Cloud cover](#cloud-cover)
 - **Scheduled watering** — up to 8 timed relay activations, edited in the web UI
 - **Cloud logging** — sensor data published to ThingSpeak or ThingsBoard over MQTT (TLS)
 - **On-device history** — append-only segments keep the last N I/O snapshots
@@ -137,6 +141,13 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
         "fwTitle": "esp-garden",  // only firmware with this fw_title is flashed
         "publishSec": 300,        // periodic payload period, 60..300 s
         "heartbeatSec": 900       // step values are re-sent at least this often
+    },
+    "cloud": {
+        // Cloud cover from the luminosity channel. OFF by default: the
+        // clear-sky reference compiled into the firmware is an upper envelope
+        // of ONE sensor's own history at ONE mounting (scripts/cloud_fit.py),
+        // and on any other board every reading under it reads as cloud.
+        "enabled": false
     },
     "log": {
         "level": 4               // 0 disable .. 4 info (default) .. 6 trace
@@ -489,6 +500,43 @@ python scripts/moisture_calibration.py --days 30
 python scripts/moisture_calibration.py --days 30 --end 2023-03-08   # a past window
 python scripts/moisture_calibration.py --dry 94.0 --wet 12.0        # emit bands
 ```
+
+## Cloud cover
+
+Off by default (`cloud.enabled`), and it has **never run on hardware**.
+
+The luminosity channel is turned into a sky state by dividing each minute's mean
+by a **clear-sky reference for that time of day**, giving a clearness index
+`k`. Above 0.85 is `clear`, below 0.50 `overcast`, in between `partly cloudy`,
+with a +-0.05 hysteresis band and a five-minute dwell so the badge does not
+flap. It appears on `/data.json` as `state` on the luminosity input — absent,
+not empty, whenever the model has no answer.
+
+Separately, how far `k` moves from minute to minute opens and closes a
+**cloud-transient episode**, published as an event the moment it happens rather
+than sampled into the five-minute payload, because a cloud edge is shorter than
+the payload period. The period's mean step is published as `cloudVariability`.
+
+### The reference is this device's own history, not solar geometry
+
+```
+python scripts/cloud_fit.py            # fit, report, write the header
+python scripts/cloud_fit.py --dry-run  # report only
+```
+
+It reads `backups/telemetry.sqlite` (see `scripts/tb_export.py`) and writes
+`include/core/clear_sky_table.h`: 144 ten-minute bins holding the 98th
+percentile of everything measured in each, which is 288 bytes of flash.
+
+This device's luminosity peaks around **15:00 local**, three hours after solar
+noon, because something shades it in the morning. A solar-position model would
+call that cloud every morning for ever, which is why the reference is measured
+rather than computed — and why it describes **one sensor at one mounting in one
+season**.
+
+**Re-run it after moving the sensor, and read the regime table it prints.** The
+archive already contains one mounting change, on 2026-08-28, and the fit
+excludes everything before it. Nothing on the device can detect the next one.
 
 ## Web Interface
 

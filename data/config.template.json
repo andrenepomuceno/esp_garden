@@ -35,6 +35,9 @@
     "publishSec": 300,
     "heartbeatSec": 900
   },
+  "cloud": {
+    "enabled": false
+  },
   "log": {
     "level": 4
   },
