@@ -12,3 +12,7 @@ __pycache__/
 
 # deploy/.env holds the real VPS credentials; deploy/.env.example is the tracked template.
 deploy/.env
+
+# ThingsBoard read credential, kept out of the tree on purpose. Untracked is
+# not enough: a stray `git add` would publish it to a remote.
+.chave_tb_*
