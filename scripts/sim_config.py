@@ -50,6 +50,8 @@ SIM_CONFIG = {
         "rpc": True,
         "fwUpdate": True,
         "fwTitle": "esp-garden",
+        "publishSec": 300,
+        "heartbeatSec": 900,
     },
     "log": {"level": 4},
     "history": {"records": 1440, "periodSec": 60},
