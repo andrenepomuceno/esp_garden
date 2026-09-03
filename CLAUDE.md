@@ -38,7 +38,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | Filesystem image | `scripts/build_assets.py` → `.pio/assets/` | Bundles each page's scripts into one file and gzips everything the web server serves. `data_dir` points the image here, so `-t buildfs` cannot pack the unbundled sources |
 | Partitions | `partitions/esp_garden_4mb.csv` | 1.69 MB per OTA slot, 512 KB LittleFS. **Cannot be changed over OTA** |
 | Filesystem | `include/core/filesystem.h` | The one line naming the driver. Everything else says `FILESYSTEM`, never `LittleFS` |
-| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `feeds_plot.py`, `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`, wide CSV on `--csv`) |
+| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `feeds_plot.py`, `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`, wide CSV on `--csv`), `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090** — charts, the dead-key inventory, boots and gaps; it imports `tb_export`'s seam constant and its sync rather than restating either) |
 
 **No source file exceeds 1000 lines, and `python scripts/check_lines.py` is what
 says so.** The rule sat in this file unenforced for long enough that two files
