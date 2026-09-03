@@ -187,8 +187,43 @@ function $(s) { return document.querySelector(s); }
 // is a link -- worth having when the answer to "look at this" is otherwise
 // eleven clicks, and it is what makes the page testable from a headless
 // browser at all.
+// Saved across reloads, but the URL always wins. A link carrying ?win=30d is
+// someone saying "look at THIS"; restoring the reader's own last window over it
+// would quietly answer a different question than the one they were sent.
+var STORE = 'telemetry_ui.v1';
+
+function loadSaved() {
+  try {
+    return JSON.parse(localStorage.getItem(STORE) || 'null');
+  } catch (e) {
+    // Private windows and blocked site-data throw on ACCESS, not just on read,
+    // so this has to be caught rather than checked for.
+    return null;
+  }
+}
+function saveState(view) {
+  try {
+    localStorage.setItem(STORE, JSON.stringify({
+      view: view, win: state.win, gapMin: state.gapMin, keys: state.keys,
+      sort: state.sort, desc: state.desc
+    }));
+  } catch (e) { /* nothing here is worth failing a render over */ }
+}
+
 function readUrl() {
   var q = new URLSearchParams(location.search);
+  var fresh = !q.has('view') && !q.has('win') && !q.has('keys') && !q.has('gap');
+  if (fresh) {
+    var saved = loadSaved();
+    if (saved) {
+      if (typeof saved.win === 'number') state.win = saved.win;
+      if (typeof saved.gapMin === 'number') state.gapMin = saved.gapMin;
+      if (Array.isArray(saved.keys)) state.keys = saved.keys;
+      if (saved.sort) state.sort = saved.sort;
+      if (typeof saved.desc === 'boolean') state.desc = saved.desc;
+      return saved.view || 'chart';
+    }
+  }
   if (q.has('win')) state.win = parseInt(q.get('win'), 10) || 0;
   if (q.has('gap')) state.gapMin = parseInt(q.get('gap'), 10) || 5;
   if (q.has('keys')) state.keys = q.get('keys').split(',').filter(Boolean);
@@ -201,6 +236,7 @@ function writeUrl() {
   if (state.keys.length) q.set('keys', state.keys.join(','));
   if (currentView() === 'boots') q.set('gap', state.gapMin);
   history.replaceState(null, '', '?' + q.toString());
+  saveState(currentView());
 }
 function currentView() {
   var on = document.querySelector('nav button.on');
