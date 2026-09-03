@@ -163,7 +163,14 @@ publishRelayEvents()
         event[key.c_str()] = pending[i].started
                                ? (pending[i].ended ? "ran" : "started")
                                : "stopped";
-        event["relay"] = (int)i;
+        // No bare `relay` key. It carried a ZERO-based index while every
+        // relayN telemetry key is one-based, so a stored record read
+        // {relay: "2", relayName: "Reservatorio", relay3Event: "started"} and
+        // anything joining the two was off by one. relayNEvent already names
+        // the relay at the correct index, which makes the bare key redundant as
+        // well as wrong — and dropping it is the fix that does not create a
+        // second meaning for a key already in the stored series, which
+        // renumbering it would.
         event["relayName"] = config.relayName[i];
         if (pending[i].started) {
             event["durationMs"] = (int)pending[i].duration;
@@ -252,11 +259,17 @@ ioTaskHandler()
     // handler must never walk these lists itself.
     webUpdateDataCache();
 
-    // Relay transitions, at 1 Hz rather than at the 1-minute publish. The
+    // Relay transitions, at 1 Hz rather than at the periodic publish. The
     // critical runner and startRelay() only set bits; this is where they become
     // messages, on a background task where building a String is allowed.
     publishRelayEvents();
     publishFloatEvents();
+
+    // Every step VALUE that moved, on the same 1 Hz beat and for the same
+    // reason: an asynchronous change belongs in asynchronous telemetry, not in
+    // a payload built once every five minutes. Both leave through the outbox
+    // tbLoop() drains on every loop() iteration, so latency is milliseconds.
+    telemetryPublishStepChanges();
 }
 
 static void
@@ -608,6 +621,20 @@ tasksSetup()
     g_taskScheduler.addTask(&g_checkMoistureTask);
     g_taskScheduler.addTask(&g_dhtTask);
 
+    // Before sensorsSetup(), which sizes every accumulator window from it.
+    // g_mqttTaskPeriod is only the compiled fallback the task was constructed
+    // on; the real period is mqtt.publishSec, exactly as the history task
+    // takes its period from config.historyPeriodSec.
+    const unsigned mqttPeriod = mqttPublishPeriodMs();
+    g_mqttTask.setPeriod(mqttPeriod);
+
+    // The ping accumulator is a file-scope object, so it was sized at static
+    // init from the compiled period — before config.json had been read. Same
+    // trap as the DHT instance, same fix: re-size it once the real period is
+    // known, or its average covers a different interval from every other
+    // channel in the payload it shares.
+    g_pingTime.setMaxLen(mqttPeriod / g_checkInternetTaskPeriod);
+
     sensorsSetup();
 
     relaysSetup();
@@ -669,7 +696,7 @@ tasksSetup()
     }
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
     g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
-    g_mqttTask.enableDelayed(g_mqttTaskPeriod);
+    g_mqttTask.enableDelayed(mqttPeriod);
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
     g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
     // Trains 5 minutes after boot as well as daily: a device that is power

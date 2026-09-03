@@ -185,17 +185,31 @@ floatRaised()
 void
 sensorsSetup()
 {
-    // Every scalar accumulator sizes its window from the MQTT period at
-    // construction, so each average covers exactly one publish interval. An
-    // array cannot pass a constructor argument, so the probes are sized here
-    // instead — otherwise they silently keep the 120-sample default and their
-    // averages span a different interval from every other channel.
+    // EVERY accumulator is sized here, scalars included, and the size comes
+    // from the CONFIGURED publish period rather than from the compiled one.
+    //
+    // The scalars used to take their window from g_mqttTaskPeriod at file
+    // scope, which was correct only while that period was a constant. It is
+    // mqtt.publishSec now, and static initialisers run long before
+    // config.json is read — the exact trap that made a file-scope DHT_Unified
+    // run for ever on the compiled default pin. So the constructor argument is
+    // just a safe starting length and this is where the real one is applied.
+    //
     // Sized for every slot, not just the fitted ones: an unfitted probe is
     // never fed, so the window costs nothing, and a probe added in the web UI
     // is correctly sized on the next boot without a second code path.
+    const unsigned publishMs = mqttPublishPeriodMs();
+    const unsigned ioWindow = publishMs / g_ioTaskPeriod;
+    const unsigned dhtWindow = publishMs / g_dhtTaskPeriod;
+
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
-        g_soilMoisture[i].setMaxLen(g_mqttTaskPeriod / g_ioTaskPeriod);
+        g_soilMoisture[i].setMaxLen(ioWindow);
     }
+    g_luminosity.setMaxLen(ioWindow);
+    g_waterLevel.setMaxLen(ioWindow);
+    g_flowRate.setMaxLen(ioWindow);
+    g_temperature.setMaxLen(dhtWindow);
+    g_airHumidity.setMaxLen(dhtWindow);
 
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
         probeHealthReset(g_probeHealth[i]);
@@ -398,6 +412,29 @@ sensorsSetupDht()
     logger.info("DHT11 on GPIO " + String(config.dhtPin));
 }
 
+// The DHT11's rated measuring range, from its datasheet.
+//
+// A reading outside it is a BAD READ, not weather. The part cannot resolve
+// anything beyond these bounds, so a number that lands there came from a
+// mistimed single-wire frame, not from the air — and this device published
+// exactly that: airHumidity bottomed at 15.1 %, ten points below anything the
+// sensor can measure, while dhtErrorRate read 0.00 the whole time.
+//
+// Two things were wrong with that, and they compound. The out-of-range sample
+// was averaged into the window every dashboard and every stored point is drawn
+// from, so it moved a number nobody could trace back to a fault. And it was
+// counted as a SUCCESSFUL read, so the one counter that exists to say the
+// sensor is misbehaving said the opposite. Discarding it without counting it
+// would fix the first and keep the second, which is why it is counted as an
+// error rather than merely dropped.
+//
+// The bounds are the datasheet's, not a tuning knob: widen them and the gate
+// stops meaning "the sensor cannot have measured this".
+static const float g_dhtMinTempC = 0.0f;
+static const float g_dhtMaxTempC = 50.0f;
+static const float g_dhtMinHumidityPct = 20.0f;
+static const float g_dhtMaxHumidityPct = 90.0f;
+
 void
 sensorsReadDht()
 {
@@ -409,17 +446,23 @@ sensorsReadDht()
     bool error = false;
 
     g_dht->temperature().getEvent(&event);
-    if (isnan(event.temperature) == false) {
-        g_temperature.add(event.temperature);
-    } else {
+    if (isnan(event.temperature)) {
         error = true;
+    } else if (event.temperature < g_dhtMinTempC ||
+               event.temperature > g_dhtMaxTempC) {
+        error = true;
+    } else {
+        g_temperature.add(event.temperature);
     }
 
     g_dht->humidity().getEvent(&event);
-    if (isnan(event.relative_humidity) == false) {
-        g_airHumidity.add(event.relative_humidity);
-    } else {
+    if (isnan(event.relative_humidity)) {
         error = true;
+    } else if (event.relative_humidity < g_dhtMinHumidityPct ||
+               event.relative_humidity > g_dhtMaxHumidityPct) {
+        error = true;
+    } else {
+        g_airHumidity.add(event.relative_humidity);
     }
 
     ++g_dhtTotalReads;

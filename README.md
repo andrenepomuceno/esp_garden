@@ -134,7 +134,9 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
         "useTLS": true,           // false for a self-hosted broker on 1883
         "rpc": true,              // accept remote commands (ThingsBoard only)
         "fwUpdate": true,         // accept firmware pushed from the broker
-        "fwTitle": "esp-garden"   // only firmware with this fw_title is flashed
+        "fwTitle": "esp-garden",  // only firmware with this fw_title is flashed
+        "publishSec": 300,        // periodic payload period, 60..300 s
+        "heartbeatSec": 900       // step values are re-sent at least this often
     },
     "log": {
         "level": 4               // 0 disable .. 4 info (default) .. 6 trace

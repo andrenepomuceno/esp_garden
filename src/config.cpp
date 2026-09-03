@@ -86,6 +86,14 @@ ConfigFile::ConfigFile()
     mqttRpc = true;
     mqttFwUpdate = true;
     mqttFwTitle = "esp-garden";
+    // Five minutes, not one. Step values no longer wait for this tick at all,
+    // so the only thing it sets is how finely the continuous sensor channels
+    // are sampled — and soil moisture, air temperature and daylight do not move
+    // fast enough for a minute to say five times as much as five minutes does.
+    // Anything that DOES move faster than the tick is an event, and events go
+    // out the moment they happen.
+    mqttPublishSec = 300;
+    mqttHeartbeatSec = 900;
 
     // pins
     buttonPin = 0;
@@ -341,6 +349,31 @@ ConfigFile::loadFile(unsigned deviceID)
             // An empty title would match nothing, so every update would be
             // ignored with only a warning per announcement to say why.
             logger.warning("Empty mqtt.fwTitle; keeping " + mqttFwTitle);
+        }
+    }
+    if (mqtt.hasOwnProperty("publishSec")) {
+        const int sec = (int)mqtt["publishSec"];
+        // Clamped rather than accepted: below 60 s the accumulator windows stop
+        // covering a publish interval usefully, and above 300 s a watering that
+        // finishes between two ticks leaves a moisture rise with no sampled
+        // cause. Out of range is refused loudly instead of being silently
+        // honoured -- a device publishing on a period nobody chose is exactly
+        // the kind of thing that goes unnoticed for years here.
+        if (sec < 60 || sec > 300) {
+            logger.warning("Ignoring out-of-range mqtt.publishSec " +
+                           String(sec) + "; keeping " + String(mqttPublishSec));
+        } else {
+            mqttPublishSec = (unsigned)sec;
+        }
+    }
+    if (mqtt.hasOwnProperty("heartbeatSec")) {
+        const int sec = (int)mqtt["heartbeatSec"];
+        if (sec < 60 || sec > 3600) {
+            logger.warning("Ignoring out-of-range mqtt.heartbeatSec " +
+                           String(sec) + "; keeping " +
+                           String(mqttHeartbeatSec));
+        } else {
+            mqttHeartbeatSec = (unsigned)sec;
         }
     }
 

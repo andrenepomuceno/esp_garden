@@ -84,6 +84,28 @@ class ConfigFile
     // click, so this is the catch that keeps another board's image out.
     String mqttFwTitle;
 
+    // How often the PERIODIC payload goes out, in seconds, clamped to 60..300.
+    //
+    // It is configuration and not a constant because how finely a garden needs
+    // sampling is a property of the garden. Only the CONTINUOUS sensor channels
+    // ride this tick — step values publish on change (see mqttHeartbeatSec), so
+    // lengthening it does not delay a relay transition by a millisecond.
+    //
+    // Every accumulator window is sized from this at sensorsSetup(), so each
+    // average still covers exactly one publish interval, and the publish queue
+    // is still an hour deep at any value in range.
+    unsigned mqttPublishSec;
+
+    // How long a step value may go unpublished while it does not change, in
+    // seconds, clamped to 60..3600.
+    //
+    // Change-based publishing on its own leaves a key that never changes absent
+    // from the cloud for as long as it stays put, and an operator reading
+    // "latest" cannot tell a stable value from a dead device. The heartbeat is
+    // the floor under that: every step key is re-sent at least this often
+    // whether it moved or not.
+    unsigned mqttHeartbeatSec;
+
     // pins
     uint8_t buttonPin;
 

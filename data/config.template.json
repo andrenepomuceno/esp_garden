@@ -31,7 +31,9 @@
     "useTLS": true,
     "rpc": true,
     "fwUpdate": true,
-    "fwTitle": "esp-garden"
+    "fwTitle": "esp-garden",
+    "publishSec": 300,
+    "heartbeatSec": 900
   },
   "log": {
     "level": 4

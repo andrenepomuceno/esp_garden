@@ -15,11 +15,11 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | Layer | Path | Role |
 |---|---|---|
 | Entry point | `src/main.cpp` (108 lines) | Relay safe-init, device id, filesystem, config, logger backup, `webSetup()`, `tasksSetup()` |
-| Orchestration | `src/tasks.cpp` (707) | **The single task-registration site.** Every `DECLARE_TASK`, every handler body, `tasksSetup()`, `tasksLoop()`, schedules, connectivity |
+| Orchestration | `src/tasks.cpp` (769) | **The single task-registration site.** Every `DECLARE_TASK`, every handler body, `tasksSetup()`, `tasksLoop()`, schedules, connectivity |
 | Relays | `src/relays.cpp` (259) | Relay state under `g_relayMux`, `startRelay`/`stopRelay`/`startWatering`, the 50 ms critical tick |
-| Sensors | `src/sensors.cpp` (285) | Every ADC read, the flow ISR, the float switch, the DHT, `moistureState()` |
-| Telemetry | `src/telemetry.cpp` (224) | ThingSpeak field constants, `mqttAddField`, the ThingsBoard payload, the publish queue |
-| Config | `src/config.cpp` (676), `include/core/config.h` | `ConfigFile` singleton + `g_*` reference aliases for the non-pin fields |
+| Sensors | `src/sensors.cpp` (472) | Every ADC read, the flow ISR, the float switch, the DHT and its plausibility gate, `moistureState()` |
+| Telemetry | `src/telemetry.cpp` (504), `include/core/step_publisher.h` | ThingSpeak field constants, `mqttAddField`, the periodic ThingsBoard payload, the change-based step publisher, the publish queue |
+| Config | `src/config.cpp` (775), `include/core/config.h` | `ConfigFile` singleton + `g_*` reference aliases for the non-pin fields |
 | Config — pins | `src/config_pins.cpp` | What a WROOM-32 GPIO can do, and the boot-time audit that applies it. One place, three consumers |
 | Config — `io` | `src/config_io.cpp` | Parsers for the `io` block, where every entry accepts several shapes so a field device keeps loading after a firmware update |
 | Config — save | `src/config_document.cpp` | Whole-document validation before a write: the save-time counterpart of `loadFile()` |
@@ -48,7 +48,7 @@ split is expensive, and the useful signal is the file three commits away from
 crossing. `tasks.cpp` (1123), `web.cpp` (1004), `config.cpp` (1125) and
 `devices.js` (1155) were all split at that threshold. `tasks.cpp` kept every `DECLARE_TASK` and every handler and `web.cpp` kept `webSetup()`, in both cases because the ordering *inside* those functions is load-bearing — see the boot sequence and the route-order note below.
 
-Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history ring arithmetic and firmware-version comparison — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. See [test/README.md](test/README.md), including why the JSON logic must not be trusted to a hand-written stub.
+Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict and the step-publisher change detection — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`) rather than to stub the platform: both are small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md), including why the JSON logic must not be trusted to a hand-written stub.
 
 ---
 
@@ -360,6 +360,33 @@ called it missing three times.
 
 **Unverified — written, compiles, never run on hardware:**
 
+- **Everything in firmware 2.8.0's telemetry change.** Five envs build, 70 host
+  tests pass including the new `test_step_publisher`, and no part of it has been
+  on the board. Specifically unexercised:
+  - **`mqtt.publishSec`** — the clamp, the `setPeriod()` call, and above all the
+    re-sizing of every accumulator window in `sensorsSetup()`. A window sized
+    from the wrong number does not fail; it silently averages over an interval
+    it is not published on, which is the failure mode with no symptom.
+  - **Change-based step publishing.** The deadbands, the heartbeat and the
+    `millis()` rollover are host-tested as arithmetic; what has never run is
+    the whole path — a relay transition reaching the broker through
+    `tbPublishEvent()` at 1 Hz instead of the periodic payload. The number of
+    datapoints this saves is arithmetic from the measured baseline, not a
+    measurement of the new firmware.
+  - **`moistureNFault`.** The verdict it publishes is the same one `/data.json`
+    has carried on the device since 2.7.0; the telemetry key, and the single
+    publish when a fault CLEARS, are new and unseen.
+  - **The instantaneous twins** (`temperatureNow` and the rest). Nothing has
+    confirmed the cloud stores them or that the averages kept their meaning
+    across the change — which is the one thing that would be expensive to
+    discover late.
+  - **The DHT plausibility gate.** No out-of-range reading has been rejected on
+    hardware, and the rate at which `dhtErrorRate` will now move is unknown: it
+    is a derived value with a 0.5-point deadband, so a genuinely faulty sensor
+    could make it a noisier key than it was.
+  - **The dropped bare `relay` key.** No dashboard here is known to read it, but
+    nothing was checked against the cloud either.
+
 - **Per-probe polarity and probe power gating** (firmware 2.7.0). The config
   keys parse, the five envs build, and the save/load round trip is verified
   against the simulator — but no probe has yet been read with `invert` false,
@@ -532,12 +559,12 @@ Three traps that used to live here are fixed; do not re-introduce them:
 |---|---|---|---|
 | `relays` | 50 ms | **critical** | Switches each relay off when its timer expires |
 | `ledBlink` | 1 s | **critical** | Only blinks while `g_ledBlinkEnabled` |
-| `io` | 1 s | background | All ADC reads, then `webUpdateDataCache()` |
-| `dht` | 1 s | background | Enabled only when `config.dhtFitted`; tracks `g_dhtReadErrors` / `g_dhtTotalReads` |
+| `io` | 1 s | background | All ADC reads, `webUpdateDataCache()`, then the relay / float / **step-value** events |
+| `dht` | 1 s | background | Enabled only when `config.dhtFitted`; tracks `g_dhtReadErrors` / `g_dhtTotalReads`, and a reading outside the DHT11's rated range is discarded and counted as an error |
 | `checkInternet` | 15 s | background | |
 | `history` | `history.periodSec` (60 s) | background | One `IoRecord` appended to the newest segment; the 60 s here is only the fallback until `tasksSetup()` calls `setPeriod()` |
 | `schedules` | 20 s | background | Fires a due schedule; three ticks a minute, with a 10 min catch-up window |
-| `mqtt` | 1 min | background | Builds and publishes the payload for whichever backend is configured |
+| `mqtt` | `mqtt.publishSec` (5 min) | background | Builds and publishes the **periodic** payload for whichever backend is configured. The compiled 1 min is only the fallback until `tasksSetup()` calls `setPeriod()`, exactly as for `history`. Step values do not ride this tick at all |
 | `talkBack` | 1 min | background | Polls the TalkBack queue |
 | `clockUpdate` | 24 h | background | NTP re-sync |
 | `logBackup` | 1 h | background | `logger.backup()` |
@@ -578,6 +605,10 @@ Facts worth knowing before touching it:
 - The handler rejects a document whose `id` does not match `config.deviceId`. Without that check a config pasted from another garden would be written, `loadFile()` would reject it at boot, and the device would come up on compiled defaults it cannot connect with — unreachable to fix without USB.
 - **Changing `ota.password` is pushed into `UserStore` too.** The login password lives in `/users.json`, so a config-only change would otherwise not take effect until a filesystem deploy wiped the user store.
 - **Every `io` entry accepts more than one shape, and all of them must keep working** — a device in the field has to survive a firmware update. `io.relays`: array of `{pin,on,name}`, or the pre-2.0 `io.watering` + `io.wateringOn` scalars. `io.soilMoisture`: array of `{pin,name,powerPin,powerOn,settleMs}`, array of `{pin,name}`, array of bare pins, or a single bare pin — the three power keys are optional and absent means permanently powered. `io.dht` / `io.luminosity` / `io.waterLevel`: `{pin,name}` or a bare pin. `loadSensor()` handles the sensor cases in one place. Entries past the compiled count are ignored and missing ones keep their defaults — a short array logs a warning rather than zeroing a pin.
+- **`mqtt.publishSec` (60..300, default 300) sets the PERIODIC payload's period only.** It is applied by `tasksSetup()` through `setPeriod()`, the same way `history.periodSec` is — so `g_mqttTaskPeriod` is now nothing but the compiled fallback the task is constructed on, and **reading it where the real period is meant is a live trap**. Two things must follow it and did not follow it for free:
+  - **Every accumulator window is sized from it in `sensorsSetup()`, scalars included.** The scalars used to take their window from `g_mqttTaskPeriod` at *file scope*, which was right only while that period was a constant. Static initialisers run long before `config.json` is read — the exact trap that made a file-scope `DHT_Unified` run for ever on the compiled default pin. `g_pingTime` lives in `tasks.cpp` and is re-sized in `tasksSetup()` for the same reason.
+  - **The publish queue depth is `3600000 / mqttPublishPeriodMs()`**, i.e. an hour of buffer at whatever period is configured: 60 messages at the floor, 12 at the ceiling, and it cannot reach zero for any value the clamp allows.
+- **`mqtt.heartbeatSec` (60..3600, default 900) is the floor under change-based publishing**, not a publish period. See [Sampling vs events](#sampling-vs-events--the-rule-and-where-it-was-broken).
 - **Sensor and relay names are LABELS, not identifiers.** `/data.json` keys `Inputs` and `Outputs` by them, so renaming changes the dashboard immediately — but the `Relays` array stays index-addressed, the history record is positional, and the ThingsBoard telemetry keys stay `moisture1..N`. Renaming therefore never rewrites stored history. A name on `io.dht` is a *prefix*, because one pin produces two channels.
 - **`"version"` in the JSON is still never read** — the template says `2` but nothing enforces or migrates on it. `log.level` *is* read now (clamped to `LOG_DISABLE..LOG_TRACE`) and applied in `loadConfigFile()`.
 - **`loadFile()` mutates fields as it parses and only returns `false` at the end**, so a rejected config leaves a half-populated object behind.
@@ -713,12 +744,17 @@ Every sensor compiles into every image; `config.*Fitted` and `config.moistureCou
 
 **Adding a sensor KIND = 8 edits** (adding an *instance* of an existing kind is now a web-UI edit): `config.h` pin field + fitted flag → `config.cpp` default, parse and `validatePins()` role → `config.template.json` → `sensors.cpp` accumulator + read → `sensors.h` extern → `telemetry.cpp` payload → `web_data.cpp` `Inputs` block (gated on the fitted flag) → `web_capabilities.cpp` kinds list → `dev_server.py` mock. Miss the last one and the simulator lies.
 
-- Accumulator windows are sized as `g_mqttTaskPeriod / g_<source>TaskPeriod`, so each average covers exactly one publish interval: at today's 1 min publish that is **60 samples** for luminosity, moisture, water level and flow, 60 for the DHT, and 4 for the ping. `g_soilMoisture[]` is an array and cannot take a constructor argument, so `sensorsSetup()` calls `setMaxLen()` on each element explicitly — it used to rely on `AccumulatorV2`'s default window happening to match, which broke silently the moment a period changed.
+- Accumulator windows are sized as `mqttPublishPeriodMs() / g_<source>TaskPeriod`, so each average covers exactly one publish interval: at the 5 min default that is **300 samples** for luminosity, moisture, water level, flow and the DHT, and 20 for the ping. **`sensorsSetup()` sizes EVERY accumulator, scalars included**, and `tasksSetup()` sizes `g_pingTime`. The scalars used to take their window from `g_mqttTaskPeriod` at *file scope*, which was correct only while that period was a constant — it is `mqtt.publishSec` now, and static initialisers run long before `config.json` is read. Same trap as a file-scope `DHT_Unified`, same fix: the constructor argument is only a safe starting length. Arithmetic, not a measurement: the windows cost 9 × 300 × 4 B + 20 × 4 B ≈ **10.6 KB of heap at 300 s against 2.1 KB at 60 s**, allocated once at setup.
 - Conversions live in macros at the top of **`sensors.cpp`**: `ADC_TO_PERCENT(x) = x*100/4095`, and the water level uses a fitted curve `9 - 12*sin(4.04 - 1.61*V)`. Moisture is **inverted per probe, not per board** — `100 - pct` only when `moisture[i].invert` is set, which it is by default. It used to be unconditional, and that was one sign for a board that can carry a capacitive probe and a resistive one at once.
 - **`AccumulatorV2` is a fixed-size ring buffer** and allocates exactly once, when its window is sized. It used to be a `std::list<float>` doing a push/pop per sample at 1 Hz forever, which contradicted the "no dynamic allocation in steady state" rule and never stopped fragmenting the heap. `test_steady_state_does_not_allocate` counts array `operator new` and asserts zero across 5000 samples, so the rule is now a red test rather than a note. **`getAverage()` is O(1)** — the running `sum`/`sumSq` are maintained by `add()`. It used to walk the list TWICE per read, and putting that inside a spinlock is what panicked the board with an interrupt watchdog. Incremental sums drift, so `resync()` recomputes once per full window: amortised O(1), bounded error. A non-finite sample is dropped rather than poisoning the sums permanently.
+- **A DHT reading outside the part's RATED RANGE is a bad read, not weather, and is counted as one.** The DHT11 is specified 0–50 °C and 20–90 % RH; this device published `airHumidity` down to **15.1 %** — ten points below anything the sensor can resolve — while `dhtErrorRate` read 0.00 throughout. Two failures compounding: the out-of-range sample was averaged into the window every dashboard and every stored point is drawn from, *and* it was counted as a successful read, so the one counter that exists to say the sensor is misbehaving said the opposite. `sensorsReadDht()` now discards it **and increments `g_dhtReadErrors`** — dropping it silently would fix the first and keep the second. The bounds are the datasheet's, in named constants beside the gate: widen them and the gate stops meaning "the sensor cannot have measured this". *(The other reading in that audit, `temperature` at 45.04 °C, is INSIDE the rated band and this gate does not touch it.)*
 - **The DHT is placement-`new`ed into `g_dhtStorage` inside `tasksSetup()`**, not constructed at file scope. `DHT_Unified` copies the pin in its constructor, and at static-init time `config.json` has not been read — a file-scope instance permanently ran on the compiled default and silently ignored `io.dht`. Keep the construction late; the storage buffer exists so this costs no heap.
 - The MQTT payload is accumulated into a global `String g_mqttMessage` by `mqttAddField()` / `mqttAddStatus()` **called from several tasks** (watering start, connectivity change) and flushed by `mqttTaskHandler`. Safe today only because one background task runs at a time; a critical task must not call it without a lock.
-- The publish queue holds at most `60*60*1000 / g_mqttTaskPeriod` = **60 messages** (1 h) **in RAM**, dropped oldest-first, lost entirely on reboot. `fullbot-firmware` backs its queue to a file (`/telemetry_backup.json`) and drains it on reconnect.
+- The publish queue holds at most `60*60*1000 / mqttPublishPeriodMs()` messages — an hour of buffer at whatever period is configured, so **60 at the 60 s floor and 12 at the 300 s ceiling** — **in RAM**, dropped oldest-first, lost entirely on reboot.
+
+  **Backing it to flash was looked at and deliberately NOT done. See the reasoning before implementing it**, because the obvious version is unsafe here. `fullbot-firmware`'s `/telemetry_backup.json` writes to an **SD card**, appends one `<topic>\t<payload>\n` line per spilled message, and on drain writes a temp file and renames — and it carries its own `// TODO check file size or line count limits`, so it is unbounded. None of that transplants: this board has no SD, so the file would land on the same 512 KB LittleFS partition as the web assets, the history segments and the moisture model, with ~124 KB free. A flash writer on that partition is exactly what [reboot-looped this board](#the-ring-buffer-does-not-survive-the-move-and-the-reason-generalises), the device is now reachable only over the air, and none of this can be exercised on hardware from here.
+
+  What it would have to be, if someone does it: **append-only** (never patched in place), **written only while the link is DOWN** so the happy path costs zero flash writes, **bounded in bytes** with the oldest dropped, and drained by publishing then deleting the file wholesale. What it buys is one hour of averaged sensor means across a reboot — and B3 already moved every step value off the queue, so what is at risk is 12 payloads of slow-moving levels. That is a poor trade against a second writer on the partition that has already bricked this garden once.
 - **TalkBack is plain HTTP on port 80** with the API key in the request body (there is a `// TODO use HTTPS` in `talkback.cpp`). The only command parsed is `watering:<ms>`, capped at 20 000 ms by `startWatering()`.
 - **`data/thingspeak.pem` pins the CA for the MQTT TLS connection, and a stale pin fails silently for years.** It used to hold the *intermediate* `DigiCert TLS RSA SHA256 2020 CA1`; ThingSpeak now serves a chain under `DigiCert Global G2 TLS RSA SHA256 2020 CA1` / `DigiCert Global Root G2`, so every connect returned `-9984 X509 - Certificate verification failed` and channel 1348790 received nothing between **2023-03-07 and 2026-08-19**. Nothing surfaces this: `/data.json` keeps reporting `MQTT: enabled`, and only `Packages Sent` staying at 0 gives it away. It now pins the **root**, not the intermediate — roots last until 2038, intermediates rotate. Verify with `openssl s_client -connect mqtt3.thingspeak.com:8883 -showcerts` before assuming the file is current.
 - **`mqttLoop()` retries the connection on every `loop()` iteration with no backoff**, so a TLS failure produces hundreds of log lines per minute and drowns everything else in the serial log. Worth a backoff if you touch `mqtt.cpp`.
@@ -1417,10 +1453,95 @@ report first. `relayStickyTake(RELAY_STICKY_HISTORY | _TELEMETRY)`.
 The first drives a live indicator; the second is the only one that can see a
 watering that started and finished between two publishes.
 
+**The relay event carries NO bare `relay` key any more.** It held a ZERO-based
+index while every `relayN` telemetry key is one-based, so the stored series
+contains records reading `{relay: "2", relayName: "Reservatorio", relay3Event:
+"started"}` and anything joining the two was off by one. `relayNEvent` already
+names the relay at the correct index, which makes the bare key redundant as well
+as wrong. It was DELETED rather than renumbered, deliberately: renumbering would
+give a key already in the stored history a second meaning with nothing in the
+data to say where the change happened, which is the more expensive of the two
+mistakes. The refusal event still carries a bare `relay`, and it has the same
+zero-based problem — left alone because dropping it would leave a refusal with
+no index at all, and there is no `relayNRefused` key to replace it without
+opening a new seam.
+
+### Step values are published on CHANGE, and never sampled
+
+The third mechanism above is for a *quantity*. A relay state, a reservoir
+contact, a reboot counter and a cumulative litre total are none of those: they
+sit still and then step. Sampling one into every periodic payload spends a
+datapoint per key per tick restating what the cloud already knows — a value
+re-sent unchanged carries no information — and it still reports the step LATE,
+by up to a whole publish period. **An asynchronous change belongs in
+asynchronous telemetry.**
+
+So these leave through `tbPublishEvent()` the moment they move, from the io task
+at 1 Hz, and are absent from the periodic payload entirely: `relay1..N`,
+`relay1..NRan`, `relayMask`, `relayRanMask`, `connectionLoss`,
+`wateringCycles`, `dhtErrorRate`, `flowRate`, `flowTotalLitres`,
+`reservoirRaised`.
+
+- **`mqtt.heartbeatSec` (default 900) is the floor under it.** A key that never
+  changes would otherwise be absent from the cloud for as long as it stays put,
+  and an operator reading "latest" cannot tell a stable value from a device that
+  died a week ago. Every step key is re-sent at least this often whether it
+  moved or not.
+- **A float is compared against a DEADBAND, never with `!=`.** Two doubles
+  representing the same measurement differ in their last bits for ever, so an
+  exact comparison would publish on every tick and buy nothing. The deadband is
+  the smallest change worth a datapoint on that channel — a question about the
+  sensor, not about floating point. `flowRate` 0.05 L/min, `flowTotalLitres`
+  0.005 L, `dhtErrorRate` 0.5 points; counters and contacts pass 0.0, which is
+  exact because their values are whole numbers a double holds exactly.
+- **The heartbeat comparison is unsigned**, so `millis()` wrapping at 49 days
+  costs one early heartbeat rather than stalling every key for another 49.
+- **It runs on the io task, not the critical runner**, for the reason
+  `publishRelayEvents()` does. `relaysTick()` still only sets a bit.
+- **The comparison itself lives in `include/core/step_publisher.h`**, free of
+  Arduino, so `test_step_publisher` can reach it — the same reason
+  `segment_index.h` exists, and for the same kind of arithmetic.
+- **`relayStickyTake(RELAY_STICKY_TELEMETRY)` moved with it**, and there must
+  stay exactly one caller: it is take-and-clear, so a second one would steal
+  activations from the first. The step publisher returns before the take on the
+  ThingSpeak backend, where `tbPublishEvent()` is a no-op — which is what it
+  already did, since `buildThingsBoardPayload()` was never reached there.
+
+### `firmware` is not periodic telemetry
+
+It was published in every payload: a string that changes at a reboot and at no
+other moment, restated ~1400 times a day. It is **gone from the periodic
+payload**, and nothing was added to replace it, because two places already carry
+it: `tbOnConnect()` publishes `current_fw_version` as a CLIENT ATTRIBUTE — the
+key ThingsBoard itself reads to decide an update landed — and the boot event it
+sends on the same connection carries `firmware` as TELEMETRY, under the same key
+name. So the timeseries still gets a `firmware` point stamped at every moment
+the version could possibly have changed.
+
 ### Still sampled, and whether that is fine
 
-- **Moisture, luminosity, temperature, water level** — accumulated over the
-  publish interval. Correct: the question is the mean, and these move slowly.
+- **Moisture, luminosity, temperature, air humidity, water level, ping** —
+  accumulated over the publish interval, and now published TWICE: the window
+  mean under the original key, and the instantaneous value under the same name
+  plus **`Now`** (`temperature` + `temperatureNow`, `moisture1` +
+  `moisture1Now`, …). The mean is what a trend is read from; the instantaneous
+  value is the only one that can show a spike, and at a 300 s period a 1 Hz
+  window is 300 samples deep — easily enough to flatten a watering into nothing.
+
+  **The AVERAGE keeps the original key name, and that is the load-bearing half
+  of the decision.** Every one of those keys has carried `getAverage()` since
+  the ThingsBoard payload existed and there is already stored history under
+  them. Redefining one would leave a single series whose meaning changes
+  part-way through with nothing in the data to say where — the same defect as
+  renumbering a relay index, and harder to notice, because a number that merely
+  shifts still looks like a reading.
+- **`moistureNFault`** — the probe-health verdict, and the one key that is
+  published only when there IS a fault, exactly as `/data.json` omits the field
+  and as `state` is omitted rather than sent empty. A key saying "fine" on every
+  healthy probe every period is the waste this section is about, and it trains
+  the eye to skip the one case that matters. The exception is the transition
+  BACK: without one publish of the cleared verdict the cloud shows the last
+  fault for ever, so that single datapoint is spent.
 - **`Min Free Heap`** — already a low-water mark, which is the sticky form of a
   quantity. A spike between publishes is caught. `Free Heap` alone would not.
 - **The moisture CLASS** (Dry/Humid/Wet) — sampled. Defensible while the soil
@@ -1544,7 +1665,7 @@ Concrete gotchas measured in this tree:
 - Fullbot runs on **ESP32-S3 with PSRAM**; these boards are plain ESP32, 320 KB DRAM, none. Anything sized for PSRAM (the ML models, large static buffers) does not come across.
 - **Both brokers are supported now**, selected by `mqtt.backend` (`thingspeak` | `thingsboard`). The transport block is shared; only the topic and the payload differ. ThingsBoard authenticates with the device access token in `mqtt.username` and an empty password, and `mqtt.useTLS = false` selects a plain `WiFiClient` for a self-hosted broker on 1883 — TLS costs 30–45 KB of heap for the handshake.
 - **ThingsBoard is the way out of the 8-field ceiling.** Its JSON payload carries every probe, each probe's Dry/Humid/Wet state, every relay, the DHT error rate and `FW_VERSION` with no field numbering to negotiate — which is what keeps `thingSpeak.moisture2Field` an open question on ThingSpeak and not on ThingsBoard.
-- Still to take from fullbot's `MQTTClient`: the file-backed publish queue, the reconnect backoff, and shared-attribute FOTA.
+- Still to take from fullbot's `MQTTClient`: shared-attribute FOTA. The reconnect backoff is done. **The file-backed publish queue was examined and declined** — its design is SD-card-shaped and unbounded, and this board has no SD; see the publish-queue note under [Sensors, accumulators & telemetry](#sensors-accumulators--telemetry) for what a safe version would have to look like and why the trade is poor.
 
 ---
 
