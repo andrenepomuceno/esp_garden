@@ -1,6 +1,23 @@
 # Real deployment state — never committed.
-.env                    # the actual secrets; .env.example is the tracked doc
-backups/                # database dumps contain every device credential
-traefik/dynamic/        # rendered from dynamic.yml.in; a build product, not a source
-.tb-installed-version   # per-VPS state written by tbctl install/upgrade
-*.pem                   # ca-export output; regenerate with ./tbctl ca-export
+#
+# Every pattern here sits on its own line. Git has no inline comments in a
+# .gitignore: a `#` only starts a comment at the START of a line, so a trailing
+# one becomes part of the pattern and the rule silently matches nothing. That
+# is not hypothetical — it is what this file did until 2026-09-03, leaving
+# traefik/dynamic/, .tb-installed-version and *.pem unprotected while looking
+# correct, and .env/backups/ ignored only by coincidence via the root file.
+
+# the actual secrets; .env.example is the tracked doc
+.env
+
+# database dumps contain every device credential
+backups/
+
+# rendered from dynamic.yml.in; a build product, not a source
+traefik/dynamic/
+
+# per-VPS state written by tbctl install/upgrade
+.tb-installed-version
+
+# ca-export output; regenerate with ./tbctl ca-export
+*.pem

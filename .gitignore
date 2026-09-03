@@ -13,6 +13,13 @@ __pycache__/
 # deploy/.env holds the real VPS credentials; deploy/.env.example is the tracked template.
 deploy/.env
 
-# ThingsBoard read credential, kept out of the tree on purpose. Untracked is
-# not enough: a stray `git add` would publish it to a remote.
-.chave_tb_*
+# ThingsBoard read credential. These patterns are belt-and-braces, not the
+# protection: a .gitignore only stops `git add .`, which CLAUDE.md already
+# bans, and does nothing against an explicit `git add <path>` or `-f`. The
+# real fix is keeping the file outside the working tree. Both the dotted and
+# undotted spellings are listed because the name is hand-typed per credential
+# and `.chave_tb_*` alone matched neither `.chave_tb` nor `chave_tb_claude`.
+.chave_tb*
+chave_tb*
+.tb_key*
+tb_key*
