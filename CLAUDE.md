@@ -395,6 +395,14 @@ called it missing three times.
 
 **Unverified — written, compiles, never run on hardware:**
 
+- **`relayStop` on the device** (firmware 2.8.1). The whole contract is
+  verified against the simulator — relay started for 20 s, stopped on demand,
+  and a repeated stop on an idle relay accepted as harmless — and `index.js`
+  parses, but the firmware's own `stopRelay()` path has never been reached from
+  `/control`. Exercising it means energising a real pump: the board carries
+  three relays, all wired, and the relay 4 that used to be the test slot was
+  removed from the config on 2026-09-02.
+
 - **The parts of firmware 2.8.0 that have NOT run.** The periodic path, the
   heartbeat, the twins and the accumulator re-sizing are verified above. These
   are not:
