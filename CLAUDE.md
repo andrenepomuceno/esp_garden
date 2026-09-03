@@ -653,7 +653,7 @@ Facts worth knowing before touching it:
 | `/nonce` | GET | **public** | issues the login challenge |
 | `/login`, `/logout` | POST | **public** | `CustomLogin` |
 | `/data.json` | GET | session | serves the cache built by the `io` task |
-| `/control` | POST | **OPERATOR** | `relay`+`relayTime`, `watering`, `wateringTime`, `mqtt`, `reset` |
+| `/control` | POST | **OPERATOR** | `relay`+`relayTime`, `relay`+`relayStop` (stop a running relay; explicit rather than a zero `relayTime`, because `String::toInt()` answers 0 for unparseable input and a malformed field must not stop a pump), `watering`, `wateringTime`, `mqtt`, `reset` |
 | `/history.json` | GET | session | last N I/O snapshots, `?limit=` (cap 200) |
 | `/logs` | GET | **ADMIN** | the whole 8 KB log buffer as `text/plain` |
 | `/config.json` | GET/POST | **ADMIN** | read with secrets masked / write the whole document. `?secrets=1` exports verbatim for a restorable backup |

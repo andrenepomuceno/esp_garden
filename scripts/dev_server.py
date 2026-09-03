@@ -526,7 +526,13 @@ class Handler(BaseHTTPRequestHandler):
                 ms = int(params.get("relayTime", 5000))
             except ValueError:
                 index, ms = -1, 0
-            STATE.start_relay(index, ms)
+            # An explicit stop, matching handleControl() in src/web.cpp. It is
+            # not "relayTime == 0" there because String::toInt() answers 0 for
+            # unparseable input, which would make a malformed field stop a pump.
+            if "relayStop" in params:
+                STATE.stop_relay(index)
+            else:
+                STATE.start_relay(index, ms)
         if "wateringTime" in params:
             try:
                 ms = int(params["wateringTime"])

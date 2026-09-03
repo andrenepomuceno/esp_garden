@@ -174,6 +174,28 @@ class DeviceState:
 
         self.log("info", f"Starting {self.relay_names[index]} for {duration_ms} ms")
 
+    def stop_relay(self, index: int) -> None:
+        """Mirrors stopRelay() in src/relays.cpp, which returns wasRunning.
+
+        Stopping an idle relay is deliberately not an error: the dashboard
+        polls at 1 Hz, so a stop can always arrive a tick after the relay
+        expired on its own, and refusing it would make a harmless race look
+        like a fault.
+        """
+        if not 0 <= index < len(self.relays):
+            self.log("error", f"Invalid relay index: {index}")
+            return
+        # self.log() takes the same non-reentrant lock; keep it outside.
+        with self.lock:
+            was_running = bool(self.relays[index]["on"])
+            self.relays[index]["on"] = 0
+            self.relays[index]["until"] = 0.0
+
+        if was_running:
+            self.log("info", f"Stopping {self.relay_names[index]}")
+        else:
+            self.log("info", f"{self.relay_names[index]} was already idle.")
+
     def start_watering(self, duration_ms: int) -> None:
         self.start_relay(0, duration_ms)
 

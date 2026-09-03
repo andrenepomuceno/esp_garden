@@ -134,9 +134,14 @@
       var relay = relays[j];
       var btn = $('.relay-btn[data-index="' + relay.index + '"]');
       var active = (relay.on == 1 || relay.on === '1');
-      btn.toggleClass('btn-outline-primary', !active).toggleClass('btn-info', active);
+      // A running relay's button becomes its stop button: danger, not info,
+      // because what it does now is interrupt a pump. `relay-on` is what the
+      // click handler reads, so the state the user sees is the state acted on.
+      btn.toggleClass('btn-outline-primary', !active)
+         .toggleClass('btn-danger', active)
+         .toggleClass('relay-on', active);
       if (active) {
-        btn.text(relay.name + ' — ' + Math.ceil((relay.remaining || 0) / 1000) + 's');
+        btn.text('Stop ' + relay.name + ' — ' + Math.ceil((relay.remaining || 0) / 1000) + 's');
       } else {
         btn.text(relay.name);
       }
@@ -268,6 +273,15 @@
       event.preventDefault();
       var index = $(this).data('index');
       var name = $(this).data('name');
+      // Repeating the command stops it. No confirmation: stopping is the safe
+      // direction, and a dialog between a person and a running pump is exactly
+      // the wrong place for friction. The view polls at 1 Hz so this can be a
+      // tick stale -- the device is the authority, and a stop aimed at an
+      // already-idle relay costs nothing.
+      if ($(this).hasClass('relay-on')) {
+        $.post('/control', { relay: index, relayStop: 1 });
+        return;
+      }
       var seconds = parseInt($('#input-watering-time').val(), 10) || 5;
       if (confirm('Activate ' + name + ' for ' + seconds + ' seconds?')) {
         $.post('/control', { relay: index, relayTime: 1000 * seconds });

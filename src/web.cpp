@@ -40,11 +40,20 @@ handleControl(AsyncWebServerRequest* request)
     if (request->hasParam("relay", true)) {
         const unsigned index =
           request->getParam("relay", true)->value().toInt();
-        unsigned duration = g_wateringDefaultTime;
-        if (request->hasParam("relayTime", true)) {
-            duration = request->getParam("relayTime", true)->value().toInt();
+        // An explicit stop, never a zero duration. String::toInt() answers 0
+        // for anything it cannot parse, so "relayTime == 0 means stop" would
+        // turn a malformed field into a silent pump shutdown and leave the
+        // handler unable to tell the two commands apart.
+        if (request->hasParam("relayStop", true)) {
+            stopRelay(index);
+        } else {
+            unsigned duration = g_wateringDefaultTime;
+            if (request->hasParam("relayTime", true)) {
+                duration =
+                  request->getParam("relayTime", true)->value().toInt();
+            }
+            startRelay(index, duration);
         }
-        startRelay(index, duration);
     }
 
     for (int i = 0; i < request->params(); ++i) {
