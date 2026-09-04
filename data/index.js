@@ -171,17 +171,6 @@
     fillOutputs(info.Outputs || {});
     renderRelays(info.Relays);
     $('#input-mqtt').prop('checked', info.Status && info.Status.MQTT === 'enabled');
-    // Absent when the firmware was built with USE_THINGSPEAK 0, which is the
-    // shipped default. The link is HIDDEN rather than left pointing at '#':
-    // a dead link that looks live is worse than no link, and this build writes
-    // nothing to the channel it would open.
-    if (info.Channel) {
-      $('#a-thingspeak-link')
-        .attr('href', 'https://thingspeak.com/channels/' + info.Channel)
-        .show();
-    } else {
-      $('#a-thingspeak-link').hide();
-    }
   }
 
   // ---------- polling ----------
