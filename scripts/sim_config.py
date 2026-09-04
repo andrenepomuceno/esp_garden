@@ -55,6 +55,7 @@ SIM_CONFIG = {
         "heartbeatSec": 900,
     },
     "cloud": {"enabled": True},
+    "et0": {"enabled": True, "latitude": -15.7885, "scale": 1.0},
     "log": {"level": 4},
     "history": {"records": 1440, "periodSec": 60},
     "io": {

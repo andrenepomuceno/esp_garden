@@ -125,6 +125,31 @@ class ConfigFile
     // as empty.
     bool cloudEnabled;
 
+    // Reference evapotranspiration ("et0": {"enabled", "latitude", "scale"}).
+    //
+    // DEFAULT FALSE, for a sharper reason than cloudEnabled's. That model is off
+    // because its table describes one mounting; this one is off because on the
+    // board it was written against it was MEASURED to have no skill - the
+    // thermometer follows about a third of the outdoor swing, so the diurnal
+    // range Hargreaves-Samani runs on describes the enclosure and not the sky.
+    // Enabling it is a claim its owner makes after running scripts/et0_fit.py
+    // and seeing the estimate beat a constant.
+    bool et0Enabled;
+
+    // Degrees, positive north. Extraterrestrial radiation is a closed form in
+    // this and the day of year, which is what keeps the firmware off the
+    // network. There is no sensible default: 0.0 is the equator, a real place,
+    // so an unset latitude cannot be detected and is instead made visible - the
+    // value is logged at boot and scripts/et0_fit.py prints the one to paste.
+    float et0Latitude;
+
+    // Multiplies the Hargreaves-Samani result. 1.0 is the textbook formula with
+    // nothing fitted, and that is what ships. A value far from it is a
+    // statement about THIS sensor's exposure, measured by scripts/et0_fit.py
+    // against a public station - not a physical constant, and it does not
+    // transfer to another board, another mounting or another season.
+    float et0Scale;
+
     // pins
     uint8_t buttonPin;
 

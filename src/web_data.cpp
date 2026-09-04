@@ -2,6 +2,7 @@
 #include "BuildConfig.h"
 #include "core/accumulator_v2.h"
 #include "core/cloud_model.h"
+#include "core/et0_model.h"
 #include "core/config.h"
 #include <esp_heap_caps.h>
 #include "core/probe_health.h"
@@ -141,6 +142,20 @@ webUpdateDataCache()
         const String fota = tbFotaStatus();
         if (fota.length() > 0) {
             statusJson["Cloud Update"] = fota;
+        }
+    }
+    {
+        // Only once a complete day has been measured. An ET0 row reading 0.00
+        // on a device that booted this morning is a claim the garden lost no
+        // water, which is the opposite of the truth -- absent is the honest
+        // rendering, exactly as a probe with no calibration carries no `state`.
+        // The diurnal range rides along because it is the evidence: this
+        // estimate is driven by it, and a range far from the outdoor one means
+        // the number above is describing the sensor's enclosure.
+        const Et0Report et0 = et0Report();
+        if (et0.valid) {
+            statusJson["ET0"] = String(et0.et0Mm, 2) + " mm/day (range " +
+                                String(et0.rangeK, 1) + " K)";
         }
     }
     statusJson["Packages Sent"] = String(g_packagesSent);

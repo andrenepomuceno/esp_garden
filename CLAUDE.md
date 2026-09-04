@@ -34,12 +34,13 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | History | `src/io_history.cpp`, `include/core/segment_index.h` | Append-only segments of I/O snapshots on LittleFS, served by `/history.json` |
 | Moisture model | `src/moisture_classifier.cpp` (pure maths, host-tested), `src/moisture_model.cpp` (training, persistence) | Gaussian naive Bayes per probe, labelled by watering events. See [Soil moisture](#soil-moisture-a-classifier-trained-on-watering-events) |
 | Cloud cover | `src/cloud_cover.cpp` (pure maths, host-tested), `src/cloud_model.cpp` (clock, minute bucket, snapshot), `include/core/clear_sky_table.h` (**generated**) | Clearness index against an empirical clear-sky envelope. See [Cloud cover](#cloud-cover-an-empirical-clear-sky-reference-and-what-the-data-could-not-settle) |
+| Evapotranspiration | `src/evapotranspiration.cpp` (pure maths, host-tested), `src/et0_model.cpp` (clock, day rollover, snapshot) | Daily Hargreaves-Samani ET0 from the device's own temperature extremes. See [Evapotranspiration](#evapotranspiration-the-fit-said-no-and-that-is-the-result) |
 | Stats | `src/accumulator_v2.cpp` | Rolling window mean + variance over a `std::list<float>` |
 | Web sources | `data/` | Plain, diffable, served as-is by the simulator. `index.*`, `login.*`, `config.*`, `users.*`, `update.*`, `auth.js`; vendored `jquery.js`, `sha256.js`, `spark-md5.js`, `bootstrap.css` (all MIT, shipped `.gz`); `favicon.ico`, `*.pem`, `config.template.json` |
 | Filesystem image | `scripts/build_assets.py` → `.pio/assets/` | Bundles each page's scripts into one file and gzips everything the web server serves. `data_dir` points the image here, so `-t buildfs` cannot pack the unbundled sources |
 | Partitions | `partitions/esp_garden_4mb.csv` | 1.69 MB per OTA slot, 512 KB LittleFS. **Cannot be changed over OTA** |
 | Filesystem | `include/core/filesystem.h` | The one line naming the driver. Everything else says `FILESYSTEM`, never `LittleFS` |
-| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `cloud_fit.py` (fits the clear-sky reference from the archive and writes the generated header), `feeds_plot.py`, `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`, wide CSV on `--csv`), `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090** — charts, the dead-key inventory, boots and gaps; it imports `tb_export`'s seam constant and its sync rather than restating either) |
+| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `cloud_fit.py` (fits the clear-sky reference from the archive and writes the generated header), `et0_fit.py` (geocodes `postalCode`, pulls the public daily record and scores the device's ET0 against a station's — it is allowed to answer "do not enable this", and did), `feeds_plot.py`, `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`, wide CSV on `--csv`), `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090** — charts, the dead-key inventory, boots and gaps; it imports `tb_export`'s seam constant and its sync rather than restating either) |
 
 **No source file exceeds 1000 lines, and `python scripts/check_lines.py` is what
 says so.** The rule sat in this file unenforced for long enough that two files
@@ -49,7 +50,7 @@ split is expensive, and the useful signal is the file three commits away from
 crossing. `tasks.cpp` (1123), `web.cpp` (1004), `config.cpp` (1125) and
 `devices.js` (1155) were all split at that threshold. `tasks.cpp` kept every `DECLARE_TASK` and every handler and `web.cpp` kept `webSetup()`, in both cases because the ordering *inside* those functions is load-bearing — see the boot sequence and the route-order note below.
 
-Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict, the cloud-cover classifier and the step-publisher change detection — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`) rather than to stub the platform: both are small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md), including why the JSON logic must not be trusted to a hand-written stub.
+Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict, the cloud-cover classifier, the evapotranspiration maths and the step-publisher change detection — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`) rather than to stub the platform: both are small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md), including why the JSON logic must not be trusted to a hand-written stub.
 
 ---
 
@@ -412,6 +413,30 @@ called it missing three times.
 
 **Unverified — written, compiles, never run on hardware:**
 
+- **The whole evapotranspiration model** (firmware 2.10.0). Host-tested in
+  `test_evapotranspiration`, built in all five envs, and **shipped OFF**:
+  `et0.enabled` defaults to false, so on the board today it computes nothing and
+  publishes nothing. Not one day has closed on the device, no `et0` key has
+  reached ThingsBoard, and `Status.ET0` has never rendered.
+
+  **It ships off for a stronger reason than the cloud model does, and the
+  reason is a measurement rather than a caution.** The cloud table is off
+  because it describes one mounting. This is off because, validated against a
+  public station over the archive's own window, the estimate **had no
+  demonstrated skill on this device** — see
+  [Evapotranspiration](#evapotranspiration-the-fit-said-no-and-that-is-the-result).
+  Specifically untested on hardware:
+
+  - **The day rollover against the real clock.** `localtime_r` and
+    `tm_year * 366 + tm_yday` decide when a day ends; the arithmetic is
+    host-tested against synthetic keys, and no midnight has passed on the board.
+  - **The coverage refusal in the field.** A day short of 22 of 24 hours is
+    refused and logged. That path has never been reached by a real reboot.
+  - **`et0.scale` other than 1.0.** Never set on a device, so the warning it
+    logs has never printed.
+  - **The event itself.** `publishEt0Event()` has never run, so the four keys
+    have never been seen in a payload.
+
 - **The whole cloud-cover model** (firmware 2.9.0). Fitted on the archive,
   host-tested in `test_cloud_cover`, built in all five envs, and **shipped
   OFF**: `cloud.enabled` defaults to false, so on the board today it computes
@@ -477,7 +502,16 @@ called it missing three times.
     only garbage. **A datasheet's rated range describes ACCURACY, not what the
     sensor can physically report**, and clamping to it discards the true
     extremes -- which on a garden controller are the readings that matter most.
-    The temperature spike remains unexplained.
+
+    **Two of those numbers have since been refined, and the decision does not
+    move.** Of the 261 sub-20 % points, **243 are ambient and 18 are not**: the
+    18 fall inside a 38-minute patch of direct sun on 2026-09-03 whose dewpoint
+    collapses and recovers, so they measure a cooked sensor rather than dry air.
+    The minimum of 15.00 is on 09-01 and is real, so the 5 % floor still rests
+    on genuine readings. **And the temperature spike is no longer unexplained**
+    -- the luminosity channel saturates for exactly that window while both soil
+    probes stay flat. See
+    [Evapotranspiration](#evapotranspiration-the-fit-said-no-and-that-is-the-result).
   - **The dropped bare `relay` key.** Nothing here is known to read it, but no
     consumer was checked.
 
@@ -710,6 +744,18 @@ Facts worth knowing before touching it:
   English per the conventions even though the value here is a Brazilian CEP,
   because the device can be anywhere.
 - **`mqtt.heartbeatSec` (60..3600, default 900) is the floor under change-based publishing**, not a publish period. See [Sampling vs events](#sampling-vs-events--the-rule-and-where-it-was-broken).
+- **`et0.enabled` (default FALSE), `et0.latitude` and `et0.scale` gate the
+  evapotranspiration estimate.** Off for a stronger reason than `cloud.enabled`:
+  that one is unproven, this one was **measured to have no skill on this
+  device** — the thermometer follows 35 % of the outdoor swing, so the diurnal
+  range Hargreaves-Samani runs on describes the enclosure. `latitude` has no
+  sensible default (0.0 is the equator, a real place), so an unset one cannot be
+  detected and is instead logged at boot; a value outside ±90 is refused rather
+  than clamped, because a clamped typo hides which number was wrong. `scale`
+  ships at 1.0 — the textbook formula, nothing fitted — is refused outside
+  0.5..2.0, and logs a warning whenever it is not 1.0, because a value far from
+  it is a siting fault wearing a calibration coefficient. See
+  [Evapotranspiration](#evapotranspiration-the-fit-said-no-and-that-is-the-result).
 - **`cloud.enabled` (default FALSE) gates the cloud-cover model entirely** — the
   computation, the `/data.json` badge, `cloudState` and `cloudVariability`. The
   default is off for the same reason `floatInterlock` is: the clear-sky table
@@ -860,7 +906,7 @@ Every sensor compiles into every image; `config.*Fitted` and `config.moistureCou
 - Accumulator windows are sized as `mqttPublishPeriodMs() / g_<source>TaskPeriod`, so each average covers exactly one publish interval: at the 5 min default that is **300 samples** for luminosity, moisture, water level, flow and the DHT, and 20 for the ping. **`sensorsSetup()` sizes EVERY accumulator, scalars included**, and `tasksSetup()` sizes `g_pingTime`. The scalars used to take their window from `g_mqttTaskPeriod` at *file scope*, which was correct only while that period was a constant — it is `mqtt.publishSec` now, and static initialisers run long before `config.json` is read. Same trap as a file-scope `DHT_Unified`, same fix: the constructor argument is only a safe starting length. Arithmetic, not a measurement: the windows cost 9 × 300 × 4 B + 20 × 4 B ≈ **10.6 KB of heap at 300 s against 2.1 KB at 60 s**, allocated once at setup.
 - Conversions live in macros at the top of **`sensors.cpp`**: `ADC_TO_PERCENT(x) = x*100/4095`, and the water level uses a fitted curve `9 - 12*sin(4.04 - 1.61*V)`. Moisture is **inverted per probe, not per board** — `100 - pct` only when `moisture[i].invert` is set, which it is by default. It used to be unconditional, and that was one sign for a board that can carry a capacitive probe and a resistive one at once.
 - **`AccumulatorV2` is a fixed-size ring buffer** and allocates exactly once, when its window is sized. It used to be a `std::list<float>` doing a push/pop per sample at 1 Hz forever, which contradicted the "no dynamic allocation in steady state" rule and never stopped fragmenting the heap. `test_steady_state_does_not_allocate` counts array `operator new` and asserts zero across 5000 samples, so the rule is now a red test rather than a note. **`getAverage()` is O(1)** — the running `sum`/`sumSq` are maintained by `add()`. It used to walk the list TWICE per read, and putting that inside a spinlock is what panicked the board with an interrupt watchdog. Incremental sums drift, so `resync()` recomputes once per full window: amortised O(1), bounded error. A non-finite sample is dropped rather than poisoning the sums permanently.
-- **A DHT reading outside the part's RATED RANGE is a bad read, not weather, and is counted as one.** The DHT11 is specified 0–50 °C and 20–90 % RH; this device published `airHumidity` down to **15.1 %** — ten points below anything the sensor can resolve — while `dhtErrorRate` read 0.00 throughout. Two failures compounding: the out-of-range sample was averaged into the window every dashboard and every stored point is drawn from, *and* it was counted as a successful read, so the one counter that exists to say the sensor is misbehaving said the opposite. `sensorsReadDht()` now discards it **and increments `g_dhtReadErrors`** — dropping it silently would fix the first and keep the second. The bounds are the datasheet's, in named constants beside the gate: widen them and the gate stops meaning "the sensor cannot have measured this". *(The other reading in that audit, `temperature` at 45.04 °C, is INSIDE the rated band and this gate does not touch it.)*
+- **A DHT reading outside the part's RATED RANGE is a bad read, not weather, and is counted as one.** The DHT11 is specified 0–50 °C and 20–90 % RH; this device published `airHumidity` down to **15.1 %** — ten points below anything the sensor can resolve — while `dhtErrorRate` read 0.00 throughout. Two failures compounding: the out-of-range sample was averaged into the window every dashboard and every stored point is drawn from, *and* it was counted as a successful read, so the one counter that exists to say the sensor is misbehaving said the opposite. `sensorsReadDht()` now discards it **and increments `g_dhtReadErrors`** — dropping it silently would fix the first and keep the second. The bounds are the datasheet's, in named constants beside the gate: widen them and the gate stops meaning "the sensor cannot have measured this". *(The other reading in that audit, `temperature` at 45.04 °C, is INSIDE the rated band and this gate does not touch it — and it turned out to be a real 38-minute patch of direct sun on the sensor, not a glitch. See [Evapotranspiration](#evapotranspiration-the-fit-said-no-and-that-is-the-result).)*
 - **The DHT is placement-`new`ed into `g_dhtStorage` inside `tasksSetup()`**, not constructed at file scope. `DHT_Unified` copies the pin in its constructor, and at static-init time `config.json` has not been read — a file-scope instance permanently ran on the compiled default and silently ignored `io.dht`. Keep the construction late; the storage buffer exists so this costs no heap.
 - The MQTT payload is accumulated into a global `String g_mqttMessage` by `mqttAddField()` / `mqttAddStatus()` **called from several tasks** (watering start, connectivity change) and flushed by `mqttTaskHandler`. Safe today only because one background task runs at a time; a critical task must not call it without a lock.
 - The publish queue holds at most `60*60*1000 / mqttPublishPeriodMs()` messages — an hour of buffer at whatever period is configured, so **60 at the 60 s floor and 12 at the 300 s ceiling** — **in RAM**, dropped oldest-first, lost entirely on reboot.
@@ -1432,6 +1478,228 @@ past `CRITICALTASKSCHEDULER_MAX_TASKS`.
   minutes. Four of the six fitted days genuinely had cloudy late afternoons, and
   six days cannot separate that from a reference set too high.
 
+## Evapotranspiration: the fit said no, and that is the result
+
+**Nothing here has run on hardware, and unlike the cloud model it is not merely
+unproven — it was measured and it failed.** `et0.enabled` defaults to false
+because `scripts/et0_fit.py`, run against this device's own archive and a public
+station, could not show the estimate beating a constant. The model ships anyway,
+correct and host-tested, because the failure is in this board's SENSOR SITING
+and not in the arithmetic: fix the exposure, or put the firmware on a board in
+free air, and the same code becomes useful. What must not happen is the number
+being believed today.
+
+Everything below is a measurement on the ARCHIVE against Open-Meteo, or
+arithmetic from one — not on the board.
+
+### Where this garden is, and how that was settled
+
+`postalCode` is `70675-506`. ViaCEP resolves it to *Quadra QRSW 5 Bloco A-6,
+Setor Sudoeste, Brasília - DF*; OSM Nominatim holds that street as way
+**125381662, "QRSW 5"**, at **-15.7885, -47.9297**. Nominatim's `postalcode`
+search returns nothing for Brazilian CEPs, and the verbatim `logradouro` misses
+too — a Brasília address is "Quadra QRSW 5 Bloco A-6" where OSM has the plain
+road "QRSW 5", so `et0_fit.py` strips the `Quadra `/` Bloco ` affixes before
+querying. Without that strip it falls back to the neighbourhood centroid, 1.3 km
+away; without the neighbourhood it would fall back to the city, 12 km away.
+**A wrong geocode is a silent error** — nothing downstream looks wrong when the
+latitude is off, the numbers are simply for somewhere else.
+
+**The public record is a model analysis, not a thermometer in this garden.**
+Open-Meteo snaps to a grid point at -15.7821, -47.9717, elevation 1151 m —
+**4.6 km away**. And it is revised: two fetches an hour apart reported 2026-08-24
+as 1.2 mm and then 0.9 mm, moving the eleven-day total 2.4 → 2.1 mm and the
+count of days reaching 1 mm from one to zero. Anything fitted tightly to these
+numbers is fitted to a revision.
+
+### Rain: there is none, so nothing here models it
+
+Eleven days at the grid point, in Brasília's peak dry season:
+
+```
+08-24  1.20 mm / 3 h      08-29  0.00      09-02  0.70 mm / 4 h
+08-25  0.00               08-30  0.00      09-03  0.30 mm / 2 h
+08-26  0.10 mm / 1 h      08-31  0.00
+08-27  0.10 mm / 1 h      09-01  0.00      total 2.4 mm, ONE day at 1 mm
+```
+
+**No rain model was fitted and none should be.** One marginal wet day is not a
+positive class, and a rain classifier trained on it is the same defect that
+blocks the moisture classifier here — a model with nothing to learn from that
+returns confident answers anyway. `et0_fit.py` prints this table first, before
+anything else, and refuses in its own output.
+
+### The finding that decided everything: the thermometer is not in free air
+
+Matched hour by hour against the station over 235 hours:
+
+```
+hour   station T   device T      dT      station Td  device Td     dTd
+   3      20.76      26.44    +5.68        12.52       16.88     +4.36
+   6      19.92      25.59    +5.67        12.57       17.11     +4.54
+  10      26.73      26.91    +0.18        12.01       16.51     +4.50
+  13      30.22      28.53    -1.69        10.42       14.24     +3.82
+  15      30.74      30.66    -0.08         9.46       12.98     +3.53
+  20      26.66      28.72    +2.06        10.04       14.72     +4.68
+  23      23.69      28.02    +4.33        11.67       15.58     +3.92
+
+device T  = 0.346 * station T  + 18.98   r = +0.722
+device Td = 1.052 * station Td +  3.61   r = +0.909
+```
+
+**The device follows 35 % of the outdoor temperature swing while its DEWPOINT
+follows 105 % of the outdoor dewpoint.** That pair is the whole diagnosis.
+Dewpoint is conserved when air is merely heated or cooled, so a sensor tracking
+it at slope ~1 is breathing the same air mass as the station; a sensor tracking
+the TEMPERATURE at slope 0.35 is sitting behind thermal mass. Warm by +5.7 K
+before dawn, cool by -1.7 K at midday: that is an enclosure, a roof or an indoor
+spot, not a screened instrument.
+
+**This is fatal to Hargreaves-Samani specifically, and it is worth being precise
+about why.** HS has exactly one mechanism: `sqrt(Tmax - Tmin)` stands in for
+solar radiation, because a clear day heats hard and radiates away at night. This
+board's diurnal range is **5.7 K mean against the station's 11.0 K**, and — the
+number that settles it — the device's range correlates with the real range at
+**r = +0.147 over 8 days**. The proxy is not merely biased, it is close to
+uninformative. A model whose only mechanism has been disconnected is not
+repaired by scaling its output.
+
+*(The dewpoint offset is +3.6 K, i.e. the device also reads genuinely moister
+than the grid point. Some of that is a DHT11's ±5 % RH, some is plausibly a
+watered garden's own microclimate. It is not diagnosed here and nothing depends
+on it.)*
+
+### The validation numbers
+
+Complete days only — a day needs 22 of 24 local hours, which refuses 3 of the 11
+(08-24 at 20 h, 08-27 at 21 h, and 08-31 at 6 h, the board-swap day):
+
+| predictor | n | mean vs PM | bias | MAE | RMSE | r |
+|---|---|---|---|---|---|---|
+| **HS(station T)** vs station PM | 8 | 4.46 vs 4.99 | -0.53 (**-10.6 %**) | 0.83 | 1.10 | +0.774 |
+| **HS(device T)** vs station PM | 8 | 3.88 vs 4.99 | -1.11 (**-22.3 %**) | 1.86 | 2.05 | **+0.050** |
+| HS(device T) vs HS(station T) | 8 | 3.88 vs 4.46 | -0.58 (-13.0 %) | 1.32 | 1.47 | +0.051 |
+
+The first row is the ceiling and it is the reassuring one: **with a correct
+thermometer, this implementation of Hargreaves-Samani sits 10.6 % under FAO-56
+Penman-Monteith**, which is ordinary HS behaviour in a windy semi-arid dry
+season. The maths is right. The second row is the device, at **r = +0.050** — no
+relationship at all.
+
+**A fitted scale factor was tried and refused by cross-validation**, which is the
+check that matters on eight days:
+
+```
+scale removing the mean bias        x1.286   (LOO spread x1.208 .. x1.492)
+LOO RMSE, scaled HS(device)          2.56 mm/d
+LOO RMSE, constant climatology       1.31 mm/d   <- the null model wins
+station PM over those days           mean 4.99, sd 1.14 mm/d
+```
+
+So `et0.scale` ships at **1.0** and `et0.enabled` at **false**. The key exists
+because a correctly sited device deserves the lever; the default is the
+measurement.
+
+### One 38-minute sun patch moved a day by 120 %, and that is the estimator
+
+2026-09-03 is in the table above at **device Tmax 45.04 °C against the station's
+29.6** — HS 7.35 mm against PM 4.57. Drop that one day and the same estimate
+scores r = **+0.911** instead of +0.050. Eight days is small enough that one day
+owns the answer, and this is the day.
+
+**It is not a bad sample and it was not filtered out.** The archive says what
+happened, and it resolves what this file recorded as unexplained:
+
+```
+time     T      RH     Td     luminosity
+14:40   28.41  50.28  17.07     39.11
+15:14   37.44  30.15  15.82     96.42   <- saturated
+15:30   44.90  16.00  13.39     95.41
+15:51   35.18  33.27  16.47     65.68
+16:19   32.60  37.40  16.65     72.98
+```
+
+The luminosity channel hits **96 for 27 minutes**, a level it reaches on no other
+post-2026-08-28 day (the rest ceiling at 72-76), temperature rises and falls with
+it over 38 minutes, humidity mirrors it, and **both soil probes are flat to 0.8
+points throughout** — so nobody was handling the hardware. A patch of direct sun
+reached the sensor package at one solar azimuth. It was the only time in the
+whole archive the device exceeded 35 °C.
+
+The lesson is about the estimator, not the sample. **A daily maximum has no
+averaging in it**: 38 minutes out of 1440 more than doubled the day's ET0, where
+the same excursion moves a daily mean by 2 %. `test_evapotranspiration` pins this
+down with `test_a_single_short_excursion_owns_the_whole_day`, so anything that
+later tries to "clean" the extremes has to argue with a red test — and this repo
+does not clamp real readings away, which is exactly why the DHT humidity floor
+was lowered to 5 % a commit earlier.
+
+### A correction to this file's own humidity claim
+
+The DHT-gate entry above says the 261 sub-20 % humidity points are real
+dry-season readings. **243 of them are; 18 are not.**
+
+- **2026-09-01: 243 points, 13:03-17:40, device 31.7-34.2 °C.** Ambient. The
+  station's daily mean RH that day is 31 % and its ET0 the window's highest at
+  7.21 mm. The minimum of 15.00 % is here, so the decision to lower the floor to
+  5 % rests on these and stands.
+- **2026-09-03: 18 points, 15:20-15:38, device 41.3-45.0 °C.** Inside the sun
+  patch. The dewpoint drops 17.1 → 11.5 °C and recovers, which pure heating of a
+  fixed air parcel cannot do — the humidity element was being cooked, and those
+  readings measure nothing.
+
+The conclusion does not move; the attribution does.
+
+### What it costs on the chip
+
+Measured from `espgarden2`'s build, not estimated:
+
+| | Bytes |
+|---|---|
+| `evapotranspiration.cpp.o` — the pure maths | **1 609** flash |
+| `et0_model.cpp.o` — clock, rollover, snapshot | 1 756 flash, 8 data, 64 bss |
+| `et0ExtraterrestrialRadiation` alone | 552 flash |
+| `et0Hargreaves` alone | 336 flash |
+| `Et0Day` + `Et0Report` + the mux, resident | **72 RAM** |
+| **whole change, every file:** 1 247 157 → 1 254 501 | **+7 344 flash, +72 static RAM** |
+
+70.5 % → **70.9 %** of the 1.69 MB app slot. The gap between the 3 365 bytes of
+the two new translation units and the 7 344 total is the `JSONVar` event, the
+`/data.json` row, the config parsing and the `String` formatting in the setup
+log — the plumbing costs more than the physics, as it did for the cloud model.
+
+**No task was added.** It rides the 1 Hz io task and does one float comparison
+per tick, 86 399 ticks in 86 400 doing nothing but a min/max — which matters,
+because `addTask()` silently drops past `CRITICALTASKSCHEDULER_MAX_TASKS`.
+
+**And it is published once a day, as an EVENT.** ET0 updates once in 24 h, so
+riding the periodic payload would restate it 287 times a day and riding the step
+publisher would re-send it on every 900 s heartbeat for the same nothing. One
+message, carrying `et0` with `et0TempMin`, `et0TempMax` and `et0Hours` beside it
+— the evidence stored with the answer, for the reason the `Sd` error bars exist.
+
+### What the data could not settle
+
+- **Whether the sensor is indoors, in a box, or under a roof.** The statistics
+  say "behind thermal mass" and cannot say which. Somebody has to look.
+- **Whether a correctly sited DHT11 on this board would work.** The station-fed
+  row (-10.6 %, r 0.774) says the formula and the location are fine; nothing says
+  what a ±2 °C sensor in a proper screen would score, because there has never
+  been one here.
+- **Anything seasonal.** Eight usable days at the end of one dry season. HS's
+  premise is that the diurnal range tracks cloudiness, and this window has almost
+  no cloud variation to track — the STATION's own range correlates with its own
+  ET0 at only r = +0.392 here. The formula may well look better in a wet season,
+  and nothing in the archive can say.
+- **The 22-hour coverage gate's number.** Physics says both turning points must
+  be inside the day; it does not say 22. The gate demonstrably refuses the 6-hour
+  board-swap day, whose 3.43 K range was pure artefact, and admits everything
+  else. That is the only evidence for it.
+- **Whether the +3.6 K dewpoint offset is the garden or the sensor.**
+- **A second board.** Every number here describes one DHT11 at one mounting, and
+  the archive already contains one undiagnosed geometry change (the luminosity
+  step of 2026-08-28). Nothing on the device can detect the next one.
+
 ## Web assets — bundled and gzipped, because requests are the scarce resource
 
 `devices.html` stopped loading, and the browser said
@@ -1725,7 +1993,7 @@ Three mechanisms, and which to use:
 
 | | Use for | Example |
 |---|---|---|
-| **Event** | A transition an operator needs timestamped | relay started/stopped/refused, reservoir emptied, reboot, `fw_state` |
+| **Event** | A transition an operator needs timestamped | relay started/stopped/refused, reservoir emptied, reboot, `fw_state`, a cloud transient, the daily `et0` |
 | **Sticky flag** | "Did this happen at all during the period" | `relayNRan`, `relayRanMask`, `IO_HISTORY_FLAG_FLOAT_RAISED` |
 | **Accumulator** | A quantity, where the mean or total is the answer | moisture, luminosity, flow rate, `flowTotalLitres`, ping |
 

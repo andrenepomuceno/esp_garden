@@ -39,6 +39,11 @@
   "cloud": {
     "enabled": false
   },
+  "et0": {
+    "enabled": false,
+    "latitude": 0.0,
+    "scale": 1.0
+  },
   "log": {
     "level": 4
   },

@@ -1,6 +1,7 @@
 #include "core/tasks.h"
 #include "BuildConfig.h"
 #include "core/cloud_model.h"
+#include "core/et0_model.h"
 #include "core/io_history.h"
 #include "core/moisture_model.h"
 #include "network/thingsboard.h"
@@ -248,6 +249,33 @@ publishCloudEvents(int events)
     tbPublishEvent(JSON.stringify(event));
 }
 
+// A day's reference evapotranspiration, published the moment the day closes.
+//
+// It is an EVENT rather than a step value, and the sampling rule is why: ET0
+// updates exactly once every 24 hours, so riding the periodic payload would
+// restate the same number 287 times a day, and riding the step publisher would
+// re-send it on every 900 s heartbeat for the same nothing. One message a day,
+// carrying the whole observation.
+//
+// The extremes and the coverage go WITH it, in the same message. A daily
+// maximum has no averaging in it -- one short excursion owns the day, and this
+// board has produced exactly that: a 38-minute patch of direct sun took the
+// sensor to 45 C on 2026-09-03 and more than doubled that day's estimate. The
+// number alone cannot be re-examined later; the number beside the range it came
+// from can. Same reasoning as the `Sd` error bars on the continuous channels.
+static void
+publishEt0Event()
+{
+    const Et0Report report = et0Report();
+
+    JSONVar event;
+    event["et0"] = (double)report.et0Mm;
+    event["et0TempMin"] = (double)report.tMin;
+    event["et0TempMax"] = (double)report.tMax;
+    event["et0Hours"] = (int)report.hoursCovered;
+    tbPublishEvent(JSON.stringify(event));
+}
+
 // Seam with src/relays.cpp: startRelay() calls this once the relay is
 // energised, so relay switching itself stays free of the watering bookkeeping.
 void
@@ -302,6 +330,9 @@ ioTaskHandler()
     publishRelayEvents();
     publishFloatEvents();
     publishCloudEvents(cloudModelTick());
+    if (et0ModelTick()) {
+        publishEt0Event();
+    }
 
     // Every step VALUE that moved, on the same 1 Hz beat and for the same
     // reason: an asynchronous change belongs in asynchronous telemetry, not in
@@ -676,6 +707,8 @@ tasksSetup()
     sensorsSetup();
 
     cloudModelSetup();
+
+    et0ModelSetup();
 
     relaysSetup();
 

@@ -317,6 +317,12 @@ class DeviceState:
                 # reported 463 KB of usable space.
                 "Filesystem": "320 / 512 KB",
             }
+            # ET0 is present only once a complete day has closed, exactly as
+            # web_data.cpp gates it -- and only when et0.enabled is on. The mock
+            # reports a fixed plausible day so the row can be styled at all; the
+            # device computes it from its own extremes.
+            if SIM_CONFIG.get("et0", {}).get("enabled"):
+                status["ET0"] = "4.21 mm/day (range 11.3 K)"
             if self.dht_total_reads:
                 rate = self.dht_read_errors / self.dht_total_reads * 100
                 status["DHT Error Rate"] = f"{rate:.2f}"

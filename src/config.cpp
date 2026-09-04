@@ -96,6 +96,9 @@ ConfigFile::ConfigFile()
     mqttPublishSec = 300;
     mqttHeartbeatSec = 900;
     cloudEnabled = false;
+    et0Enabled = false;
+    et0Latitude = 0.0f;
+    et0Scale = 1.0f;
 
     // pins
     buttonPin = 0;
@@ -387,6 +390,38 @@ ConfigFile::loadFile(unsigned deviceID)
         JSONVar cloud = configJson["cloud"];
         if (cloud.hasOwnProperty("enabled")) {
             cloudEnabled = (bool)cloud["enabled"];
+        }
+    }
+
+    if (configJson.hasOwnProperty("et0")) {
+        JSONVar et0 = configJson["et0"];
+        if (et0.hasOwnProperty("enabled")) {
+            et0Enabled = (bool)et0["enabled"];
+        }
+        if (et0.hasOwnProperty("latitude")) {
+            const double latitude = (double)et0["latitude"];
+            // Outside this the sunset hour angle is meaningless and Ra would be
+            // computed for a place that does not exist. Refuse the value rather
+            // than clamp it: a typo'd latitude is a wrong estimate, and a
+            // clamped one hides which.
+            if (latitude >= -90.0 && latitude <= 90.0) {
+                et0Latitude = (float)latitude;
+            } else {
+                logger.warning("et0.latitude out of range; ET0 left at " +
+                               String(et0Latitude, 4) + ".");
+            }
+        }
+        if (et0.hasOwnProperty("scale")) {
+            const double scale = (double)et0["scale"];
+            // A correction beyond 2x is not a calibration, it is a different
+            // sensor. Refusing keeps a fat-fingered value from silently
+            // doubling every number the model reports.
+            if (scale >= 0.5 && scale <= 2.0) {
+                et0Scale = (float)scale;
+            } else {
+                logger.warning("et0.scale outside 0.5..2.0; ET0 left at " +
+                               String(et0Scale, 3) + ".");
+            }
         }
     }
 
