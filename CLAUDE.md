@@ -385,14 +385,30 @@ called it missing three times.
     **25 100/day** measured on 2.7.3. About **-83 %**, on a board carrying two
     probes and no water level.
 
-  **The OTA client called this a failure and was wrong again.** The upload sent
-  1.2 MB in 12 s at 100 KB/s and the device answered `200 OK`; the script's
-  180 s liveness wait then expired and it printed "the web server never came
-  back" while the board had been serving for minutes. What settled it in
-  seconds was the DURABLE record - `bootReason` and `firmware` in
-  `backups/telemetry.sqlite` - showing a single boot and a 21 s gap. A client
-  that cannot reach the board has established nothing about the board, and this
-  file has now recorded that three times.
+  **The OTA client called this a failure, and the reason was found later the
+  same night.** The upload sent 1.2 MB in 12 s at 100 KB/s and the device
+  answered `200 OK`; the script then printed "the web server never came back"
+  while the flash had in fact landed. It happened three times.
+
+  **The reboot takes SIX SECONDS**, measured once the client was made to print
+  absolute timestamps: upload complete 22:33:13, board down 22:33:17, serving
+  again 22:33:19, uptime 6 s. The bug was the wait itself:
+
+  ```python
+  while time.time() < deadline and not dev.alive():   # true at once: the OLD
+      time.sleep(3)                                   # firmware is still up
+  if not dev.alive():                                 # now it IS rebooting
+      raise SystemExit("the web server never came back")
+  ```
+
+  `handleUpdateRequest` answers 200 and only then calls `requestRestart()`,
+  which reboots ~500 ms later from `loop()`. So the first probe caught the old
+  firmware still serving, the loop never ran a single iteration, and the second
+  probe caught the reboot. The two calls straddled it. **The wait never
+  happened**, which is why an intermediate diagnosis here — that the board was
+  taking five minutes to return — was wrong: it assumed a loop that had run to
+  its deadline. A client must wait for the board to go DOWN before waiting for
+  it to come back, or "alive" is satisfied by the firmware being replaced.
 
 **Unverified — written, compiles, never run on hardware:**
 
