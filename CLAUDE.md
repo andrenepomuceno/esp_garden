@@ -40,7 +40,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | Filesystem image | `scripts/build_assets.py` → `.pio/assets/` | Bundles each page's scripts into one file and gzips everything the web server serves. `data_dir` points the image here, so `-t buildfs` cannot pack the unbundled sources |
 | Partitions | `partitions/esp_garden_4mb.csv` | 1.69 MB per OTA slot, 512 KB LittleFS. **Cannot be changed over OTA** |
 | Filesystem | `include/core/filesystem.h` | The one line naming the driver. Everything else says `FILESYSTEM`, never `LittleFS` |
-| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `moisture_fit.py` + `moisture_stats.py` (the PC-side moisture fit: reads the archive and the device's config, detects the configuration seams and the handling transients itself, and **refuses to emit a parameter the data cannot support**, naming the check that refused it), `cloud_fit.py` (fits the clear-sky reference from the archive and writes the generated header), `et0_fit.py` (geocodes `postalCode`, pulls the public daily record and scores the device's ET0 against a station's — it is allowed to answer "do not enable this", and did), `feeds_plot.py`, `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`, wide CSV on `--csv`), `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090** — charts, the dead-key inventory, boots and gaps; it imports `tb_export`'s seam constant and its sync rather than restating either) |
+| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `moisture_fit.py` + `moisture_stats.py` (the PC-side moisture fit: reads the archive and the device's config, detects the configuration seams and the handling transients itself, and **refuses to emit a parameter the data cannot support**, naming the check that refused it), `drying_fit.py` + `drying_models.py` (the same shape aimed at the FALL rather than the parameters: isolates genuine drying segments, fits linear / exponential / double-exponential / exponential-plus-linear against each other and refuses to report an asymptote the data does not constrain - it ran on the whole archive and refused all ten), `cloud_fit.py` (fits the clear-sky reference from the archive and writes the generated header), `et0_fit.py` (geocodes `postalCode`, pulls the public daily record and scores the device's ET0 against a station's — it is allowed to answer "do not enable this", and did), `feeds_plot.py`, `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`, wide CSV on `--csv`), `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090** — charts, the dead-key inventory, boots and gaps; it imports `tb_export`'s seam constant and its sync rather than restating either) |
 
 **No source file exceeds 1000 lines, and `python scripts/check_lines.py` is what
 says so.** The rule sat in this file unenforced for long enough that two files
@@ -628,6 +628,37 @@ called it missing three times.
     below a handled probe, so it has margin on both sides — but it has only
     been tested against a spring week. A wetter month that dries faster is the
     case that would move it.
+
+- **The PC-side drying fit's ACCEPT path** (`scripts/drying_fit.py`,
+  2026-09-04). The tool has run end to end against the real archive and every
+  branch it took was a REFUSAL, which is the outcome the data supports and is
+  recorded as a result rather than a failure — see
+  [Drying IS a decay](#drying-is-a-decay-it-is-the-wrong-decay-and-its-asymptote-is-not-there).
+  What has never happened is the other half: no segment has ever produced a
+  proposed dry anchor, so the acceptance path is exercised only by
+  `--self-test`'s synthetic curves. Specifically unexercised, and specifically
+  a judgement rather than a measurement:
+
+  - **`HANDLING_SETTLE_SEC` = 2 h**, the time a moved probe is given before its
+    readings count again. It DECIDES THE ANSWER and is therefore a
+    `--settle-hours` flag rather than a constant: at 2 h the two longest
+    segments are won on held-out error by `linear`, at 0 they are won by
+    `exp + linear` with tau 1.87 and 1.93 h — the exponential everybody can see
+    in the trace lives largely inside the window a just-handled probe is not to
+    be trusted in. The archive cannot settle it — the last handled probe
+    was still falling 0.3 points per five minutes 105 minutes after the final
+    step, and then the archive ends. Two hours is the observed minimum, not a
+    measured settling time.
+  - **`ASYMPTOTE_MIN_EXTRAPOLATION` = 2.0 points.** Arithmetic about the
+    20.4-point two-point span and its 6.8-point thirds, not a measurement of
+    what a badge can absorb.
+  - **The falsification check fired once**, and only marginally (0.29 points).
+    The decisive case is one the tool conservatively declines to call: segment
+    [7] fits an asymptote of 78.65 and the same probe's next segment STARTS at
+    77.66, but a 2.4-point transient sits between them and the tool treats any
+    2-point rise as a wetting.
+  - **`--stitch-seam` rests on `tb_export.SEAM_MS`**, not on a measurement of
+    identity. The join is at least continuous: +0.08 points across 76 s.
 
 - **Per-probe polarity and probe power gating** (firmware 2.7.0). The config
   keys parse, the five envs build, and the save/load round trip is verified
@@ -1576,6 +1607,106 @@ source: zero double-counts the day the board already holds, a current epoch
 throws it away. **The fix for both is to fit from `GET /history.json`**, which
 is the device's own 60 s record, and that is the first thing to change when
 there is finally something to seed.
+
+### Drying IS a decay. It is the wrong decay, and its asymptote is not there
+
+The question was worth asking and the prize was real: the `dry` anchor above is
+an UPPER bound taken by carrying a probe into a different pot, and if drying
+approaches an asymptote then fitting it estimates the dry end without waiting
+for a zone to dry out. `scripts/drying_fit.py` asked. **The answer is no, and
+the reason is more useful than a yes would have been.**
+
+Ten genuine drying segments were isolated from the 10-day archive, 8.0 to
+61.4 h long, five of them flagged CONFOUNDED because they begin within six
+hours of a probe being handled. **All ten were refused an asymptote**, and the
+refusals fall into two groups that say different things.
+
+**There ARE two timescales, and only the fast one is real.** The two longest
+segments are described by `exp + linear`: a fast exponential of **tau 1.96 h**
+(`moisture1`, 61.4 h) and **1.93 h** (`zona3`, 36.3 h), on top of straight
+declines of **-2.86** and **-1.73 points/day**. Those two agree to 1.5 % and
+they are different probes in different pots. The two 8-hour segments after the
+2026-09-03 hand watering give **1.47 h** and **0.27 h**, which is NOT the same
+number — so what is reproducible is that a fast component of order an hour
+exists, not its value. The 2026-09-03 pair matters anyway: nothing was touched
+there, only water was poured, so the fast limb is soil and not a probe
+settling. It is the drying counterpart of the absorption `tau` the firmware
+already estimates.
+
+**The slow limb has no measurable curvature, which is why there is no
+asymptote.** Fit a single exponential to it and tau runs to **56.4 h** on the
+61.4 h segment and **87.7 h** on the 21.9 h one: an exponential that long IS a
+straight line, and its "asymptote" is the line's intercept. Fit a double
+exponential and the second tau runs to **245 h** and **145 h** against those
+windows, while buying an in-sample RMSE of 0.496 against `exp + linear`'s 0.491
+-- so `exp2` is not resolving two soil timescales, it is spending its second
+exponential on being a line, and paying nothing for the privilege of also
+reporting an asymptote of 45.67. **`exp + linear` is in the model list for
+exactly this reason**: without it, `exp2` simply "wins" and its m_inf gets read
+as a physical number.
+
+The three checks that condemn the asymptote, on segment [6] (`moisture1`,
+61.4 h, the longest undisturbed stretch in the archive):
+
+| check | result |
+|---|---|
+| 95 % profile likelihood, at n_eff | reaches **0**, the floor of the scale — every asymptote fits |
+| residual moving-block bootstrap | [42.3, 71.3] — and on segment [7] it says [78.1, 79.2], **80x tighter than a profile that is unbounded** |
+| trim the first 12.2 h and refit | the asymptote moves **21.2 points** (67.7 -> 46.5 -> 50.6) |
+
+**The bootstrap's narrowness is the trap.** It resamples around the fitted
+curve, so it measures noise and not model error; where the model is wrong it
+reports +/-0.5 for a number the profile cannot bound at all. It is printed here
+only next to the profile, never alone.
+
+**And two asymptotes WERE identified — which is what proves the point.** The
+two 8-hour segments after the 2026-09-03 hand watering give tau 1.44 h with a
+bounded 95 % interval of [71.19, 74.16], and tau 0.36 h with [74.74, 75.94].
+Both are refused, by a gate added after the tool passed one without it: the
+asymptote sits **within 0.3 points of the last reading**. A decay watched to
+completion asymptotes at the level the pot settles at BETWEEN waterings, which
+the last sample already gave, and calling that "fully dry" would have written a
+humid baseline into `moisture[i].dry`. **On a partial decay, identified and
+informative are the same dial turned opposite ways** — that is the honest
+content of the whole exercise, and it does not improve with more of this data.
+
+**The 86.4 % linear finding above is not contradicted.** That is a NET rate over
+29.7 days containing waterings, each of which puts the level back up, on an
+earlier probe generation; -1.7 to -2.9 points/day are drying-only rates between
+them. The archive cannot check the older number at all — it starts on
+2026-08-24.
+
+**Weather does not rescue it.** Against the `exp + linear` residual, the
+device's own temperature reaches r^2 0.128 on one segment and 0.040 on another
+**with the sign reversed** (+0.36 against -0.20), luminosity 0.011-0.089, air
+humidity 0.019-0.068. A real driver pushes both probes in one garden the same
+way. This is a separate reason from the one that keeps ET0 disabled and it
+points the same direction; see
+[Evapotranspiration](#evapotranspiration-the-fit-said-no-and-that-is-the-result).
+
+**What the archive cannot answer at all:** the observation that started this —
+a probe holding an apparent plateau for about three minutes on the evening of
+2026-09-03 before resuming its fall. That evening is stored at the **300 s**
+publish period, 25 points over 2.1 h, so a three-minute feature is below the
+sampling. Nothing fitted to these series can confirm or deny it, and the tool
+flags any tau under two sample periods as UNRESOLVED rather than reporting it.
+Answering it needs `GET /history.json` at 60 s, or a deliberate 1 Hz capture.
+
+**Nothing was added to the firmware, and that is the result.** No C++ changed,
+no flash was spent, and `moisture[i].dry` still holds the hand-measured 53.1.
+The fast `tau` is the one thing here worth having, and it is not this
+question's answer: nothing on the device consumes a drying time constant today,
+and the archive's 300 s samples are the wrong record to fit one from — the
+device's own 60 s history is, which is the same conclusion `moisture_fit.py`
+reached about seeding a model.
+
+**What would change the verdict:** one zone actually drying out, so the curve
+bends where the asymptote lives instead of being extrapolated to it. Ten days
+of one garden in one season, on probes that were swapped mid-record, is thin;
+a wetter month, a different soil, or a pot small enough to dry in two days
+would all be new evidence. What would NOT change it is more days of the same:
+the profile is flat because the curvature is absent, not because the record is
+short.
 
 ---
 
