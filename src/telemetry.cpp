@@ -304,6 +304,17 @@ telemetryPublishStepChanges()
 // harder to notice than one that is plainly wrong.
 static const char* const g_instantSuffix = "Now";
 
+// The spread of the window, as an ERROR BAR. Standard deviation and not the
+// variance the accumulator stores, because an error bar is drawn in the
+// measurement's own units and units-squared does not overlay a chart.
+//
+// It answers a question the archive could not answer before: "had this reading
+// settled?" A mean of 74.0 at sd 0.05 and a mean of 74.0 at sd 30 are different
+// claims, and until now only the first number was kept. Reconstructing that
+// after the fact meant polling the live device, which is exactly what could not
+// be done for anything already past.
+static const char* const g_spreadSuffix = "Sd";
+
 // Both numbers, deliberately. The window mean is what a trend is read from; the
 // instantaneous value is the only one that can show a spike, and at a 300 s
 // publish period a window is 300 samples deep -- easily enough to flatten a
@@ -314,9 +325,16 @@ addContinuous(JSONVar& telemetry, const String& key, AccumulatorV2& acc)
     if (acc.getSamples() == 0) {
         return; // never sampled: sending 0 would read as a real value
     }
+    // getAverage() is load-bearing rather than incidental: it is what refreshes
+    // `variance`, so the spread below is only meaningful after this call.
     telemetry[key.c_str()] = (double)acc.getAverage();
     const String instantKey = key + g_instantSuffix;
     telemetry[instantKey.c_str()] = (double)acc.getLast();
+    // Clamped at zero: the incremental sums can land a hair below it on a
+    // window of identical samples, and sqrt of a negative is a NaN that
+    // serialises as null and reads as a missing sensor.
+    const String spreadKey = key + g_spreadSuffix;
+    telemetry[spreadKey.c_str()] = (double)sqrtf(fmaxf(acc.variance, 0.0f));
 }
 
 // The verdict last published per probe, so a fault that CLEARS is said once.

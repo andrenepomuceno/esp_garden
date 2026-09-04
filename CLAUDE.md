@@ -424,6 +424,12 @@ called it missing three times.
   archive already contains a mounting change six days before the fit, and
   **nothing on the device can detect the next one**.
 
+- **The `Sd` error bars** (firmware 2.9.1). Six extra keys per publish, one per
+  continuous channel, computed from a variance the accumulator already
+  maintained. Never published from the device, so neither the values nor the
+  datapoint cost above has been observed — the cost is arithmetic from the
+  measured 288 ticks/day.
+
 - **`relayStop` on the device** (firmware 2.8.1). The whole contract is
   verified against the simulator — relay started for 20 s, stopped on demand,
   and a repeated stop on an idle relay accepted as harmless — and `index.js`
@@ -1790,9 +1796,28 @@ the version could possibly have changed.
   accumulated over the publish interval, and now published TWICE: the window
   mean under the original key, and the instantaneous value under the same name
   plus **`Now`** (`temperature` + `temperatureNow`, `moisture1` +
-  `moisture1Now`, …). The mean is what a trend is read from; the instantaneous
-  value is the only one that can show a spike, and at a 300 s period a 1 Hz
-  window is 300 samples deep — easily enough to flatten a watering into nothing.
+  `moisture1Now`, …), and a third under **`Sd`**. The mean is what a trend is
+  read from; the instantaneous value is the only one that can show a spike, and
+  at a 300 s period a 1 Hz window is 300 samples deep — easily enough to flatten
+  a watering into nothing.
+
+  **`Sd` is the error bar, and it is a standard deviation rather than the
+  variance the accumulator stores** — an error bar is drawn in the
+  measurement's own units, and units-squared does not overlay a chart. It exists
+  because the archive could not answer *"had this reading settled?"*. On
+  2026-09-03 a whole probe calibration had to be done by polling the live device
+  at 30 s intervals, because every stored number was a mean with no spread
+  beside it, and a mean of 74.0 at sd 0.05 is a different claim from a mean of
+  74.0 at sd 30. Nothing already past could be re-examined. Cost: one key per
+  continuous channel, +288 datapoints/day each — on this board's six live
+  channels, ~4 320/day becomes ~6 050, still a quarter of the 25 100 measured
+  before any of this.
+
+  It is NOT the cloud detector's statistic and must not be confused with it.
+  `cloudVariability` is a normalised sample-to-sample STEP; `Sd` is the spread
+  of the LEVEL. Measured over 5-minute windows, a smooth ramp and a flickering
+  sky are indistinguishable by level spread — both sd 3.2 — while the step
+  separates them 1.10 against 3.61. Two statistics, two questions.
 
   **The AVERAGE keeps the original key name, and that is the load-bearing half
   of the decision.** Every one of those keys has carried `getAverage()` since

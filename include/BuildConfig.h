@@ -4,7 +4,7 @@
 // current_fw_version, which is how the broker decides an update landed. It is
 // also what fwVersionDiffers() compares an offered package against, so bumping
 // it is what makes a FOTA a no-op instead of a reflash loop.
-#define FW_VERSION "2.9.0"
+#define FW_VERSION "2.9.1"
 
 // Feature flags
 #define USE_WEBSERVER 1
