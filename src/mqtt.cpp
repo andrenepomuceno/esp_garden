@@ -92,13 +92,6 @@ mqttSubscribeTopic(const String& topic)
 
 #if USE_THINGSPEAK
 bool
-mqttSubscribe(long subChannelID)
-{
-    String myTopic = "channels/" + String(subChannelID) + "/subscribe";
-    return mqttClient.subscribe(myTopic.c_str());
-}
-
-bool
 mqttPublish(long pubChannelID, String message)
 {
     String topicString = "channels/" + String(pubChannelID) + "/publish";

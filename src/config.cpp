@@ -1,5 +1,6 @@
 #include "core/config.h"
 #include "core/config_io.h"
+#include "core/default_pins.h"
 #include "core/io_history.h"
 #include "core/tasks.h"
 #include "core/logger.h"
@@ -31,49 +32,38 @@ String& g_mqttServer = config.mqttServer;
 int& g_mqttPort = config.mqttPort;
 String& g_mqttCACert = config.mqttCACert;
 
-// The compiled defaults, per MCU family. These are NOT cosmetic: relay 0's
-// entry is driven by relayPinsSafeInit() as the FIRST statement of setup(),
-// about 1.5 s before config.json is read, so this table decides which GPIOs a
-// board holds as outputs during its own boot. A table from the wrong chip does
-// not merely miss the relays — it drives whatever else is on those numbers.
+// The compiled pin defaults, per MCU family. The table itself lives in
+// core/default_pins.h — Arduino-free, both families always compiled — so
+// test_pin_rules can hold every number against the rules of the chip it
+// belongs to. This file is only the seam that picks one.
 //
 // Selected the same way core/pin_rules.h is: CONFIG_IDF_TARGET_*, set by the
-// framework from the env's `board` line, so it cannot drift.
+// framework from the env's `board` line, so it cannot drift. An unrecognised
+// target is a hard error and not a fallback, for the reason config_pins.cpp
+// gives: guessing wrong here parks the wrong GPIOs 1.5 s before anything can
+// say so.
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
-// esp-garden-hardware. RELAY1..4 are GPIO 10-13; the WROOM-32 table's 15/16/18
-// are this board's FLOW_PULSE, FLOAT_SW and BTN_USER, and two of those three
-// are switched to ground by the field hardware — SW150 shorts BTN_USER, and
-// Q400 pulls FLOW_PULSE down on every flow pulse. Driving them as push-pull
-// outputs for the length of a boot is a short, not a mis-assignment.
-//
-// Parking these EARLY is no longer what keeps the pumps off: this board has no
-// driver stage, so at reset the GPIOs are inputs, the relay module's own
-// pull-up holds IN high and `on: 0` means every relay is released. The table
-// now earns its place by keeping setup()'s first statement off three inputs.
-static const uint8_t g_defaultRelayPin[] = { 10, 11, 12, 13 };
-// ADC1 on an S3 is GPIO 1-10 (soc/adc_channel.h), not 32-39. SOIL1..3 are 1, 2
-// and 4; SOIL4 is 5 and lands past this table, which only feeds slots a short
-// io.soilMoisture array leaves unset.
-static const uint8_t g_defaultSoilMoisturePin[] = { 1, 2, 4 };
+namespace defaults = default_pins::esp32s3;
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+namespace defaults = default_pins::wroom32;
 #else
-// Relay 0 keeps GPIO 15 so boards already in the field are unaffected. It is a
-// strapping pin (MTDO) — new hardware should override it in config.json.
-static const uint8_t g_defaultRelayPin[] = { 15, 16, 17, 18 };
-// All ADC1: ADC2 cannot be read while WiFi is associated, so every analog
-// channel has to come from GPIO 32-39.
-//
-// Index 1 is 34 because that is where espgarden5 — the only board that takes a
-// second probe on compiled defaults — has it wired, and that board has no water
-// level sensor to contend with. A board carrying BOTH a water level sensor and
-// a second probe must assign pins in config.json; validatePins() logs the
-// collision if it does not. (Briefly changed to 35 to dodge that collision,
-// which silently moved espgarden5's probe onto a floating pin.)
-//
-// GPIO 32/33 double as XTAL_32K_P/N. The ESP32-WROOM-32 on a NodeMCU-32S ships
-// without that crystal, so they are ordinary ADC1 inputs; a module that does
-// have one fitted cannot use them.
-static const uint8_t g_defaultSoilMoisturePin[] = { 36, 34, 32 };
+#error "Unknown CONFIG_IDF_TARGET: add a default_pins namespace and tests."
 #endif
+
+// The two spellings of "no pin" must agree. default_pins.h cannot include
+// config.h without dragging Arduino into the host test, so this is the joint.
+static_assert(default_pins::kNoPin == ConfigFile::kNoPin,
+              "default_pins::kNoPin and ConfigFile::kNoPin disagree");
+
+// Every probe slot gets a pin somebody chose. It used to fall through to the
+// Arduino alias A0 for slots past the table, which is GPIO 36 on a WROOM-32
+// and GPIO 1 on an S3 — probe 0's pin on both, so a fourth declared probe
+// silently doubled the first one. Raising MOISTURE_MAX now means naming the
+// pins, which is the point.
+static_assert(sizeof(default_pins::wroom32::soilMoisture) >= MOISTURE_MAX,
+              "the WROOM-32 soil moisture defaults do not cover MOISTURE_MAX");
+static_assert(sizeof(default_pins::esp32s3::soilMoisture) >= MOISTURE_MAX,
+              "the ESP32-S3 soil moisture defaults do not cover MOISTURE_MAX");
 
 ConfigFile::ConfigFile()
 {
@@ -155,23 +145,22 @@ ConfigFile::ConfigFile()
     // making the count configurable; keeping the common pins in this table is
     // what keeps it from mattering in practice.
     {
-        const unsigned defaults =
-          sizeof(g_defaultRelayPin) / sizeof(g_defaultRelayPin[0]);
-        relayCount = defaults;
+        const unsigned fitted = sizeof(defaults::relay);
+        relayCount = fitted;
         for (unsigned i = 0; i < RELAY_MAX; ++i) {
-            relayPin[i] = (i < defaults) ? g_defaultRelayPin[i] : kNoPin;
+            relayPin[i] = (i < fitted) ? defaults::relay[i] : kNoPin;
             relayPinOn[i] = 0; // active low
             relayName[i] = (i == 0) ? "Watering" : ("Relay " + String(i + 1));
         }
     }
 
-    dhtPin = 23;
+    dhtPin = defaults::dht;
 
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
-        const unsigned defaults = sizeof(g_defaultSoilMoisturePin) /
-                                  sizeof(g_defaultSoilMoisturePin[0]);
-        soilMoisturePin[i] =
-          (i < defaults) ? g_defaultSoilMoisturePin[i] : (uint8_t)A0;
+        // Every slot, straight out of the table — the static_assert above is
+        // what makes that safe. There used to be an `A0` fallback for slots
+        // past the table's end, and A0 is probe 0's own pin on both families.
+        soilMoisturePin[i] = defaults::soilMoisture[i];
 
         // Uncalibrated until measured: dry == wet means "do not classify",
         // which is honest rather than inventing a band from nothing.
@@ -200,15 +189,20 @@ ConfigFile::ConfigFile()
     luminosityName = "Luminosity";
     waterLevelName = "Water Level";
 
-    luminosityPin = A3;
-    waterLevelPin = A6;
+    // From the family table, not from the Arduino aliases A3/A6 these used to
+    // carry. An alias resolves per board VARIANT, which looks chip-relative and
+    // is not the same question: on the esp32s3 variant A3 is GPIO 4, which is
+    // this firmware's third soil probe, while the carrier's LDR is on GPIO 6.
+    luminosityPin = defaults::luminosity;
+    waterLevelPin = defaults::waterLevel;
 
-    // Both need an internal pull-up, which GPIO 34-39 do not have, and both
-    // avoid the strapping pins and the flash pins.
-    flowPin = 27;
+    // Both need an internal pull-up and both have to stay off the flash pins —
+    // which is the whole reason these are per-family: the WROOM-32 values 27
+    // and 26 are SPI_HD and SPI_CS1 on an S3.
+    flowPin = defaults::flow;
     flowName = "Flow";
     flowPulsesPerLitre = 450.0; // YF-S201 nominal
-    floatPin = 26;
+    floatPin = defaults::floatSwitch;
     floatName = "Float Switch";
     floatActiveLevel = 0; // normally-open to ground, with the pull-up
     floatInterlock = false;
@@ -245,20 +239,15 @@ ConfigFile::validateThingSpeakFields()
         return; // probe 2 stays off the channel
     }
 
-#if !USE_THINGSPEAK
-    // The field numbering is still a real contract with what is stored in the
-    // channel, which is why the check below survives the flag — but this build
-    // publishes to no channel at all, so saying "probe 2 publishes to field N"
-    // would be a boot line that is simply untrue. Said once, and only when
-    // somebody actually set the key: at the default of 0 this function has
-    // already returned above.
-    logger.warning("thingSpeak.moisture2Field is set to " +
-                   String(thingSpeakMoisture2Field) +
-                   " but ThingSpeak is not compiled into this build; the "
-                   "setting is inert and probe 2 publishes nowhere.");
-    return;
-#endif
-
+    // The field numbering is a real contract with what is stored in the
+    // channel whatever USE_THINGSPEAK says, so the conflict check below runs
+    // in both builds and a colliding field is normalised to 0 either way. The
+    // flag decides only what is SAID at the end: an image with no ThingSpeak
+    // publisher must not print "probe 2 publishes to field N", because that is
+    // a boot line which is simply untrue.
+    //
+    // This guard used to sit here, above the loop, and returned — so with the
+    // flag off the check the comment describes did not happen at all.
     struct Claim
     {
         int field;
@@ -289,8 +278,17 @@ ConfigFile::validateThingSpeakFields()
         }
     }
 
+#if USE_THINGSPEAK
     logger.info("Probe 2 publishes to ThingSpeak field " +
                 String(thingSpeakMoisture2Field));
+#else
+    // Only reached when somebody actually set the key: at the default of 0
+    // this function returned at its first statement.
+    logger.warning("thingSpeak.moisture2Field is set to " +
+                   String(thingSpeakMoisture2Field) +
+                   " but ThingSpeak is not compiled into this build; the "
+                   "setting is inert and probe 2 publishes nowhere.");
+#endif
 }
 
 bool
@@ -771,13 +769,6 @@ ConfigFile::loadFile(unsigned deviceID)
         }
     }
 
-    // Outside the block above on purpose: a document with no `history` key
-    // keeps the compiled default, and a default that does not fit fails
-    // exactly as loudly as a configured one that does not. Clamps in memory
-    // and never touches the stored document — the operator's number stays in
-    // /config.json, so freeing space is all it takes to get it back.
-    historyRecords = (int)ioHistoryFitCapacity((uint32_t)historyRecords);
-
     const unsigned minChar = g_configMinStringLength;
     if ((hostname.length() < minChar) || (ssid.length() < minChar) ||
         (wifiPassword.length() < minChar) || (otaUser.length() < minChar) ||
@@ -843,6 +834,23 @@ loadConfigFile(unsigned deviceID)
     config.deviceId = deviceID;
 
     bool success = config.loadFile(deviceID);
+
+    // Outside loadFile() on purpose, and this is the whole point of it being
+    // here. loadFile() returns early — missing file, unopenable, unparseable,
+    // foreign id — and every one of those paths leaves historyRecords at the
+    // constructor's 1440 while main.cpp still calls ioHistory.begin() with it.
+    // That is exactly the state after a filesystem OTA that dropped
+    // /config.json: the partition is at its fullest and the one check that
+    // stops append() filling it is the one that did not run. A default that
+    // does not fit has to fail as loudly as a configured one that does not,
+    // which the comment here used to claim and the code did not do.
+    //
+    // Clamps in memory and never touches the stored document — the operator's
+    // number stays in /config.json, so freeing space is all it takes to get it
+    // back. Before setLogLevel() so the clamp is logged at the level that was
+    // in force while the rest of the load was.
+    config.historyRecords =
+      (int)ioHistoryFitCapacity((uint32_t)config.historyRecords);
 
     logger.setLogLevel((LogLevel)config.logLevel);
 

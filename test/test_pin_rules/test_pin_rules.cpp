@@ -1,3 +1,5 @@
+#include "BuildConfig.h"
+#include "core/default_pins.h"
 #include "core/pin_rules.h"
 #include <stdio.h>
 #include <unity.h>
@@ -31,6 +33,8 @@
 
 namespace w = pin_rules::wroom32;
 namespace s = pin_rules::esp32s3;
+namespace dw = default_pins::wroom32;
+namespace ds = default_pins::esp32s3;
 
 // A predicate is checked over EVERY uint8_t, not over the pins somebody
 // thought of. These take uint8_t and kNoPin is 255; a rule written as a bare
@@ -378,6 +382,157 @@ test_the_wroom32_rules_would_have_rejected_this_board(void)
     TEST_ASSERT_TRUE(s::isStrapping(46));
 }
 
+// ---------------------------------------------------------------------------
+// The COMPILED defaults, held against the rules of their own family
+//
+// core/default_pins.h is the map a board uses before, and wherever, its
+// config.json does not say otherwise — and three separate paths reach it:
+// relayPinsSafeInit() 1.5 s before the config is read, loadSensor() whenever an
+// io entry carries no "pin" key, and the constructor for every probe slot a
+// short array leaves unset. Nothing REFUSES a bad one: validatePins() only
+// logs and documentPinsAreUsable() skips an entry with no pin. So the rules
+// have to be applied to the table here, where a wrong answer is a red test
+// rather than a boot line nobody reads.
+// ---------------------------------------------------------------------------
+
+static void
+assertProbeDefaultsAreDistinct(const uint8_t* probes, unsigned count,
+                               const char* what)
+{
+    for (unsigned i = 0; i < count; ++i) {
+        for (unsigned j = i + 1; j < count; ++j) {
+            if (probes[i] == probes[j]) {
+                char message[96];
+                snprintf(message, sizeof(message),
+                         "%s: probes %u and %u share GPIO %u", what, i, j,
+                         probes[i]);
+                TEST_FAIL_MESSAGE(message);
+            }
+        }
+    }
+}
+
+static void
+test_the_wroom32_defaults_pass_the_wroom32_rules(void)
+{
+    for (unsigned i = 0; i < sizeof(dw::relay); ++i) {
+        TEST_ASSERT_TRUE(w::isBonded(dw::relay[i]));
+        TEST_ASSERT_FALSE(w::isFlash(dw::relay[i]));
+        TEST_ASSERT_FALSE(w::isInputOnly(dw::relay[i]));
+    }
+
+    for (unsigned i = 0; i < sizeof(dw::soilMoisture); ++i) {
+        TEST_ASSERT_TRUE(w::isADC1(dw::soilMoisture[i]));
+    }
+    TEST_ASSERT_TRUE(w::isADC1(dw::luminosity));
+    TEST_ASSERT_TRUE(w::isADC1(dw::waterLevel));
+
+    // The DHT, the flow input and the float switch all need an internal
+    // pull-up, which GPIO 34-39 do not have.
+    const uint8_t digital[] = { dw::dht, dw::flow, dw::floatSwitch };
+    for (unsigned i = 0; i < 3; ++i) {
+        TEST_ASSERT_TRUE(w::isBonded(digital[i]));
+        TEST_ASSERT_FALSE(w::isFlash(digital[i]));
+        TEST_ASSERT_FALSE(w::isInputOnly(digital[i]));
+    }
+}
+
+static void
+test_the_esp32s3_defaults_pass_the_esp32s3_rules(void)
+{
+    for (unsigned i = 0; i < sizeof(ds::relay); ++i) {
+        TEST_ASSERT_TRUE(s::isBonded(ds::relay[i]));
+        TEST_ASSERT_FALSE(s::isFlash(ds::relay[i]));
+        TEST_ASSERT_FALSE(s::isStrapping(ds::relay[i]));
+    }
+
+    for (unsigned i = 0; i < sizeof(ds::soilMoisture); ++i) {
+        TEST_ASSERT_TRUE(s::isADC1(ds::soilMoisture[i]));
+    }
+    TEST_ASSERT_TRUE(s::isADC1(ds::luminosity));
+    TEST_ASSERT_TRUE(s::isADC1(ds::waterLevel));
+
+    const uint8_t digital[] = { ds::flow, ds::floatSwitch };
+    for (unsigned i = 0; i < 2; ++i) {
+        TEST_ASSERT_TRUE(s::isBonded(digital[i]));
+        TEST_ASSERT_FALSE(s::isFlash(digital[i]));
+        TEST_ASSERT_FALSE(s::isSerialConsole(digital[i]));
+    }
+
+    // This carrier has no DHT at all — the DHT22 header was dropped for an
+    // SHT40 this firmware has no driver for — so there is no pin to default
+    // to and kNoPin is the honest answer. It used to inherit the WROOM-32's
+    // GPIO 23, which this part does not bring out, so a config declaring a DHT
+    // without a pin was diagnosed as a bad pin number nobody had chosen.
+    TEST_ASSERT_EQUAL_UINT8(default_pins::kNoPin, ds::dht);
+}
+
+// MOISTURE_MAX is 4 and both tables used to be three long, so the fourth slot
+// fell through to the Arduino alias A0 — GPIO 36 on a WROOM-32 and GPIO 1 on
+// an S3, which is probe 0's own pin on both. validatePins() then reported a
+// conflict on a board that has a free ADC1 channel for it.
+static void
+test_no_family_defaults_a_probe_onto_another_probes_pin(void)
+{
+    assertProbeDefaultsAreDistinct(dw::soilMoisture, sizeof(dw::soilMoisture),
+                                   "wroom32");
+    assertProbeDefaultsAreDistinct(ds::soilMoisture, sizeof(ds::soilMoisture),
+                                   "esp32s3");
+}
+
+// Every probe slot must come out of the table, because the fallback that used
+// to fill the rest was A0. Raising MOISTURE_MAX has to mean naming the pins;
+// this is the same claim config.cpp makes with a static_assert, made where it
+// can be read.
+static void
+test_the_default_tables_cover_every_probe_slot(void)
+{
+    TEST_ASSERT_TRUE(sizeof(dw::soilMoisture) >= MOISTURE_MAX);
+    TEST_ASSERT_TRUE(sizeof(ds::soilMoisture) >= MOISTURE_MAX);
+}
+
+// The other half of the same alias problem. luminosityPin and waterLevelPin
+// were spelled A3 and A6, which resolve per board VARIANT and so look
+// chip-relative — but on the esp32s3 variant A3 is GPIO 4, which is this
+// firmware's third soil probe, while the carrier's LDR is on GPIO 6.
+static void
+test_no_family_defaults_the_ldr_onto_a_probe_pin(void)
+{
+    for (unsigned i = 0; i < sizeof(dw::soilMoisture); ++i) {
+        TEST_ASSERT_NOT_EQUAL(dw::luminosity, dw::soilMoisture[i]);
+    }
+    for (unsigned i = 0; i < sizeof(ds::soilMoisture); ++i) {
+        TEST_ASSERT_NOT_EQUAL(ds::luminosity, ds::soilMoisture[i]);
+    }
+
+    // GPIO 4 is what A3 resolved to on the S3 variant, and it IS a probe pin.
+    TEST_ASSERT_EQUAL_UINT8(4, ds::soilMoisture[2]);
+    TEST_ASSERT_NOT_EQUAL(4, ds::luminosity);
+}
+
+// The finding this table was split for, as the thing that must not come back.
+// The commit that made the relay table per-family did not carry the same
+// reasoning to dht, flow and float, which stayed at the WROOM-32's 23, 27 and
+// 26 — and on an S3, 27 and 26 are SPI_HD and SPI_CS1, the octal flash bus
+// that pinMode() and attachInterrupt() would then be pointed at.
+static void
+test_the_wroom32_sensor_defaults_are_hazardous_on_an_s3(void)
+{
+    TEST_ASSERT_TRUE(s::isFlash(dw::flow));        // GPIO 27, SPI_HD
+    TEST_ASSERT_TRUE(s::isFlash(dw::floatSwitch)); // GPIO 26, SPI_CS1
+    TEST_ASSERT_FALSE(s::isBonded(dw::dht));       // GPIO 23 does not exist
+
+    // So the S3 table may not reuse any of them, and does not.
+    TEST_ASSERT_NOT_EQUAL(dw::flow, ds::flow);
+    TEST_ASSERT_NOT_EQUAL(dw::floatSwitch, ds::floatSwitch);
+    TEST_ASSERT_NOT_EQUAL(dw::dht, ds::dht);
+
+    // And the mirror image: the S3 relay table on a WROOM-32 is the SPI flash,
+    // which is why the tables are per family in the first place.
+    TEST_ASSERT_TRUE(w::isFlash(ds::relay[0]));
+    TEST_ASSERT_TRUE(w::isFlash(ds::relay[1]));
+}
+
 void
 run_pin_rules_tests(void)
 {
@@ -406,4 +561,11 @@ run_pin_rules_tests(void)
 
     RUN_TEST(test_the_families_disagree_where_the_silicon_does);
     RUN_TEST(test_the_wroom32_rules_would_have_rejected_this_board);
+
+    RUN_TEST(test_the_wroom32_defaults_pass_the_wroom32_rules);
+    RUN_TEST(test_the_esp32s3_defaults_pass_the_esp32s3_rules);
+    RUN_TEST(test_no_family_defaults_a_probe_onto_another_probes_pin);
+    RUN_TEST(test_the_default_tables_cover_every_probe_slot);
+    RUN_TEST(test_no_family_defaults_the_ldr_onto_a_probe_pin);
+    RUN_TEST(test_the_wroom32_sensor_defaults_are_hazardous_on_an_s3);
 }

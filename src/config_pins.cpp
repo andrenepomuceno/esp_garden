@@ -167,6 +167,20 @@ ConfigFile::validatePins() const
             }
         }
 
+        // A sensor declared without a `pin` key, on a chip whose compiled
+        // default for that kind is kNoPin — the S3 carrier's DHT, because that
+        // board has no DHT header at all. Named as the missing assignment it
+        // is: reporting it as "GPIO 255 is not bonded out" sends the reader
+        // looking for a pin nobody chose. Relays never reach here; the loop
+        // above skips them, because for a relay kNoPin is a valid state.
+        if (pin == kNoPin) {
+            logger.error(String(owner) +
+                         " is declared with no pin, and this build has no "
+                         "default pin for it on this chip. Give it a pin in "
+                         "config.json, or remove the key.");
+            continue;
+        }
+
         if (pinIsFlash(pin)) {
             logger.error("GPIO " + String(pin) + " (" + owner +
                          ") is wired to the SPI flash and cannot be used.");

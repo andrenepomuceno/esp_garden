@@ -36,8 +36,14 @@ handleCapabilitiesJson(AsyncWebServerRequest* request)
     // so the two cannot disagree. The upper bound comes from the same place:
     // an S3 has GPIO 40-48 and a hardcoded 39 here would have hidden its UART,
     // its strapping pins and half its spares from the picker.
+    //
+    // Hoisted rather than re-asked: pinMaxGpio() is an out-of-line call in
+    // another translation unit and the answer is a compile-time property of
+    // the chip, so evaluating it once per iteration spent ~49 calls per
+    // request on the single async_tcp task for a number that cannot move.
     unsigned analog = 0, output = 0, digital = 0, strapping = 0, reserved = 0;
-    for (uint8_t pin = 0; pin <= pinMaxGpio(); ++pin) {
+    const uint8_t maxGpio = pinMaxGpio();
+    for (uint8_t pin = 0; pin <= maxGpio; ++pin) {
         if (pinIsFlash(pin) || !pinIsBonded(pin)) {
             // Never offered. One hangs the chip; the other is a pin that
             // cannot be wired to anything, and a sensor assigned to it reads

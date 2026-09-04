@@ -570,7 +570,6 @@ ioHistoryFitCapacity(uint32_t requested)
       requested, IO_SEGMENT_HEADER_SIZE, (uint32_t)sizeof(IoRecord));
     g_lastFit.grantedBytes = segment::storageBytes(
       granted, IO_SEGMENT_HEADER_SIZE, (uint32_t)sizeof(IoRecord));
-    g_lastFit.checked = true;
 
     if (granted >= requested) {
         logger.info("io_history: " + String(granted) + " records fit — " +

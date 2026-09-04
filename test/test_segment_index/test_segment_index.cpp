@@ -448,6 +448,35 @@ test_the_8mb_filesystem_holds_the_record_ceiling_with_room_to_spare()
       5000, fitCapacity(5000, kFs, kFs - assets, 0, kHeader, kRecord));
 }
 
+static void
+test_the_compiled_default_capacity_is_not_exempt_from_the_fit()
+{
+    // 1440 is what ConfigFile's constructor holds, and it is what survives
+    // every early return in loadFile() — a missing /config.json, an unopenable
+    // one, an unparseable one, a foreign id. That is exactly the state a
+    // filesystem deploy which dropped /config.json leaves behind: the
+    // partition is at its fullest and the configured number nobody could read
+    // is replaced by a compiled one nothing had checked. main.cpp calls
+    // ioHistory.begin() with it regardless, so the fit has to run on that path
+    // too — which is why the call moved out of loadFile() and into
+    // loadConfigFile(), above the early returns rather than below them.
+    //
+    // Nothing about 1440 makes it fit. Here it is a 96 KB request against a
+    // freshly reflashed partition with 130 KB free and no history yet on disk
+    // to credit back, and the arithmetic reduces it whether a config was read
+    // or not.
+    static const uint32_t kDefaultRecords = 1440;
+    static const uint32_t kFreeAfterDeploy = 130u * 1024u;
+
+    const uint32_t granted = fitCapacity(kDefaultRecords, kPartition,
+                                         kFreeAfterDeploy, 0, kHeader, kRecord);
+    TEST_ASSERT_EQUAL_UINT32(1360, granted);
+    TEST_ASSERT_TRUE(granted < kDefaultRecords);
+    TEST_ASSERT_TRUE(storageBytes(granted, kHeader, kRecord) +
+                       reserveBytes(kPartition) <=
+                     kFreeAfterDeploy);
+}
+
 void
 run_segment_index_tests(void)
 {
@@ -473,5 +502,6 @@ run_segment_index_tests(void)
     RUN_TEST(test_a_filesystem_that_cannot_be_asked_grants_what_was_configured);
     RUN_TEST(test_a_partition_with_no_room_disables_the_history_rather_than_half_filling_it);
     RUN_TEST(test_the_reserve_has_a_floor_and_a_fraction_and_takes_the_larger);
+    RUN_TEST(test_the_compiled_default_capacity_is_not_exempt_from_the_fit);
     RUN_TEST(test_the_8mb_filesystem_holds_the_record_ceiling_with_room_to_spare);
 }

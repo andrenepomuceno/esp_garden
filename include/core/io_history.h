@@ -205,6 +205,15 @@ extern IoHistory ioHistory;
 // renders them for as long as the condition lasts — the log is an 8 KB rolling
 // buffer this device overwrites within hours, so the boot line alone would be
 // gone by the time anyone asked why they did not get the records they set.
+//
+// Every field here is READ somewhere. There used to be a `checked` flag set on
+// the one path that asks the filesystem and never looked at again, which is
+// the shape of a field that documents an intention rather than carrying one.
+// The case it was for — totalBytes() reporting 0, so the request is granted
+// unchecked — cannot reach /data.json anyway: a filesystem that will not
+// answer its own size has no /users.json either, so there is no session to
+// serve the row to. That condition is said where it can actually be seen, in
+// ioHistoryFitCapacity()'s own warning on the serial log.
 struct IoHistoryFit
 {
     uint32_t requested = 0;      ///< records config.json asked for
@@ -213,7 +222,6 @@ struct IoHistoryFit
     uint32_t reserveBytes = 0;   ///< of that, what history may never take
     uint32_t wantedBytes = 0;    ///< `requested` once every segment has filled
     uint32_t grantedBytes = 0;   ///< `granted` once every segment has filled
-    bool checked = false;        ///< false when the filesystem could not be asked
 };
 
 // Bytes the segment files occupy right now. Logical lengths and not blocks,
