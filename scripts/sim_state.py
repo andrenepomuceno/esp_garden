@@ -53,6 +53,21 @@ def _fit_storage_bytes(capacity: int) -> int:
     return blocks * FIT_BLOCK_BYTES * FIT_SEGMENTS
 
 
+def _fit_available_bytes(total_bytes: int, used_bytes: int,
+                         history_bytes: int = 0) -> int:
+    """What the history may be measured against: free space plus what the
+    segments already hold.
+
+    Mirrors `g_lastFit.availableBytes = free + onDisk` in src/io_history.cpp,
+    and it is a named function rather than an expression because it is needed
+    TWICE -- once to grant a capacity and once to report it in Status.History.
+    Spelling it out in both places is how the two came to disagree: the row
+    used a bare `total - used` and matched only because the simulator's
+    `history_bytes` term happens to be 0.
+    """
+    return max(total_bytes - used_bytes, 0) + history_bytes
+
+
 def _fit_history_capacity(requested: int, total_bytes: int,
                           used_bytes: int, history_bytes: int = 0) -> int:
     """The capacity actually granted: never more than asked, never more than
@@ -60,7 +75,7 @@ def _fit_history_capacity(requested: int, total_bytes: int,
     a new capacity replaces the old rather than sitting beside it."""
     if requested <= 0 or total_bytes <= 0:
         return max(requested, 0)
-    available = max(total_bytes - used_bytes, 0) + history_bytes
+    available = _fit_available_bytes(total_bytes, used_bytes, history_bytes)
     budget = available - _fit_reserve_bytes(total_bytes)
     if budget <= 0:
         return 0
@@ -84,6 +99,21 @@ class DeviceState:
     # simulator offers the history is the free space a real one does.
     FS_TOTAL_BYTES = 512 * 1024
     FS_USED_BYTES = 320 * 1024
+
+    # ioHistoryBytesOnDisk() on the device: what the segments ALREADY hold, and
+    # what the fit adds back because a new capacity replaces the old rather
+    # than sitting beside it. Zero here, and that is a statement about
+    # FS_USED_BYTES above rather than about the simulator's history: 320 KB is
+    # defined as a device carrying the assets and NO history, so the free space
+    # that subtraction leaves is already the post-delete figure the device
+    # computes as `free + onDisk`.
+    #
+    # It is a named constant, not an omitted argument, because it has to be
+    # passed to the same helper in both places that need it. Give the simulator
+    # a used figure that DOES include its seeded history and this becomes
+    # non-zero; leave one of the two call sites out of step and the row prints
+    # a different number from the one the grant was made against.
+    FS_HISTORY_BYTES = 0
 
     # Mirrors USE_THINGSPEAK in include/BuildConfig.h, which ships at 0.
     #
@@ -126,7 +156,8 @@ class DeviceState:
         history_cfg = SIM_CONFIG.get("history", {})
         self.history_requested = int(history_cfg.get("records", 1440))
         self.history_capacity = _fit_history_capacity(
-            self.history_requested, self.FS_TOTAL_BYTES, self.FS_USED_BYTES)
+            self.history_requested, self.FS_TOTAL_BYTES, self.FS_USED_BYTES,
+            self.FS_HISTORY_BYTES)
         # records = 0 means disabled on the device, where /history.json answers
         # 503. Coercing it to 1 here made that branch unreachable in the UI.
         self.history_enabled = self.history_capacity > 0
@@ -175,7 +206,11 @@ class DeviceState:
         else:
             text = f"{len(self.history)} / {self.history_capacity} records"
         if self.history_capacity < self.history_requested:
-            available = self.FS_TOTAL_BYTES - self.FS_USED_BYTES
+            # The same expression the grant was made with, not a second
+            # subtraction that agrees with it by luck: src/web_data.cpp renders
+            # fit.availableBytes, which io_history.cpp sets to free + onDisk.
+            available = _fit_available_bytes(
+                self.FS_TOTAL_BYTES, self.FS_USED_BYTES, self.FS_HISTORY_BYTES)
             reserve = _fit_reserve_bytes(self.FS_TOTAL_BYTES)
             text += (f" (config asked for {self.history_requested}; "
                      f"{available // 1024} KB available, "
@@ -548,9 +583,12 @@ class DeviceState:
                 "Relays": relays,
             }
             # Absent, not empty: see USE_THINGSPEAK above and the same #if in
-            # src/web_data.cpp. index.js hides the ThingSpeak link when the key
-            # is missing, so a simulator that always sent it would show a link
-            # the real device does not.
+            # src/web_data.cpp, whose comment carries the reason the key is
+            # still emitted at all. No page in data/ reads it -- the ThingSpeak
+            # link that once did was removed -- so what a simulator that always
+            # sent it would break is not the dashboard but the mirror: the
+            # contract this file exists to reproduce is the one the firmware
+            # sends, present-or-absent included.
             if self.USE_THINGSPEAK:
                 payload["Channel"] = self.channel
             return payload

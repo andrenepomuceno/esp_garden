@@ -326,11 +326,20 @@ webUpdateDataCache()
     responseJson["Outputs"] = outputsJson;
     responseJson["Relays"] = relaysJson;
 #if USE_THINGSPEAK
-    // ABSENT, not empty and not "0", when the uplink is compiled out. index.js
-    // builds the ThingSpeak link from this key and only when it is present, so
-    // omitting it removes the link instead of leaving a dead one pointing at a
-    // channel this build never writes to — the same rule `state` and `fault`
-    // follow, where no answer is said by saying nothing.
+    // ABSENT, not empty and not "0", when the uplink is compiled out — the
+    // same rule `state` and `fault` follow, where no answer is said by saying
+    // nothing.
+    //
+    // NO PAGE IN data/ READS THIS. index.js used to build a ThingSpeak link
+    // from it; the anchor was removed once the key became absent on every
+    // build this repo ships, so the branch that hid it had nothing left to do.
+    // It stays because /data.json is a published contract rather than this
+    // dashboard's private payload, and inside the one build where there IS a
+    // ThingSpeak destination this is the only place the payload names it —
+    // `MQTT Link` reports whether the link is up, never where it goes. A
+    // scripted client is the plausible reader; dropping the key would cost it
+    // that, and would buy nothing on the shipping image, where USE_THINGSPEAK
+    // is 0 and these lines compile to nothing at all.
     responseJson["Channel"] = String(g_thingSpeakChannelNumber);
 #endif
 

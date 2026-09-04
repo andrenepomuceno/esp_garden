@@ -102,9 +102,20 @@ HISTORY_MAX_RESPONSE = 200
 # Both families are carried rather than only the default: this file's own
 # comment claims /capabilities.json is derived from the predicates "so the two
 # cannot drift", and that claim stops being true the moment the firmware knows
-# about a chip the mirror does not. Set PIN_FAMILY to "esp32s3" to exercise
-# /devices.html against the esp-garden-hardware carrier.
-PIN_FAMILY = "wroom32"
+# about a chip the mirror does not.
+#
+# It comes from the environment rather than from this line, because a source
+# edit to switch families is a change a checkout throws away — and one somebody
+# commits by accident, pointing the mirror at a chip the live garden is not.
+# The firmware selects its family from the `board` line through
+# CONFIG_IDF_TARGET_*; the simulator has no board, so the switch is:
+#
+#   ESP_GARDEN_PIN_FAMILY=esp32s3 python scripts/dev_server.py
+#
+# An unknown value is refused rather than defaulted, for the reason
+# config_pins.cpp makes an unrecognised target a #error: a silent fallback to
+# the WROOM-32 would answer /capabilities.json with confident, wrong pins.
+PIN_FAMILY = os.environ.get("ESP_GARDEN_PIN_FAMILY", "wroom32")
 
 PIN_RULES = {
     "wroom32": {
@@ -132,6 +143,11 @@ PIN_RULES = {
         "serial": lambda p: p in (19, 20, 43, 44),
     },
 }
+
+if PIN_FAMILY not in PIN_RULES:
+    raise SystemExit(
+        f"ESP_GARDEN_PIN_FAMILY={PIN_FAMILY!r} is not a family this mirror "
+        f"carries. Known: {', '.join(sorted(PIN_RULES))}.")
 
 
 class Handler(BaseHTTPRequestHandler):

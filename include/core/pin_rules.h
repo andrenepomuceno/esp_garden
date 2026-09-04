@@ -173,6 +173,11 @@ isSerialConsole(uint8_t pin)
 // 35-37 unconnected for the same reason. On a quad-PSRAM module this refuses
 // three pins that would work, which is the safe direction to be wrong in: the
 // other one drives the PSRAM bus.
+//
+// It is a claim about the MODULE, not about this build. [env:espgarden_s3]
+// sets no memory type and never initialises PSRAM; the lines are soldered to
+// the PSRAM die regardless, so driving one as a GPIO fights it whether or not
+// this image has ever addressed it. See that env's comment in platformio.ini.
 inline bool
 isFlash(uint8_t pin)
 {

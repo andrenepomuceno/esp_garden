@@ -411,6 +411,43 @@ test_the_reserve_has_a_floor_and_a_fraction_and_takes_the_larger()
     TEST_ASSERT_EQUAL_UINT32(256u * 1024u, reserveBytes(2048u * 1024u));
 }
 
+// The three figures the header of partitions/esp_garden_8mb.csv argues from.
+// That file is a DURABLE record — a partition table cannot be delivered over
+// OTA, so the layout a board is first flashed with is the one it keeps — and
+// its previous version reasoned from a cap that had already been raised and a
+// cost that ignored LittleFS's blocks. Pinned here so the paragraph and the
+// arithmetic cannot drift apart again.
+static void
+test_the_8mb_filesystem_holds_the_record_ceiling_with_room_to_spare()
+{
+    const uint32_t kFs = 0x260000u;   // 2 490 368 B = 2432 KB, the spiffs row
+
+    // The shipped ConfigFile ceiling, in whole blocks. 256 KB, not the 120 KB
+    // the header quoted for a 2500 that no longer applies.
+    TEST_ASSERT_EQUAL_UINT32(262144u, storageBytes(5000, kHeader, kRecord));
+
+    // The first partition on which max(64 KB, partition / 8) picks the
+    // proportional term. On every 4 MB board both terms are 64 KB, so the
+    // "larger of" has never had to choose.
+    TEST_ASSERT_EQUAL_UINT32(311296u, reserveBytes(kFs));
+    TEST_ASSERT_TRUE(reserveBytes(kFs) > 64u * 1024u);
+
+    // 212 KB of block-rounded web assets is measured, not asserted here; what
+    // the header needs is that the other two plus that figure still leave the
+    // filesystem several times larger than the worst case it must hold.
+    const uint32_t assets = 212u * 1024u;
+    const uint32_t worst = assets + storageBytes(5000, kHeader, kRecord) +
+                           reserveBytes(kFs);
+    TEST_ASSERT_EQUAL_UINT32(790528u, worst);   // 772 KB
+    TEST_ASSERT_TRUE(worst * 3u < kFs);
+
+    // And the whole ceiling is granted on this partition rather than clamped,
+    // which is what "the cap can be raised later without a serial reflash"
+    // means. Free space here is the partition minus those assets.
+    TEST_ASSERT_EQUAL_UINT32(
+      5000, fitCapacity(5000, kFs, kFs - assets, 0, kHeader, kRecord));
+}
+
 void
 run_segment_index_tests(void)
 {
@@ -436,4 +473,5 @@ run_segment_index_tests(void)
     RUN_TEST(test_a_filesystem_that_cannot_be_asked_grants_what_was_configured);
     RUN_TEST(test_a_partition_with_no_room_disables_the_history_rather_than_half_filling_it);
     RUN_TEST(test_the_reserve_has_a_floor_and_a_fraction_and_takes_the_larger);
+    RUN_TEST(test_the_8mb_filesystem_holds_the_record_ceiling_with_room_to_spare);
 }

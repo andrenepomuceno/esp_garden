@@ -18,11 +18,26 @@
 # would still have fitted it — 2.75 MB is headroom bought with flash that has
 # no other claimant, not a measurement of anything.
 #
-# The filesystem is the same argument. Nothing here needs 2.375 MB today: the
-# web assets are ~143 KB and history.records is capped at 2500 records (~120 KB)
-# by a compiled constant this file does not change. It is sized so that cap can
-# be raised later WITHOUT a serial reflash, which is the one thing the 4 MB
-# boards cannot do.
+# The filesystem is the same argument, and the numbers are worth stating in
+# whole 4 KB LittleFS blocks rather than in bytes of data — an earlier version
+# of this paragraph did the latter and understated the history by more than
+# half. Measured, not estimated: the staged web assets are 28 files, 148 KB of
+# data and 212 KB once each is rounded up to a block; history.records is capped
+# at 5000 by a compiled constant this file does not change, and 5000 records is
+# 256 KB (8 * ceil((12 + 625 * 48) / 4096) * 4096), not the 120 KB this said
+# while quoting a 2500 that had already been raised.
+#
+# The reserve ioHistoryFitCapacity() holds back is max(64 KB, partition / 8),
+# and THIS is the first partition on which the proportional term wins: 304 KB
+# here against 64 KB on every 4 MB board, where both terms are 64 KB and the
+# "larger of" has never had to choose.
+#
+# So the worst case this layout has to hold is 212 + 256 + 304 = 772 KB of
+# 2432 KB. The sizing argument survives the correction with room to spare — the
+# filesystem is about three times the largest thing that can be asked of it —
+# and it is still headroom rather than a measured need: the point is that the
+# record cap can be raised later WITHOUT a serial reflash, which is the one
+# thing the 4 MB boards cannot do.
 #
 # TWO OTA SLOTS ARE DELIBERATE, for the reason esp_garden_4mb.csv gives: a
 # single app partition would buy ~5.5 MB and make the device un-updatable over

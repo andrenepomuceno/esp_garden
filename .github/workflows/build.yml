@@ -88,6 +88,15 @@ jobs:
         # espgarden_s3 artifact whose relays sit on GPIO 15-18 — pins that
         # board uses for its flow input, its float switch and its button — and
         # whose probes sit on GPIO 32-36, which are its SPI flash and PSRAM.
+        #
+        # This branch used to be the ONLY thing standing between that artifact
+        # and a build, which left `pio run -e espgarden_s3 -t buildfs` on a
+        # workstation producing exactly it — CI is the one place a developer
+        # never runs. config_guard() in scripts/pio_assets.py now refuses that
+        # locally, from the same templates/ directory this step copies from, so
+        # the rule holds where a person meets it. It cannot copy for you: a
+        # developer's data/config.json holds a real device's credentials, and
+        # this runner's is a throwaway.
         run: |
           if [ "${{ matrix.environment }}" = "espgarden_s3" ]; then
             cp templates/config.espgarden_s3.json data/config.json

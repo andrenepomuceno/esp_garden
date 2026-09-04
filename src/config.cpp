@@ -725,10 +725,14 @@ ConfigFile::loadFile(unsigned deviceID)
         JSONVar history = configJson["history"];
         if (history.hasOwnProperty("records")) {
             const int records = (int)history["records"];
-            // 5000 records is 235 KB of segment files, rounded to whole
+            // 5000 records is 256 KB of segment files, rounded to whole
             // LittleFS blocks: 8 * ceil((12 + 625 * 48) / 4096) * 4096. That is
             // what the RECORD costs, and it is the only question this ceiling
-            // is entitled to answer.
+            // is entitled to answer. 235 KB is the UNROUNDED figure — the same
+            // 8 * (12 + 625 * 48) this repo used to reason with — and it stood
+            // here beside the formula that corrects it. Rounding is the whole
+            // point: 32 KB of block slack across eight segments is a fifth of
+            // what was free on the board this ceiling was first written for.
             //
             // It is deliberately larger than any board here can currently
             // hold. What decides whether a value fits is the state of that
