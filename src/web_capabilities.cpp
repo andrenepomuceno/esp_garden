@@ -33,9 +33,11 @@ handleCapabilitiesJson(AsyncWebServerRequest* request)
     }
 
     // Walking every GPIO and asking the same predicates validatePins() asks,
-    // so the two cannot disagree.
+    // so the two cannot disagree. The upper bound comes from the same place:
+    // an S3 has GPIO 40-48 and a hardcoded 39 here would have hidden its UART,
+    // its strapping pins and half its spares from the picker.
     unsigned analog = 0, output = 0, digital = 0, strapping = 0, reserved = 0;
-    for (uint8_t pin = 0; pin <= 39; ++pin) {
+    for (uint8_t pin = 0; pin <= pinMaxGpio(); ++pin) {
         if (pinIsFlash(pin) || !pinIsBonded(pin)) {
             // Never offered. One hangs the chip; the other is a pin that
             // cannot be wired to anything, and a sensor assigned to it reads

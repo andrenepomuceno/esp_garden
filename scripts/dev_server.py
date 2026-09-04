@@ -93,6 +93,46 @@ PUBLIC_PATHS = {
 # larger reply without running out of DRAM, so the simulator must not either.
 HISTORY_MAX_RESPONSE = 200
 
+# The pin rules, mirroring include/core/pin_rules.h one family at a time. The
+# firmware picks its family from CONFIG_IDF_TARGET_*; the simulator has no
+# board, so it is a constant here — and it defaults to the WROOM-32, because
+# that is what the live garden runs and what /devices.html is normally driven
+# against.
+#
+# Both families are carried rather than only the default: this file's own
+# comment claims /capabilities.json is derived from the predicates "so the two
+# cannot drift", and that claim stops being true the moment the firmware knows
+# about a chip the mirror does not. Set PIN_FAMILY to "esp32s3" to exercise
+# /devices.html against the esp-garden-hardware carrier.
+PIN_FAMILY = "wroom32"
+
+PIN_RULES = {
+    "wroom32": {
+        "max_gpio": 39,
+        "flash": lambda p: 6 <= p <= 11,
+        "adc1": lambda p: 32 <= p <= 39 and p not in (37, 38),
+        "input_only": lambda p: 34 <= p <= 39,
+        "strapping": lambda p: p in (0, 2, 5, 12, 15),
+        "bonded": lambda p: (not (p == 20 or p == 24 or 28 <= p <= 31)
+                             and p not in (37, 38)),
+        "serial": lambda p: p in (1, 3),
+    },
+    "esp32s3": {
+        "max_gpio": 48,
+        # 26-37 is flash plus the octal PSRAM lines; 33/34 are also off the
+        # ESP32-S3-DevKitC-1's headers, and 22-25 do not exist at all.
+        "flash": lambda p: 26 <= p <= 37,
+        "adc1": lambda p: 1 <= p <= 10,
+        # There are no input-only pins on this part, which is the answer most
+        # likely to be "fixed" by copying the line above it.
+        "input_only": lambda p: False,
+        "strapping": lambda p: p in (0, 3, 45, 46),
+        "bonded": lambda p: not (22 <= p <= 25) and p not in (33, 34),
+        # UART0 plus USB-Serial-JTAG.
+        "serial": lambda p: p in (19, 20, 43, 44),
+    },
+}
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "ESPGardenSim/1.0"
@@ -192,20 +232,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(moisture_snapshot(
                 parse_qs(url.query).get("scenario", [""])[0]))
         elif path == "/capabilities.json":
-            # Mirrors src/web_capabilities.cpp, derived from the same three
+            # Mirrors src/web_capabilities.cpp, derived from the same
             # predicates rather than a copied list, so the two cannot drift.
-            def is_flash(p): return 6 <= p <= 11
-            def is_adc1(p): return 32 <= p <= 39 and p not in (37, 38)
-            def is_input_only(p): return 34 <= p <= 39
-            def is_strapping(p): return p in (0, 2, 5, 12, 15)
-            def is_bonded(p):
-                return not (p == 20 or p == 24 or 28 <= p <= 31) and p not in (37, 38)
-            def is_serial(p):
-                return p in (1, 3)
+            rules = PIN_RULES[PIN_FAMILY]
+            is_flash = rules["flash"]
+            is_adc1 = rules["adc1"]
+            is_input_only = rules["input_only"]
+            is_strapping = rules["strapping"]
+            is_bonded = rules["bonded"]
+            is_serial = rules["serial"]
             # Mirrors web_capabilities.cpp: unbonded pins are never offered and
-            # the serial console is listed separately. Without this the page
+            # the console pins are listed separately. Without this the page
             # validated a relay on GPIO 28 here and got a 400 from the device.
-            pins = [p for p in range(40)
+            pins = [p for p in range(rules["max_gpio"] + 1)
                     if not is_flash(p) and is_bonded(p) and not is_serial(p)]
             self._send_json({
                 "firmware": "2.2.0",
@@ -221,7 +260,8 @@ class Handler(BaseHTTPRequestHandler):
                 "outputPins": [p for p in pins if not is_input_only(p)],
                 "digitalPins": [p for p in pins if not is_input_only(p)],
                 "strappingPins": [p for p in pins if is_strapping(p)],
-                "reservedPins": [p for p in range(40) if is_serial(p)],
+                "reservedPins": [p for p in range(rules["max_gpio"] + 1)
+                                 if is_serial(p)],
             })
         elif path == "/history.json":
             if not STATE.history_enabled:

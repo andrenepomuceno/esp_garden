@@ -129,9 +129,13 @@ loadProbePower(JSONVar node, ConfigFile& cfg, unsigned i)
     JSONVar entry = node;
     if (entry.hasOwnProperty("powerPin")) {
         const int pin = (int)entry["powerPin"];
-        // -1 is how the UI says "none" without having to send kNoPin.
+        // -1 is how the UI says "none" without having to send kNoPin. The
+        // upper bound is the chip's: a literal 39 turned every S3 pin from 40
+        // up into "no power pin", so the probe bank would simply never be
+        // energised and nothing would say why.
         cfg.soilMoisturePowerPin[i] =
-          (pin < 0 || pin > 39) ? ConfigFile::kNoPin : (uint8_t)pin;
+          (pin < 0 || pin > (int)pinMaxGpio()) ? ConfigFile::kNoPin
+                                               : (uint8_t)pin;
     }
     if (entry.hasOwnProperty("powerOn")) {
         cfg.soilMoisturePowerOn[i] = ((int)entry["powerOn"] != 0) ? 1 : 0;

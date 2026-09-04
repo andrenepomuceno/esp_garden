@@ -20,7 +20,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | Sensors | `src/sensors.cpp` (481) | Every ADC read, the flow ISR, the float switch, the DHT and its plausibility gate, `moistureState()` |
 | Telemetry | `src/telemetry.cpp` (587), `include/core/step_publisher.h` | ThingSpeak field constants, `mqttAddField`, the periodic ThingsBoard payload, the change-based step publisher, the publish queue |
 | Config | `src/config.cpp` (823), `include/core/config.h` | `ConfigFile` singleton + `g_*` reference aliases for the non-pin fields |
-| Config — pins | `src/config_pins.cpp` | What a WROOM-32 GPIO can do, and the boot-time audit that applies it. One place, three consumers |
+| Config — pins | `src/config_pins.cpp`, `include/core/pin_rules.h` | What a GPIO can do, and the boot-time audit that applies it. One place, three consumers. The rules are **per MCU family** and Arduino-free in the header; the `.cpp` picks one from `CONFIG_IDF_TARGET_*` and forwards |
 | Config — `io` | `src/config_io.cpp` | Parsers for the `io` block, where every entry accepts several shapes so a field device keeps loading after a firmware update |
 | Config — save | `src/config_document.cpp` | Whole-document validation before a write: the save-time counterpart of `loadFile()` |
 | Logging | `src/logger.cpp` | Level-filtered singleton, 8 KB rolling RAM buffer, LittleFS backup rotating over 4 files |
@@ -44,7 +44,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 
 **No source file exceeds 1000 lines, and `python scripts/check_lines.py` is what says so.** The rule sat here unenforced long enough that two files crossed it unnoticed — the gate exists because the honour system had already failed. It prints the largest files on success too: a failure arrives when the split is expensive, and the useful signal is the file three commits away from crossing. `tasks.cpp` (1123), `web.cpp` (1004), `config.cpp` (1125) and `devices.js` (1155) were all split at that threshold. `tasks.cpp` kept every `DECLARE_TASK` and every handler and `web.cpp` kept `webSetup()`, in both cases because the ordering *inside* those functions is load-bearing.
 
-Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict, the cloud-cover classifier, the evapotranspiration maths and the step-publisher change detection — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`) rather than to stub the platform: a stub is small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md).
+Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict, the cloud-cover classifier, the evapotranspiration maths, the step-publisher change detection and the per-family pin rules — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`, `pin_rules.h`) rather than to stub the platform: a stub is small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md).
 
 ---
 
@@ -135,6 +135,18 @@ Do it with the relay board DISCONNECTED. Every reset floats the GPIOs and these 
 
 **Unverified — written, compiles, never run on hardware:**
 
+- **The whole `espgarden_s3` board** (firmware 2.13.0). Six envs build, `pio test -e native` passes at 161 cases (23 of them new), `check_lines.py` green, and the LittleFS image builds at exactly its partition size. **No such board has been built, so not one line of this has executed on an ESP32-S3** — see [Hardware v3](#hardware-v3--espgarden_s3-and-the-first-board-that-is-not-a-wroom-32). What is and is not evidence here:
+
+  - **The S3 pin rules are host-tested against a table, and a table is not a chip.** `test_pin_rules` proves the predicates return what this repo believes; it cannot prove the belief. The belief comes from ESP-IDF headers and Espressif's own documentation, both named per rule, and the two claims the hardware repo makes independently agree — but **no ADC has been read on GPIO 1, no relay has been switched on GPIO 10, and `validatePins()` has never run on an S3.**
+  - **The WROOM-32 half of that suite is the real regression guard**, and it is the one claim here with teeth: a golden table over every `uint8_t` for all six predicates, so the answers five shipped envs and one live garden depend on cannot move by a single pin. It went green on the first run, which means it caught nothing — as intended.
+  - **The relay safe-state inversion is REASONING about a schematic, not a measurement.** The claim that the module's own pull-up holds IN high through a reset is read off `J200` and the module vendor's documented 3.3 V configuration; nobody has put a scope on a relay coil through a boot. The firmware behaves identically either way, so nothing rests on it being right — which is precisely why it was safe to leave `relayPinsSafeInit()` alone.
+  - **The default-pin-table hazard it replaces is likewise unobserved.** That `relayPinsSafeInit()` on the WROOM-32 table would drive `BTN_USER` into `SW150`'s short is read from the hardware repo's netlist. It has not happened, and now cannot.
+  - **`pinMaxGpio()` fixes three bugs nothing has ever hit.** A literal `39` in `/capabilities.json`'s walk, in `documentPinsAreUsable()` and in the probe power-pin clamp is correct on every board that exists; on an S3 it hides GPIO 40-48, refuses them at save time and silently turns a valid power pin into `kNoPin`. All three are dead code on a WROOM-32 and untested on anything else.
+  - **`partitions/esp_garden_8mb.csv` has never been written to a flash.** The image builds and `mklittlefs` produced exactly 0x260000 bytes, which says the sizes are self-consistent and nothing about whether an S3 boots from it. The 2.75 MB slot and 2.375 MB filesystem are headroom, not measurements — the app would have fitted the 4 MB table.
+  - **`templates/config.espgarden_s3.json` has never been loaded by `ConfigFile::loadFile()`.** Its `id` is the `1a2b` placeholder, which is the one field that bricks a board when it is wrong. Its `moisture[*].invert: true` and `kind: "resistive"` are carried over from device 6224's measured resistive probes, not measured on these modules; `dry`/`wet` are 0, so no badge is reported until somebody calibrates, which is the intended state.
+  - **The CI provisioning split is untested here.** `-t buildfs` was run locally against the *existing* `data/config.json` to check the image size; the workflow's per-env `cp` has only ever run on this branch in the form of the file it edits.
+  - **Two S3 platform behaviours are noted and unexercised.** `LED_BUILTIN` on the `esp32s3` Arduino variant is the RGB-LED encoding (`SOC_GPIO_PIN_COUNT + 48`), so `main.cpp`'s error blink drives an addressable LED through RMT rather than a plain GPIO — and the DevKitC-1 **v1.1** carries that LED on GPIO 38, not 48, so it may simply not light. And the S3's usable ADC range at 12 dB is **2900 mV** against the ESP32's ~3100, which the two-point calibration absorbs but which means a probe spanning the full 3.3 V rail saturates at the dry end; the hardware repo says to take the dry anchor below 2.9 V rather than in open air.
+
 - **The I/O history fit check** (firmware 2.12.1). `history.records` now tops out at **5000** and a runtime check clamps it to what the partition can actually hold. Host-tested in `test_segment_index` (11 new cases, 138 total pass), built in all five envs, mirrored in `scripts/sim_state.py`. **Nothing here has run on the device**, which is on 2.11.1 — and the interesting half cannot run there yet, because 6224's configured 1440 fits and the clamp therefore never fires. Specifically unexercised, and specifically a judgement rather than a measurement:
 
   - **The reserve, `max(64 KB, partition/8)`.** On this 512 KB partition both terms are 64 KB, so the "larger of" has never chosen. The floor is arithmetic over three named consumers — `bootstrap.css.gz` at 29 899 B plus the `/upload.tmp` twin `/spiffs/upload` renames from, the `/log0..3.txt` backups, and free blocks for copy-on-write — not a measurement of any of them. **No board has been run down to the reserve**, so nothing says 64 KB is enough or that it is too much.
@@ -215,6 +227,59 @@ Hard constraints that shaped it, and that still apply to any change:
 - **The second probe's field is explicit configuration, not an implicit reuse.** `thingSpeak.moisture2Field` defaults to 0 (off) and `validateThingSpeakFields()` **refuses a number a fitted sensor already publishes**, rather than letting one silently win and overwrite the loser's history with its own units. Renumbering rewrites the meaning of everything already stored, so the choice belongs to whoever owns the channel; field 8 is the least destructive candidate, since `bootTime` is published once at startup.
 - **Flash sits at ~63 % of the 1.69 MB app slot** since `partitions/esp_garden_4mb.csv` replaced the stock table (83.8 % of 1.31 MB before) — see [Porting](#porting-from-fullbot-firmware).
 
+## Hardware v3 — `espgarden_s3`, and the first board that is not a WROOM-32
+
+The `esp-garden-hardware` carrier (sibling repo `../esp-gargen-hardware`; the misspelling is the directory's real name): an **ESP32-S3-DevKitC-1-N8R8 in a socket**, four relays over a bare header, four resistive probes on one switched power bank, an LDR, a spare analog input, a flow meter, a float switch, a user button and an SHT40 on I²C. Built by `[env:espgarden_s3]`. **No such board exists yet — nothing in this section has run.**
+
+That repo's *"The cross-repo contract with `esp-garden`"* section is the specification, and this file deliberately does not restate its pin table; `templates/config.espgarden_s3.json` is the machine-readable copy and `test_pin_rules` holds every one of those pins against the rule its role is judged by. Two departures from the contract, recorded because a reader will otherwise read them as omissions:
+
+- **`waterLevel` is NOT declared**, although the contract's table maps it to `AUX_ADC` on GPIO 7 and the board brings that out. The hardware repo's own `io` block omits it too, and presence *is* the key: declaring it makes `sensorsReadIo()` push whatever sits on a spare analog header through the fitted water-level curve `9 - 12*sin(4.04 - 1.61*V)` and report the result as a level. A header with no sensor on it gets no key.
+- **No `dht`.** The DHT22 header was removed in favour of the SHT40, which needs an I²C driver and a new sensor KIND this firmware does not have — the hardware repo's own accepted trade, not an oversight. **So this board reads no temperature and no humidity at all.** The compiled default `dhtPin` stays 23 on both families, which is not a GPIO an S3 has; left alone on purpose, because it is only ever read when somebody declares `"dht"` without a pin, and `validatePins()` then answers *"GPIO 23 is not bonded out on this module"*, which is the correct diagnosis.
+
+### The S3 pin rules, and where each one came from
+
+Every number was read out of the ESP-IDF headers shipping inside `framework-arduinoespressif32` (3.20017, Arduino core 2.0.17) or off Espressif's own ESP32-S3 GPIO page. **The hardware repo's summary was used only as the thing to check against**; it agreed on both claims it makes (ADC1 = 1-10, flash/PSRAM = 26-37).
+
+| Rule | WROOM-32 | ESP32-S3 | Source for the S3 answer |
+|---|---|---|---|
+| `pinIsADC1` | 32-36, 39 | **1-10** | `soc/adc_channel.h`: `ADC1_CHANNEL_0..9` are GPIO 1..10; ADC2 is 11..20 |
+| `pinIsInputOnly` | 34-39 | **never** | `soc/soc_caps.h`: `SOC_GPIO_VALID_OUTPUT_GPIO_MASK == SOC_GPIO_VALID_GPIO_MASK`, under the comment `// No GPIO is input only`; every entry of `gpio_types.h`'s `ESP32S3` enum reads "input and output" |
+| `pinIsFlash` | 6-11 | **26-37** | `soc/io_mux_reg.h`: `SPI_CS1` 26 through `SPI_DQS` 37 |
+| `pinIsStrapping` | 0, 2, 5, 12, 15 | **0, 3, 45, 46** | Espressif's GPIO page verbatim; GPIO 46 corroborated by `esp_rom/esp32s3/rom/efuse.h`, which selects ROM UART printing on it |
+| `pinIsSerialConsole` | 1, 3 | **19, 20, 43, 44** | `io_mux_reg.h`: GPIO 43/44 are `U0TXD_U`/`U0RXD_U`; `USB_DM_GPIO_NUM` 19, `USB_DP_GPIO_NUM` 20 |
+| `pinIsBonded` | not 20/24/28-31/37/38 | **not 22-25, not 33/34** | `soc_caps.h` clears bits 22-25 out of `SOC_GPIO_VALID_GPIO_MASK` and `gpio_types.h` steps straight from `GPIO_NUM_21` to `GPIO_NUM_26`; 33/34 exist but are not on the DevKitC-1's two 1x22 headers |
+| `pinMaxGpio` | 39 | **48** | `soc_caps.h`: `SOC_GPIO_PIN_COUNT` 49 |
+
+Three of those are worth saying out loud, because they are the ones a reader will get wrong:
+
+- **There is no input-only class at all.** The WROOM-32 predicate conflates "has no output driver" with "has no internal pull-up" and gets away with it because the same six pins have both properties. On the S3 neither property has a pin, so the honest answer is `false` for every GPIO — including 46, which *is* input-only on the ESP32-**S2** and is not on the S3. A copy of the WROOM-32 predicate would have refused GPIO 34-39 for a reason that does not exist on this part.
+- **33-37 are refused unconditionally, and that is a choice rather than a fact.** They are the octal Flash/PSRAM lines, taken on the N8R8 module this board is specified with; on a quad-PSRAM module they would work. Refusing them costs three usable pins on a variant nobody has ordered; accepting them drives the PSRAM bus on the one that has been. The hardware repo declares 35-37 unconnected for the same reason.
+- **19/20 are reserved, not refused.** They carry USB-Serial-JTAG, which on this board is the console, the debugger *and* the ROM download mode that recovers a brick — the same argument that put UART0 in this predicate on the WROOM-32, aimed at a stronger link. They appear in `/capabilities.json`'s `reservedPins` and draw a boot warning; a board that genuinely needs GPIO 19 can still have it.
+
+**The family is selected by `CONFIG_IDF_TARGET_*`, not by a build flag**, so `platformio.ini` still carries no hardware flags at all. That macro reaches `config_pins.cpp` through `<Arduino.h>` → `esp32-hal.h` → `sdkconfig.h`, and the framework sets it because of the env's `board` line — one statement of "this is an S3", not two that are free to disagree. An unrecognised target is a `#error` rather than a fallback, because the failure mode of guessing is a page of boot errors about correct assignments and silence about the wrong ones, which nobody traces back to a default.
+
+The rules themselves live in `include/core/pin_rules.h`, Arduino-free with one namespace per family and **both always compiled**, so `test_pin_rules` can hold both to their answers in one host binary — the same reason `segment_index.h` and `step_publisher.h` exist. 23 cases, and the WROOM-32 half is a golden table over every `uint8_t`: five envs and one live garden depend on those answers not moving by a single pin.
+
+### The relay safe state INVERTS on this board, and the firmware did not change for it
+
+On every WROOM-32 board here the relay module is driven through a stage that makes a floating GPIO read as "energise", which is why `relayPinsSafeInit()` is the first statement of `setup()` and why every reset pulses every pump. **This board has no driver stage.** `J200` takes the GPIOs straight to the module's IN pins, those inputs are active low, the module's own pull-up holds IN high while the ESP32's pins are inputs at reset, and every relay is released. The safe state is now the default, and `on: 0` is what makes the inverting chain come out right.
+
+**Nothing was weakened, and nothing needed to be.** `relayPinsSafeInit()`, `clearUndeclaredRelayPins()` and the `kNoPin` sentinel are unchanged and all still correct. They are simply no longer the only thing standing between a reset and a running pump on *this* board — and they remain exactly that on the other five, which is why not one line of them moved.
+
+**What DID have to change is the compiled default pin table, and it is a defect fix rather than tidiness.** `relayPinsSafeInit()` runs over `g_defaultRelayPin` about 1.5 s before `config.json` is read, and the WROOM-32 table is `{15, 16, 17, 18}`. On this board GPIO 15 is `FLOW_PULSE`, 16 is `FLOAT_SW` and 18 is `BTN_USER`, so the first statement of `setup()` would drive three *inputs* as push-pull outputs, high, for the length of a boot. Two of the three are switched to ground by the field hardware: `SW150` shorts `BTN_USER` directly to GND, and `Q400`, a BSS138, pulls `FLOW_PULSE` down on every pulse the meter sends. That is a GPIO driving into a short, not a mis-assignment. The table is now per-family, selected the same way the pin rules are, and reads `{10, 11, 12, 13}` on the S3.
+
+### What it costs, measured
+
+`espgarden_s3` links at **1 208 757 B flash (41.9 % of the 2.75 MB slot) and 65 472 B of static RAM**. Its filesystem image is 2 490 368 B, exactly the 0x260000 partition.
+
+The cost to the WROOM-32 boards is **+280 B of flash and +0 B of static RAM**, measured as a clean A/B on `espgarden2` against the same commit in a separate git worktree: 1 256 253 → 1 256 533, static RAM 66 600 both times. Attributed per object file with `xtensa-esp32-elf-size`: `config_document.cpp.o` +147, `config_pins.cpp.o` +117, `config_io.cpp.o` +20, `web_capabilities.cpp.o` +18, and **`config.cpp.o` +0** — the family-aware default pin table costs the WROOM boards nothing, which is what the `#if` is for. The bulk of the rest is `pinMaxGpio()` being a real cross-translation-unit call where three literal `39`s used to sit, plus one longer boot-warning string. 0.016 % of the app slot, for a rule set that can no longer be silently wrong on a second chip.
+
+### The 8 MB partition table
+
+`partitions/esp_garden_8mb.csv` is the only `board_build` override the env carries. The N8R8 devkit has 8 MB of flash where every other board has 4, and **a partition table cannot be delivered over OTA** — the running image would be rewriting the map underneath itself — so the layout a board is first flashed with is the layout it keeps until somebody attaches USB to it again. 2.75 MB per OTA slot, a 2.375 MB filesystem, and the coredump window moves to `esptool read_flash 0x7F0000 0x10000`.
+
+**Neither size is a measurement of a need.** The app would have fitted the 4 MB table's 1.69 MB slot with room to spare, and nothing today wants more than ~300 KB of filesystem; `history.records` is still capped at 5000 by a compiled constant this table does not touch. They are headroom bought with flash that has no other claimant, spent on the one decision this board cannot revisit remotely.
+
 ---
 
 ## Essential commands
@@ -230,7 +295,7 @@ $pio = "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe"
 & $pio device monitor -b 115200               # serial @115200
 ```
 
-- Envs: `espgarden1` (NodeMCU-32S), `espgarden2`, `espgarden3`, `espgarden4`, `espgarden5` (hardware v2). CI builds all five in a matrix.
+- Envs: `espgarden1` (NodeMCU-32S), `espgarden2`, `espgarden3`, `espgarden4`, `espgarden5` (hardware v2) — all ESP32-WROOM-32 — plus `espgarden_s3` (**ESP32-S3**, the esp-garden-hardware carrier). CI builds all six in a matrix, and provisions `data/config.json` from a different template for the S3.
 - **The filesystem image is BUILT from `data/`, never packed from it.** `[platformio] data_dir = .pio/assets` and a `pre:` hook run `scripts/build_assets.py` on every invocation, so there is no step to forget. `python scripts/build_assets.py --list` shows what it would produce.
 - **`pio run` does not need `data/config.json`**; `-t buildfs` / `-t uploadfs` do. `data/config.json` is gitignored. CI does `cp data/config.template.json data/config.json` — **never replicate that locally**, it destroys the real Wi-Fi/ThingSpeak/OTA credentials of a physical device.
 - The ESP32 currently attached is on **COM7** (Silicon Labs CP210x), a DevKit v1 built by `[env:espgarden2]` since the NodeMCU-32S died — build with `-e espgarden2`. `upload_port`/`monitor_port` are unset, so PlatformIO auto-detects; pass `--upload-port COM7` when several boards are attached.
@@ -893,7 +958,7 @@ Traps this created, every one of which was a real defect first:
 - **Bounds that were compile-time are now per-device.** A schedule aimed at relay 3 on a two-relay board has to be rejected at load, not fire daily into `startRelay()`'s index check.
 - **`config.floatInterlock` cannot outlive `io.floatSwitch`.** `loadFile()` clears it when no switch is declared; otherwise removing the sensor leaves a veto that refuses every watering on a reading nothing produces.
 
-Pin rules live in exactly one place — `pinIsADC1`, `pinIsInputOnly`, `pinIsFlash`, `pinIsStrapping` in `config.cpp`. `validatePins()` uses them at boot, `documentPinsAreUsable()` refuses a bad map at **save** time (boot is too late: the document is already on flash), and `/capabilities.json` derives the UI's pin lists by walking every GPIO through the same predicates.
+Pin rules live in exactly one place — `pinIsADC1`, `pinIsInputOnly`, `pinIsFlash`, `pinIsBonded`, `pinIsSerialConsole`, `pinIsStrapping` and `pinMaxGpio` in `config_pins.cpp`, forwarding to `include/core/pin_rules.h`. `validatePins()` uses them at boot, `documentPinsAreUsable()` refuses a bad map at **save** time (boot is too late: the document is already on flash), and `/capabilities.json` derives the UI's pin lists by walking every GPIO through the same predicates. **`pinMaxGpio()` is the seventh because three of those consumers each spelled `39` into their own source**, and a literal 39 on an S3 hides GPIO 40-48 — its UART, its strapping pins and half its spares — from the picker, refuses them at save time, and turns a valid probe power pin into `kNoPin` so the bank is simply never energised.
 
 ## ThingSpeak and TalkBack are behind flags, and a config that asks for one is refused loudly
 

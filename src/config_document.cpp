@@ -37,10 +37,14 @@ documentPin(JSONVar node, int& out)
 // — a strapping pin — and passes. The document is written, and at boot
 // loadRelays truncates the same way and relayPinsSafeInit() drives GPIO 0 on
 // every boot. This function exists because boot is too late.
+//
+// The ceiling is the chip's, not a literal 39: on an S3 that literal refused
+// every pin from 40 up, including its own UART, and the refusal would have
+// arrived as "no such pin on an ESP32" against a perfectly real GPIO.
 static bool
 pinNumberIsPlausible(int pin)
 {
-    return pin >= 0 && pin <= 39;
+    return pin >= 0 && pin <= (int)pinMaxGpio();
 }
 
 // The save-time half of validatePins(). validatePins() logs at boot, which is
@@ -75,7 +79,7 @@ documentPinsAreUsable(JSONVar& document, String& problem)
             }
             if (!pinNumberIsPlausible(pin)) {
                 problem = "io.relays[" + String(i) + "] on GPIO " + String(pin) +
-                          " (no such pin on an ESP32)";
+                          " (no such pin on this chip)";
                 return false;
             }
             if (pinIsFlash(pin) || pinIsInputOnly(pin) || !pinIsBonded(pin)) {
@@ -95,7 +99,7 @@ documentPinsAreUsable(JSONVar& document, String& problem)
         for (unsigned i = 0; i < (unsigned)probes.length(); ++i) {
             if (documentPin(probes[i], pin) && !pinNumberIsPlausible(pin)) {
                 problem = "io.soilMoisture[" + String(i) + "] on GPIO " +
-                          String(pin) + " (no such pin on an ESP32)";
+                          String(pin) + " (no such pin on this chip)";
                 return false;
             }
             if (documentPin(probes[i], pin) && !pinIsADC1(pin)) {
@@ -121,7 +125,7 @@ documentPinsAreUsable(JSONVar& document, String& problem)
                     if (!pinNumberIsPlausible(power)) {
                         problem = "io.soilMoisture[" + String(i) +
                                   "].powerPin GPIO " + String(power) +
-                                  " (no such pin on an ESP32)";
+                                  " (no such pin on this chip)";
                         return false;
                     }
                     const uint8_t p = (uint8_t)power;
@@ -149,7 +153,7 @@ documentPinsAreUsable(JSONVar& document, String& problem)
         }
         if (!pinNumberIsPlausible(pin)) {
             problem = String("io.") + checks[i].key + " on GPIO " +
-                      String(pin) + " (no such pin on an ESP32)";
+                      String(pin) + " (no such pin on this chip)";
             return false;
         }
         if (pinIsFlash(pin) || !pinIsBonded(pin)) {

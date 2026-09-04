@@ -31,6 +31,31 @@ String& g_mqttServer = config.mqttServer;
 int& g_mqttPort = config.mqttPort;
 String& g_mqttCACert = config.mqttCACert;
 
+// The compiled defaults, per MCU family. These are NOT cosmetic: relay 0's
+// entry is driven by relayPinsSafeInit() as the FIRST statement of setup(),
+// about 1.5 s before config.json is read, so this table decides which GPIOs a
+// board holds as outputs during its own boot. A table from the wrong chip does
+// not merely miss the relays — it drives whatever else is on those numbers.
+//
+// Selected the same way core/pin_rules.h is: CONFIG_IDF_TARGET_*, set by the
+// framework from the env's `board` line, so it cannot drift.
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+// esp-garden-hardware. RELAY1..4 are GPIO 10-13; the WROOM-32 table's 15/16/18
+// are this board's FLOW_PULSE, FLOAT_SW and BTN_USER, and two of those three
+// are switched to ground by the field hardware — SW150 shorts BTN_USER, and
+// Q400 pulls FLOW_PULSE down on every flow pulse. Driving them as push-pull
+// outputs for the length of a boot is a short, not a mis-assignment.
+//
+// Parking these EARLY is no longer what keeps the pumps off: this board has no
+// driver stage, so at reset the GPIOs are inputs, the relay module's own
+// pull-up holds IN high and `on: 0` means every relay is released. The table
+// now earns its place by keeping setup()'s first statement off three inputs.
+static const uint8_t g_defaultRelayPin[] = { 10, 11, 12, 13 };
+// ADC1 on an S3 is GPIO 1-10 (soc/adc_channel.h), not 32-39. SOIL1..3 are 1, 2
+// and 4; SOIL4 is 5 and lands past this table, which only feeds slots a short
+// io.soilMoisture array leaves unset.
+static const uint8_t g_defaultSoilMoisturePin[] = { 1, 2, 4 };
+#else
 // Relay 0 keeps GPIO 15 so boards already in the field are unaffected. It is a
 // strapping pin (MTDO) — new hardware should override it in config.json.
 static const uint8_t g_defaultRelayPin[] = { 15, 16, 17, 18 };
@@ -48,6 +73,7 @@ static const uint8_t g_defaultRelayPin[] = { 15, 16, 17, 18 };
 // without that crystal, so they are ordinary ADC1 inputs; a module that does
 // have one fitted cannot use them.
 static const uint8_t g_defaultSoilMoisturePin[] = { 36, 34, 32 };
+#endif
 
 ConfigFile::ConfigFile()
 {

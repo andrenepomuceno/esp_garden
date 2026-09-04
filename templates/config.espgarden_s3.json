@@ -1,0 +1,166 @@
+{
+  "version": 2,
+  "id": "1a2b",
+  "hostname": "espgarden-s3",
+  "timezone": "<-03>3",
+  "postalCode": "",
+  "wifi": {
+    "ssid": "wifi name",
+    "password": "wifi password"
+  },
+  "ota": {
+    "username": "ota update username",
+    "password": "ota update password"
+  },
+  "thingSpeak": {
+    "apiKey": "0000",
+    "channel": 123456,
+    "moisture2Field": 0
+  },
+  "talkBack": {
+    "apiKey": "0000",
+    "channel": 123456
+  },
+  "mqtt": {
+    "clientID": "",
+    "username": "thingsboard device access token",
+    "password": "",
+    "server": "thingsboard.cloud",
+    "port": 8883,
+    "cacert": "/thingspeak.pem",
+    "backend": "thingsboard",
+    "useTLS": true,
+    "rpc": true,
+    "fwUpdate": true,
+    "fwTitle": "esp-garden",
+    "publishSec": 300,
+    "heartbeatSec": 900
+  },
+  "cloud": {
+    "enabled": false
+  },
+  "et0": {
+    "enabled": false,
+    "latitude": 0.0,
+    "scale": 1.0
+  },
+  "log": {
+    "level": 4
+  },
+  "io": {
+    "button": 18,
+    "relays": [
+      {
+        "pin": 10,
+        "on": 0,
+        "name": "Zona 1"
+      },
+      {
+        "pin": 11,
+        "on": 0,
+        "name": "Zona 2"
+      },
+      {
+        "pin": 12,
+        "on": 0,
+        "name": "Zona 3"
+      },
+      {
+        "pin": 13,
+        "on": 0,
+        "name": "Reservatorio"
+      }
+    ],
+    "soilMoisture": [
+      {
+        "pin": 1,
+        "name": "Umidade Zona 1",
+        "powerPin": 14,
+        "powerOn": 1,
+        "settleMs": 50
+      },
+      {
+        "pin": 2,
+        "name": "Umidade Zona 2",
+        "powerPin": 14,
+        "powerOn": 1,
+        "settleMs": 50
+      },
+      {
+        "pin": 4,
+        "name": "Umidade Zona 3",
+        "powerPin": 14,
+        "powerOn": 1,
+        "settleMs": 50
+      },
+      {
+        "pin": 5,
+        "name": "Umidade Zona 4",
+        "powerPin": 14,
+        "powerOn": 1,
+        "settleMs": 50
+      }
+    ],
+    "luminosity": {
+      "pin": 6,
+      "name": "Luminosidade"
+    },
+    "flow": {
+      "pin": 15,
+      "name": "Fluxo",
+      "pulsesPerLitre": 450
+    },
+    "floatSwitch": {
+      "pin": 16,
+      "name": "Boia",
+      "activeLevel": 0,
+      "interlock": false,
+      "fillRelay": 3
+    }
+  },
+  "moisture": [
+    {
+      "dry": 0,
+      "wet": 0,
+      "relay": 0,
+      "invert": true,
+      "kind": "resistive"
+    },
+    {
+      "dry": 0,
+      "wet": 0,
+      "relay": 1,
+      "invert": true,
+      "kind": "resistive"
+    },
+    {
+      "dry": 0,
+      "wet": 0,
+      "relay": 2,
+      "invert": true,
+      "kind": "resistive"
+    },
+    {
+      "dry": 0,
+      "wet": 0,
+      "relay": 3,
+      "invert": true,
+      "kind": "resistive"
+    }
+  ],
+  "history": {
+    "records": 1440,
+    "periodSec": 60
+  },
+  "schedules": [
+    {
+      "name": "Example",
+      "relay": 0,
+      "hour": 6,
+      "minute": 30,
+      "days": 127,
+      "durationMs": 10000,
+      "enabled": false
+    }
+  ]
+}

@@ -18,13 +18,15 @@ environment.
 2. Add the production `.cpp` to `build_src_filter` in `[env:native]`.
    **It is an allow-list**: without a `+<...>` line the code is simply not
    compiled and the suite fails to link with "undefined reference".
+   A header-only unit needs no entry — `test_pin_rules` includes
+   `core/pin_rules.h` and adds nothing to the filter.
 
 ## What can be tested here, and what cannot
 
 `[env:native]` has no Arduino core, so only code that compiles standalone is in
 scope. Today that is `AccumulatorV2`, `core/segment_index.h`,
 `core/probe_health.h`, `core/step_publisher.h`, `core/moisture_classifier.h`,
-`core/fw_version.h` and `core/cloud_cover.h`. `segment_index.h` exists as a
+`core/fw_version.h`, `core/cloud_cover.h` and `core/pin_rules.h`. `segment_index.h` exists as a
 separate header precisely so it can be tested: the ring arithmetic behind
 `/history.json` reorders records rather than failing when it is wrong, and the
 rest of `IoHistory` is inseparable from LittleFS. `cloud_cover.cpp` is split

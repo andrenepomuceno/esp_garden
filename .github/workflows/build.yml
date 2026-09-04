@@ -57,7 +57,8 @@ jobs:
 
     strategy:
       matrix:
-        environment: [espgarden1, espgarden2, espgarden3, espgarden4, espgarden5]
+        environment: [espgarden1, espgarden2, espgarden3, espgarden4, espgarden5,
+                      espgarden_s3]
 
     steps:
       - name: Checkout repository
@@ -82,7 +83,17 @@ jobs:
         run: pip install --upgrade platformio
 
       - name: Provision config.json
-        run: cp data/config.template.json data/config.json
+        # Per board, because the filesystem image carries whatever
+        # data/config.json holds. One template for every env would ship an
+        # espgarden_s3 artifact whose relays sit on GPIO 15-18 — pins that
+        # board uses for its flow input, its float switch and its button — and
+        # whose probes sit on GPIO 32-36, which are its SPI flash and PSRAM.
+        run: |
+          if [ "${{ matrix.environment }}" = "espgarden_s3" ]; then
+            cp templates/config.espgarden_s3.json data/config.json
+          else
+            cp data/config.template.json data/config.json
+          fi
 
       - name: Build firmware
         run: pio run -e ${{ matrix.environment }}
