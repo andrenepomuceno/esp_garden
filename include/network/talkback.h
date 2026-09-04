@@ -1,5 +1,9 @@
 #pragma once
 
+#include "BuildConfig.h"
+
+#if USE_TALKBACK
+
 #include <Client.h>
 
 class TalkBack {
@@ -18,3 +22,5 @@ private:
     unsigned id;
     String apiKey;
 };
+
+#endif // USE_TALKBACK

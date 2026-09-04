@@ -10,7 +10,7 @@ Operating guide for **esp-garden**. Companion doc: [README.md](README.md).
 
 ## Project at a glance
 
-ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + optional water level, a watering relay, a local async web dashboard, ThingSpeak MQTT/TLS telemetry, ThingSpeak TalkBack for remote commands, and browser OTA.
+ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + optional water level, a watering relay, a local async web dashboard, ThingsBoard MQTT/TLS telemetry, ThingsBoard RPC for remote commands, and browser OTA. **The ThingSpeak uplink and TalkBack are compiled OUT by default** since 2.12.0 — see [ThingSpeak and TalkBack are behind flags](#thingspeak-and-talkback-are-behind-flags-and-a-config-that-asks-for-one-is-refused-loudly).
 
 | Layer | Path | Role |
 |---|---|---|
@@ -27,10 +27,10 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | Web | `src/web.cpp` (503) | WiFi events, mDNS, `AsyncWebServer`, **the route table**, `/control`, `/logs`, `/history.json` |
 | Web handlers | `src/web_data.cpp`, `web_config.cpp`, `web_ota.cpp`, `web_users.cpp` | `/data.json` cache · masked `GET`/`POST /config.json` · browser OTA · `/users.json` |
 | Auth | `src/custom_login.cpp`, `src/user_store.cpp` | Nonce + SHA-256 login, role middleware, per-IP lockout, `/users.json`, `/sessions.json` — ported from fullbot |
-| MQTT | `src/mqtt.cpp` | Transport only: `PubSubClient` over TLS or plain, reconnect backoff, buffer sizing. `mqtt.backend` picks ThingSpeak `channels/<id>/publish` or ThingsBoard `v1/devices/me/telemetry` |
+| MQTT | `src/mqtt.cpp` | Transport only: `PubSubClient` over TLS or plain, reconnect backoff, buffer sizing. `mqtt.backend` picks ThingSpeak `channels/<id>/publish` or ThingsBoard `v1/devices/me/telemetry`; `mqttBackendSupported()` refuses a backend this BUILD has no code for |
 | ThingsBoard | `src/thingsboard.cpp` (791) | The downlink half: client/shared attributes, two-way RPC, the chunked `v2/fw` firmware stream |
 | Versions | `src/fw_version.cpp` | Semantic-version compare — the check deciding whether a cloud image is flashed. Host-tested |
-| TalkBack | `src/talkback.cpp` | Hand-rolled HTTP/1.1 POST to `api.thingspeak.com` (**plain HTTP, port 80**) |
+| TalkBack | `src/talkback.cpp` | Hand-rolled HTTP/1.1 POST to `api.thingspeak.com` (**plain HTTP, port 80**). **The whole translation unit is behind `USE_TALKBACK`, which ships at 0** — it compiles to nothing |
 | History | `src/io_history.cpp`, `include/core/segment_index.h` | Append-only segments of I/O snapshots on LittleFS, served by `/history.json` |
 | Moisture model | `src/moisture_classifier.cpp` (pure maths, host-tested), `src/moisture_model.cpp` (869; training, persistence) | Gaussian naive Bayes per probe, labelled by watering events. See [Soil moisture](#soil-moisture-a-classifier-trained-on-watering-events) |
 | Cloud cover | `src/cloud_cover.cpp` (pure maths, host-tested), `src/cloud_model.cpp`, `include/core/clear_sky_table.h` (**generated**) | Clearness index against an empirical clear-sky envelope. See [Cloud cover](#cloud-cover-an-empirical-clear-sky-reference-and-what-the-data-could-not-settle) |
@@ -134,6 +134,15 @@ Do it with the relay board DISCONNECTED. Every reset floats the GPIOs and these 
   - **`dry` is an UPPER BOUND, not the dry value.** The probe was still falling at ~0.15 per 30 s when it came out of the dry pot. That narrows the span and makes the badge say "humid" slightly earlier, which for a garden is the right side to err on. Redo it when a zone dries on its own.
 
 **Unverified — written, compiles, never run on hardware:**
+
+- **The whole ThingSpeak/TalkBack removal** (firmware 2.12.0, 2026-09-04). `USE_THINGSPEAK` added at 0, `USE_TALKBACK` moved 1 → 0 and honoured for the first time. Builds in all five envs with the flags off AND in `espgarden2` with both back on; `pio test -e native` and `check_lines.py` green. **Nothing has run on the device, which is on 2.11.1.** Measured on `espgarden2`, both flags off against the pre-change build: **-4 832 B flash (1 257 017 → 1 252 185) and -236 B static RAM (66 804 → 66 568)**. Specifically unexercised:
+
+  - **The backend-mismatch refusal, which is the whole point of the change.** No board has booted with `mqtt.backend: "thingspeak"` against a `USE_THINGSPEAK 0` image, so `mqttBackendSupported()` has never returned false on hardware: the FATAL in `mqttSetup()` has never printed, `mqttLoop()`'s early return has never been taken, `telemetryPublish()` has never declined to queue, and no browser has seen `MQTT Link: unsupported backend`. The live device sets `"thingsboard"` explicitly, so on 6224 every one of those paths is dead code — which is exactly why the refusal is worth having and exactly why it is unproven.
+  - **That the ThingsBoard path is byte-for-byte what it was.** The argument is structural — `mqttIsThingsBoard()` is unchanged and every `#if` brackets a ThingSpeak-only statement — not a payload diffed against the broker.
+  - **`/data.json` without `Channel`.** The key's absence, and `index.js` hiding the ThingSpeak link rather than leaving a dead `href="#"`, have been rendered by no browser. `scripts/sim_state.py` mirrors it behind its own `USE_THINGSPEAK = False`; **that is evidence about the simulator, not about the firmware**, the same distinction the session entries above are worded for.
+  - **`validateThingSpeakFields()`'s new warning.** It fires only when `thingSpeak.moisture2Field` is non-zero, and it is 0 on this device and in the template, so the branch is unreachable on any config here.
+  - **A flags-ON image has been BUILT and never RUN.** `espgarden2` compiles at 1 257 277 B with both on — 260 B above the pre-change baseline, which is the refusal machinery itself and is present in both positions. Nothing says the restored ThingSpeak path still publishes; the last accepted ThingSpeak publish was 2026-08-23.
+  - **Deliberately a judgement rather than a measurement:** that refusing to publish is safer than refusing the config. It rests on this file's own record that a rejected document means compiled defaults and an unreachable board, plus the fact that the COMPILED default of `mqtt.backend` is still `"thingspeak"` — so a load-time refusal would brick any device whose document omits the key. No device was made to demonstrate that.
 
 - **That the publish path's allocations do not fragment anything** (2026-09-04). The counts and bytes in [The `String` churn](#the-string-churn-in-the-publish-path-was-measured-and-it-is-not-there) are a HOST measurement of a replay, and they are the only half that can be measured from here: largest-free-block exists on the device, which this session may not touch. The verdict — don't do the work — rests on a 0.9 % byte share and on a path that is 0.06 % of the io task's churn, both measured; the further claim that three 16-byte blocks allocated and freed inside one function on one task cost no fragmentation is REASONING, not a number. **No code changed, so there is nothing here to flash or to regress.**
 - **Four review findings, fixed (firmware 2.11.2). Nothing here has run on the device**, which is still on 2.11.1 — and two of the four are running there right now.
@@ -269,7 +278,7 @@ Three traps that used to live here are fixed; do not re-introduce them:
 | `history` | `history.periodSec` (60 s) | background | One `IoRecord` appended to the newest segment; the compiled 60 s is only the fallback until `tasksSetup()` calls `setPeriod()` |
 | `schedules` | 20 s | background | Fires a due schedule; three ticks a minute, with a 10 min catch-up window |
 | `mqtt` | `mqtt.publishSec` (5 min) | background | Builds and publishes the **periodic** payload. The compiled 1 min is only the fallback until `setPeriod()`. Step values do not ride this tick at all |
-| `talkBack` | 1 min | background | Polls the TalkBack queue |
+| `talkBack` | 1 min | background | Polls the TalkBack queue. **Not registered by default** — the `DECLARE_TASK`, the handler and the `addTask()` are all behind `USE_TALKBACK` (0), so it takes no slot |
 | `clockUpdate` | 24 h | background | NTP re-sync |
 | `logBackup` | 1 h | background | `logger.backup()` |
 | `moistureModel` | 24 h | background | Trains the classifier; three streaming passes over the history, so it stalls other background tasks for seconds |
@@ -284,7 +293,7 @@ Consequences that bite:
 - Background tasks reschedule from **end of callback**, so a slow handler pushes its own next run out; critical tasks reschedule from the tick time and keep a fixed cadence.
 - **A request handler must never call `ESP.restart()` or block.** `request->send()` only *queues* the response and the `async_tcp` task that flushes it is the one the handler runs on, so both kill the connection before the client sees anything. `/control` sets a flag and `requestRestart()` reboots from `loop()` 500 ms later; moving the restart after the `send()` was tried first and was not enough.
 - **`g_relay[]` is touched from three threads** — the critical runner, `loop()` (TalkBack) and `async_tcp` (`/control`). Every access goes through the `g_relayMux` spinlock, and `relayWrite()` is deliberately called *outside* it: a `digitalWrite` inside a `portENTER_CRITICAL` section is exactly the kind of work that must not hold a spinlock.
-- **`Scheduler::addTask()` returns `bool` and every call site ignores it.** The cap is `CRITICALTASKSCHEDULER_MAX_TASKS` = **16** per bucket; this repo registers **11 background and 2 critical**. One task per relay plus per sensor crosses the cap and tasks are then **silently dropped**. Either check the return value or raise it with `-D CRITICALTASKSCHEDULER_MAX_TASKS=32`.
+- **`Scheduler::addTask()` returns `bool` and every call site ignores it.** The cap is `CRITICALTASKSCHEDULER_MAX_TASKS` = **16** per bucket; this repo registers **10 background and 2 critical** (11 background with `USE_TALKBACK` on). One task per relay plus per sensor crosses the cap and tasks are then **silently dropped**. Either check the return value or raise it with `-D CRITICALTASKSCHEDULER_MAX_TASKS=32`.
 
 ---
 
@@ -412,7 +421,7 @@ OTA details: `/updateEnable` arms a module-level `g_otaEnabled` which `handleUpd
   "Inputs":  { "Soil Moisture 1": { "val": "...", "avg": "...", "var": "..." }, ... },
   "Outputs": { "Watering": "0|1", "Relay 2": "0|1", ... },      // keyed by relay NAME
   "Relays":  [ { "index": 0, "name": "Watering", "on": 0, "remaining": 0 }, ... ],
-  "Channel": "1348790" }
+  "Channel": "1348790" }   // ABSENT when USE_THINGSPEAK is 0, which is the default
 ```
 
 - The luminosity entry carries **`state`** (`clear` / `partly cloudy` / `overcast`) only while `cloud.enabled` is on AND the local time is inside the model's fitted daylight window. Absent, not empty.
@@ -868,6 +877,38 @@ Traps this created, every one of which was a real defect first:
 
 Pin rules live in exactly one place — `pinIsADC1`, `pinIsInputOnly`, `pinIsFlash`, `pinIsStrapping` in `config.cpp`. `validatePins()` uses them at boot, `documentPinsAreUsable()` refuses a bad map at **save** time (boot is too late: the document is already on flash), and `/capabilities.json` derives the UI's pin lists by walking every GPIO through the same predicates.
 
+## ThingSpeak and TalkBack are behind flags, and a config that asks for one is refused loudly
+
+Both ship **OFF** (`USE_THINGSPEAK 0`, `USE_TALKBACK 0`). The live device publishes to `thingsboard.cloud` and nothing in production reached either path.
+
+**`USE_TALKBACK` already existed, at 1, and was honoured at exactly ZERO call sites.** The task was declared, registered, enabled and polling; `talkback.cpp` linked in whole. A flag like that is worse than no flag, because a reader who greps `BuildConfig.h` concludes the feature is off while the socket opens once a minute regardless. Every site is now behind it — the `#include`, the `DECLARE_TASK`, the `TalkBack` instance, the `WiFiClient` that exists only to feed it, the handler body, the `addTask()`, the three `talkBack.*` setup calls, the `enableDelayed()`, and both `talkback.{h,cpp}` in their entirety.
+
+**Turning TalkBack off is a security fix, not a flash saving.** `talkback.cpp` speaks plain **HTTP/1.1 on port 80 with the API key in the request body** and carried a standing `// TODO use HTTPS`. Every poll put a ThingSpeak write key on the wire in clear text, once a minute, for the life of the device. ThingsBoard RPC does the same commands over the MQTT/TLS link that is already up.
+
+**The registration goes with the flag, not just the body.** A registered task whose handler returns at its first line still consumes one of the 16 slots in its bucket, and `addTask()` past the cap drops **silently**.
+
+### What happens when `mqtt.backend` says `thingspeak` and the build has none
+
+`mqttBackendSupported()` is the single predicate, and the answer is **refuse to publish** — stated in three places because each reaches a different reader:
+
+- **`mqttSetup()`** logs `FATAL` and returns false before configuring the client.
+- **`mqttLoop()`** returns above the WiFi check and above the backoff, so the device never sits on a broker it has no payload for. A connected session that publishes nothing is, from the broker's side, indistinguishable from a healthy device whose sensors all stopped.
+- **`/data.json`** carries `MQTT Link: unsupported backend '<x>' — not in this build`, above the connection branch. **This is the one that matters.** The log is an 8 KB rolling buffer this device overwrites within hours, so a boot-time FATAL is gone by the time anyone asks why the channel is empty — and a dashboard reporting `MQTT: enabled` over a broker receiving nothing is the exact shape of the three-year outage recorded under [Sensors, accumulators & telemetry](#sensors-accumulators--telemetry), where only `Packages Sent` staying at 0 gave it away.
+
+`telemetryPublish()` also returns **above** the queue push. Unlike the `offline` case there is nothing to wait for: no amount of connectivity makes a backend appear in an image that lacks it, so an hour of RAM would be spent on payloads that can never be delivered.
+
+**Falling back to ThingsBoard was rejected.** `mqtt.server`, `mqtt.port`, `mqtt.username`, `mqtt.password` and the CA in the document belong to the backend that was chosen; a device configured for ThingSpeak has `mqtt3.thingspeak.com` and ThingSpeak MQTT credentials. Publishing ThingsBoard-shaped JSON to `v1/devices/me/telemetry` there would connect, be dropped, and **report success** — a fabricated destination is worse than a refusal.
+
+**Refusing the CONFIG was rejected, and this is the load-bearing half.** `ConfigFile::loadFile()` returning false means compiled defaults, `ssid "undefined"`, and a board that cannot associate or be reached to fix — and the compiled default of `mqtt.backend` is still `"thingspeak"`, so a load-time refusal would brick every device whose document simply omits the key. **The parse is therefore untouched**: `thingSpeak` and `talkBack` still parse into fields nothing reads, and the 4-character credential check still counts both API keys, so *whether a field device's existing document loads is unchanged by which features were compiled in*. The keys are inert, not absent.
+
+### What stayed, and why
+
+- **The eight field constants in `include/core/telemetry.h` are NOT behind the flag.** The numbering is a permanent contract with what is already stored in channel 1348790, and compiling the publisher out stops *writing* to that channel — it does not erase it or release a single number. The contract outlives the build flag, so it stays documented where it cannot be compiled away. Unused `static const`s cost no flash.
+- **`validateThingSpeakFields()` still runs**, for the same reason. With the flag off and `moisture2Field` actually set, it warns that the setting is inert instead of logging the boot line `Probe 2 publishes to ThingSpeak field N`, which would be untrue.
+- **`/data.json`'s `Channel` key is ABSENT, not `0` or `""`.** `index.js` builds the ThingSpeak link from it and now **hides** the link when it is missing — a dead link that looks live is worse than no link. Same rule `state` and `fault` follow: no answer is said by saying nothing. `scripts/sim_state.py` mirrors it behind its own `USE_THINGSPEAK` constant.
+
+**Measured on `espgarden2`: -4 832 B flash and -236 B static RAM** (1 257 017 → 1 252 185; 66 804 → 66 568). Small against a 1.69 MB slot, which is the honest framing — the credential that stopped being broadcast in clear text is the return on this change, not the space.
+
 ## Sampling vs events — the rule, and where it was broken
 
 **Anything whose duration is shorter than the publish period must be recorded as an EVENT or as a sticky flag. Never sampled.** A watering lasts five seconds and the payload is built once a minute, so an instantaneous read of `relayIsOn()` misses roughly eleven activations in twelve. The history record learned this when `g_relaySticky` was added; the telemetry kept sampling for months longer.
@@ -990,7 +1031,7 @@ Concrete gotchas measured in this tree:
 - **English in code** — identifiers, comments, log strings, commit messages. Reply to the user in the language they write in (Portuguese here).
 - **`.clang-format` is Mozilla base, 4-space indent.** Nothing enforces it; do not reformat lines you did not touch.
 - Includes are prefixed: `core/`, `network/`. `BuildConfig.h` carries no prefix.
-- Feature flags live in `include/BuildConfig.h` (`FW_VERSION`, `USE_WEBSERVER`, `USE_MQTT`, `USE_OTA`, `USE_TALKBACK`, `USE_WATERING_PWM`), along with the caps `RELAY_MAX` and `MOISTURE_MAX`. **`platformio.ini` carries no hardware flags at all** — what a board has is in its own `config.json`, and the envs differ only by `board`.
+- Feature flags live in `include/BuildConfig.h` (`FW_VERSION`, `USE_WEBSERVER`, `USE_MQTT`, `USE_OTA`, `USE_THINGSPEAK`, `USE_TALKBACK`, `USE_WATERING_PWM`), along with the caps `RELAY_MAX` and `MOISTURE_MAX`. **`USE_THINGSPEAK` and `USE_TALKBACK` both ship at 0.** A flag is only real where it is honoured at EVERY site — `USE_TALKBACK` sat here at 1 for months and was read nowhere, which reads as "the feature is off" while the socket opens anyway. **`platformio.ini` carries no hardware flags at all** — what a board has is in its own `config.json`, and the envs differ only by `board`.
 - `FW_VERSION` is the version ThingsBoard compares an offered package against and the string `/data.json` reports as `Status.Firmware`. **Bump it in the same commit as the change it names**, or a FOTA of that change is a no-op the broker reports as success.
 - **No AI co-author trailers** in commits. **Never `git add -A`** — stage explicitly. **Commits and pushes no longer need to be asked for** (standing authorization from the repo owner), but the gate does not move: five envs build, `pio test -e native` passes and `python scripts/check_lines.py` is green before a commit exists. Never commit `data/config.json` or anything under `backups/`.
 - Commit format: imperative + conventional tag (`feat | fix | refactor | chore | docs | test | perf | style`), e.g. `fix(tasks): construct DHT after config load`.

@@ -4,13 +4,46 @@
 // current_fw_version, which is how the broker decides an update landed. It is
 // also what fwVersionDiffers() compares an offered package against, so bumping
 // it is what makes a FOTA a no-op instead of a reflash loop.
-#define FW_VERSION "2.11.2"
+#define FW_VERSION "2.12.0"
 
 // Feature flags
 #define USE_WEBSERVER 1
 #define USE_MQTT 1
 #define USE_OTA 1
-#define USE_TALKBACK 1
+
+// The ThingSpeak uplink: the eight numbered fields, the `field1=..&` payload
+// accumulator, and publishing to `channels/<id>/publish`. OFF, because this
+// garden publishes to ThingsBoard and nothing in production reaches the
+// ThingSpeak path any more.
+//
+// Turning it off does NOT erase channel 1348790 or the field numbering that is
+// a permanent contract with what is already stored there — see
+// include/core/telemetry.h, which keeps that contract documented in one place
+// whatever this flag says. It stops WRITING to the channel; the history stays.
+//
+// mqtt.backend is still parsed and still accepts "thingspeak", because a
+// field device's config document must keep loading across a firmware update.
+// What changes is that a build with this off REFUSES to serve that backend
+// rather than publishing nothing quietly: mqttBackendSupported() is false,
+// mqttSetup() logs FATAL, no connection is attempted, and /data.json's
+// `MQTT Link` says so for as long as the misconfiguration lasts.
+#define USE_THINGSPEAK 0
+
+// ThingSpeak TalkBack: a 1-minute poll of the command queue, parsed into
+// startRelay()/startWatering(). OFF, and not only for the flash.
+//
+// talkback.cpp speaks plain HTTP/1.1 on port 80 with the API key in the
+// REQUEST BODY, and carried a standing `// TODO use HTTPS`. Every poll put a
+// ThingSpeak write key on the wire in clear text, once a minute, for ever.
+// ThingsBoard RPC covers the same ground over the MQTT/TLS link that is
+// already up, so switching this off removes a credential leak rather than
+// trading a feature away for space.
+//
+// This flag EXISTED before and was honoured at exactly zero call sites: the
+// task was registered, the socket was opened and the key was sent whatever it
+// was set to. A flag that is only read where somebody remembered to read it is
+// worse than no flag, because it reads as "the feature is off".
+#define USE_TALKBACK 0
 
 // Nonce + SHA-256 login with roles (ported from fullbot-firmware). With this
 // off the web UI falls back to the pre-2.1 behaviour, where only the static

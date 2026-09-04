@@ -21,6 +21,36 @@ mqttIsThingsBoard()
 }
 
 bool
+mqttBackendSupported()
+{
+    if (mqttIsThingsBoard()) {
+        return true;
+    }
+#if USE_THINGSPEAK
+    // Anything that is not ThingsBoard takes the ThingSpeak path, which is the
+    // behaviour every board in the field was flashed with.
+    return true;
+#else
+    return false;
+#endif
+}
+
+// One line, said once, at the level a garden controller's owner would actually
+// chase. Not repeated per publish: telemetryPublish() runs every 300 s and the
+// log is an 8 KB rolling buffer, so a line per tick would flush everything else
+// out of it within the hour and bury the reason it exists. /data.json carries
+// the standing version of this — see mqttBackendSupported().
+static void
+logUnsupportedBackend(const char* where)
+{
+    logger.fatal("MQTT backend '" + config.mqttBackend +
+                 "' is not compiled into this build (" + String(where) +
+                 "). Nothing will be published to any broker. Set "
+                 "mqtt.backend to \"thingsboard\" in /config.json, or rebuild "
+                 "with USE_THINGSPEAK 1 in BuildConfig.h.");
+}
+
+bool
 mqttIsConnected()
 {
     return mqttClient.connected();
@@ -60,6 +90,7 @@ mqttSubscribeTopic(const String& topic)
     return ok;
 }
 
+#if USE_THINGSPEAK
 bool
 mqttSubscribe(long subChannelID)
 {
@@ -73,6 +104,7 @@ mqttPublish(long pubChannelID, String message)
     String topicString = "channels/" + String(pubChannelID) + "/publish";
     return mqttClient.publish(topicString.c_str(), message.c_str());
 }
+#endif
 
 bool
 mqttConnect()
@@ -100,6 +132,13 @@ mqttConnect()
 bool
 mqttSetup()
 {
+    // Before anything is configured, so a build/config mismatch cannot end up
+    // with a client pointed at a broker it has no payload for.
+    if (!mqttBackendSupported()) {
+        logUnsupportedBackend("mqttSetup");
+        return false;
+    }
+
     logger.info("MQTT backend: " + config.mqttBackend + " on " + g_mqttServer +
                 ":" + String(g_mqttPort) +
                 (config.mqttUseTLS ? " (TLS)" : " (plain)"));
@@ -139,6 +178,15 @@ mqttSetup()
 void
 mqttLoop()
 {
+    // Above the WiFi check and above the backoff: a build that cannot serve the
+    // configured backend has nothing to say to any broker, and connecting
+    // anyway would put the device on a session it can only sit silent on —
+    // which from the broker's side is indistinguishable from a healthy device
+    // whose sensors all stopped.
+    if (!mqttBackendSupported()) {
+        return;
+    }
+
     if (WiFi.status() != WL_CONNECTED) {
         return;
     }

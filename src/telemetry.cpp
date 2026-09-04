@@ -24,7 +24,9 @@
 // Probes 3 and beyond have no ThingSpeak field at all. Eight fields is the
 // ceiling, and it is the reason this firmware also speaks ThingsBoard.
 
+#if USE_THINGSPEAK
 static String g_mqttMessage = "";
+#endif
 
 static const char* const g_thingsBoardTelemetryTopic = "v1/devices/me/telemetry";
 
@@ -37,6 +39,7 @@ mqttPublishPeriodMs()
     return (unsigned)config.mqttPublishSec * 1000u;
 }
 
+#if USE_THINGSPEAK
 void
 mqttAddField(int field, String val)
 {
@@ -48,6 +51,7 @@ mqttAddStatus(String status)
 {
     g_mqttMessage += "status='" + status + "'&";
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // Step values -- published on CHANGE, never sampled
@@ -494,10 +498,24 @@ telemetryPublish()
         return;
     }
 
+    // Above the queue, not below it. A payload this build has no way to deliver
+    // is not worth an hour of RAM waiting for a link that will never be
+    // attempted — and unlike the `offline` case there is nothing to wait for:
+    // no amount of connectivity makes a backend appear in an image that was not
+    // built with it. The refusal is stated once at boot and stands permanently
+    // in /data.json; see mqttBackendSupported().
+    if (!mqttBackendSupported()) {
+        return;
+    }
+
     if (mqttIsThingsBoard()) {
         msgQueue.push_back(buildThingsBoardPayload(cloudVariability));
+#if USE_THINGSPEAK
         g_mqttMessage = ""; // the ThingSpeak accumulator is unused here
-    } else {
+#endif
+    }
+#if USE_THINGSPEAK
+    else {
 
         // A field is only sent when the sensor behind it is fitted. Sending a
         // never-fed accumulator would publish 0.00 as though it were a
@@ -539,6 +557,7 @@ telemetryPublish()
         msgQueue.push_back(g_mqttMessage);
         g_mqttMessage = "";
     }
+#endif
 
     // An hour of buffer at whatever period is configured, so lengthening the
     // publish interval shortens the queue instead of stretching what it covers.
@@ -564,10 +583,17 @@ telemetryPublish()
         msgQueue.pop_front();
     }
     while (msgQueue.size() > 0) {
+        // With USE_THINGSPEAK off, mqttBackendSupported() above has already
+        // guaranteed this is the ThingsBoard backend, so there is no second
+        // arm to choose and g_thingSpeakChannelNumber is never read.
         const bool success =
+#if USE_THINGSPEAK
           mqttIsThingsBoard()
             ? mqttPublishTopic(g_thingsBoardTelemetryTopic, msgQueue.front())
             : mqttPublish(g_thingSpeakChannelNumber, msgQueue.front());
+#else
+          mqttPublishTopic(g_thingsBoardTelemetryTopic, msgQueue.front());
+#endif
 
         if (success) {
             ++g_packagesSent;

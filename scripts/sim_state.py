@@ -25,6 +25,16 @@ class DeviceState:
 
     LOG_CAPACITY = 400
 
+    # Mirrors USE_THINGSPEAK in include/BuildConfig.h, which ships at 0.
+    #
+    # The simulator is a second implementation of the device's HTTP contract,
+    # and that contract now depends on a BUILD flag: with ThingSpeak compiled
+    # out the firmware omits the "Channel" key from /data.json entirely rather
+    # than sending 0 or "". Flip this to True to mirror a firmware rebuilt with
+    # the flag on; leaving it out of step is exactly the silent drift this
+    # mirror exists to prevent.
+    USE_THINGSPEAK = False
+
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.boot_time = time.time()
@@ -307,6 +317,13 @@ class DeviceState:
                 # actually reachable. The simulator has no broker, so the link
                 # simply follows the switch -- but the KEY has to be here, or
                 # index.js is styled against a payload the device does not send.
+                #
+                # DECLARED DRIFT: the firmware has a third value here,
+                # "unsupported backend '<x>' -- not in this build", produced
+                # when config.json selects a backend the image was not built
+                # with. It has no mirror because the simulator has neither build
+                # flags nor a backend to mismatch. Recorded rather than fixed
+                # quietly; index.js renders the row as free text either way.
                 "MQTT Link": "connected" if self.mqtt_enabled else "disabled",
                 "Last Publish": (f"{int(time.time()) - self.last_publish}s ago"
                                  if self.mqtt_enabled and self.last_publish
@@ -439,13 +456,19 @@ class DeviceState:
                 for i, name in enumerate(names) if i < len(self.relays)
             ]
 
-            return {
+            payload = {
                 "Status": status,
                 "Inputs": inputs,
                 "Outputs": outputs,
                 "Relays": relays,
-                "Channel": self.channel,
             }
+            # Absent, not empty: see USE_THINGSPEAK above and the same #if in
+            # src/web_data.cpp. index.js hides the ThingSpeak link when the key
+            # is missing, so a simulator that always sent it would show a link
+            # the real device does not.
+            if self.USE_THINGSPEAK:
+                payload["Channel"] = self.channel
+            return payload
 
 
 class _Sensor:

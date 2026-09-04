@@ -96,6 +96,16 @@ webUpdateDataCache()
     statusJson["MQTT"] = String((g_mqttEnabled) ? "enabled" : "disabled");
     if (!g_mqttEnabled) {
         statusJson["MQTT Link"] = "disabled";
+    } else if (!mqttBackendSupported()) {
+        // config.json selects a backend this IMAGE has no code for. The row
+        // exists because the boot-time FATAL does not survive: the log is an
+        // 8 KB rolling buffer this device overwrites within hours, so by the
+        // time anybody asks why the broker is empty the only line explaining it
+        // is long gone. Above the connection check on purpose — the link is not
+        // "down", nothing is ever going to try, and reporting a retryable
+        // failure for a permanent one sends the reader after the network.
+        statusJson["MQTT Link"] =
+          "unsupported backend '" + config.mqttBackend + "' — not in this build";
     } else if (mqttIsConnected()) {
         statusJson["MQTT Link"] = "connected";
     } else {
@@ -283,7 +293,14 @@ webUpdateDataCache()
     responseJson["Inputs"] = inputsJson;
     responseJson["Outputs"] = outputsJson;
     responseJson["Relays"] = relaysJson;
+#if USE_THINGSPEAK
+    // ABSENT, not empty and not "0", when the uplink is compiled out. index.js
+    // builds the ThingSpeak link from this key and only when it is present, so
+    // omitting it removes the link instead of leaving a dead one pointing at a
+    // channel this build never writes to — the same rule `state` and `fault`
+    // follow, where no answer is said by saying nothing.
     responseJson["Channel"] = String(g_thingSpeakChannelNumber);
+#endif
 
     String rendered = JSON.stringify(responseJson);
 

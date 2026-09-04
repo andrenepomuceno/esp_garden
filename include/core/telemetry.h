@@ -8,6 +8,14 @@
 // ThingSpeak channels have exactly 8 fields and the numbering is a permanent
 // contract with the data already stored. Relays 1..N have no field — they are
 // local-only.
+//
+// THESE STAY DEFINED WHATEVER USE_THINGSPEAK SAYS, deliberately. Compiling the
+// publisher out stops writing to channel 1348790; it does not erase what is in
+// it, and it does not release a single one of these numbers. Anything that
+// later re-enables the uplink, or reads the stored history back, has to mean
+// the same thing by `field4` as the years already on the channel do. The
+// contract outlives the build flag, so it is documented where it cannot be
+// compiled away. They cost no flash while unused.
 static const unsigned g_soilMoistureField = 1;
 static const unsigned g_wateringField = 2;
 static const unsigned g_pingField = 3;
@@ -25,10 +33,16 @@ extern unsigned g_packagesSent;
 // device. An age is the same fact stated so it cannot be missed.
 extern uint32_t g_lastPublishTime;
 
+#if USE_THINGSPEAK
+// The ThingSpeak payload accumulator: a global String that several tasks append
+// to and telemetryPublish() flushes. Only the ThingSpeak backend has anything
+// to do with it — the ThingsBoard payload is built as a JSONVar per tick — so
+// it goes with the flag rather than staying as a no-op somebody could call.
 void
 mqttAddField(int field, String val);
 void
 mqttAddStatus(String status);
+#endif
 
 // The configured periodic publish period, in milliseconds.
 //

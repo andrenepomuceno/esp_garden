@@ -11,7 +11,9 @@
 #include "core/telemetry.h"
 #include "network/custom_login.h"
 #include "network/mqtt.h"
+#if USE_TALKBACK
 #include "network/talkback.h"
+#endif
 #include "network/web.h"
 #include <CriticalTaskScheduler.h>
 #include <ESP32Ping.h>
@@ -52,7 +54,9 @@ DECLARE_TASK(history, 60 * 1000);               // 1 min
 // most once per minute per schedule.
 DECLARE_TASK(schedules, 20 * 1000);             // 20 s
 DECLARE_TASK(mqtt, 1 * 60 * 1000);              // 1 min
+#if USE_TALKBACK
 DECLARE_TASK(talkBack, 1 * 60 * 1000);          // 1 min
+#endif
 DECLARE_TASK(checkMoisture, 4 * 60 * 60 * 1000); // 4 h
 // At the DHT11's sampling floor: the Adafruit driver returns its cached
 // reading rather than an error when polled faster than once per second.
@@ -83,8 +87,12 @@ static volatile unsigned g_wateringStartedMs = 0;
 
 static float g_moistureBeforeWatering[MOISTURE_MAX] = { 0.0 };
 
+#if USE_TALKBACK
+// Exists only to hand TalkBack a transport. It is the ONLY consumer, so the
+// client goes with the flag rather than sitting as an unused WiFiClient.
 static WiFiClient g_wifiClient;
 static TalkBack talkBack;
+#endif
 
 bool g_hasInternet = false;
 time_t g_bootTime = 0;
@@ -141,7 +149,12 @@ publishRelayEvents()
         g_wateringStartedMs = 0;
         ++g_wateringCycles;
         g_pendingWateringMs = duration;
+        // ThingSpeak field 2. The ThingsBoard side of the same fact is
+        // g_pendingWateringMs, read into `wateringMs` by the periodic payload
+        // above — so nothing is lost here when the uplink is compiled out.
+#if USE_THINGSPEAK
         mqttAddField(g_wateringField, String(duration));
+#endif
         g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
     }
 
@@ -390,6 +403,7 @@ clockUpdateTaskHandler()
     }
 }
 
+#if USE_TALKBACK
 static void
 talkBackTaskHandler()
 {
@@ -426,6 +440,7 @@ talkBackTaskHandler()
         }
     }
 }
+#endif // USE_TALKBACK
 
 static void
 checkInternetTaskHandler()
@@ -451,8 +466,13 @@ checkInternetTaskHandler()
                     time_t downTime = time(NULL) - connectionLostTime;
                     logger.info("Down time: " + String(downTime) + " s");
 
+                    // The ThingSpeak channel's `status` string. ThingsBoard
+                    // gets the same event as `connectionLoss`, published on
+                    // change by telemetryPublishStepChanges().
+#if USE_THINGSPEAK
                     mqttAddStatus("Im back online! Downtime: " +
                                   String(downTime));
+#endif
                 }
             }
             float avgTime = Ping.averageTime();
@@ -472,7 +492,9 @@ checkInternetTaskHandler()
         connectionLostTime = time(NULL);
         ++g_connectionLossCount;
 
+#if USE_THINGSPEAK
         mqttAddStatus("Internet connection lost.");
+#endif
     }
 }
 
@@ -697,7 +719,13 @@ tasksSetup()
     g_taskScheduler.addTask(&g_historyTask);
     g_taskScheduler.addTask(&g_schedulesTask);
     g_taskScheduler.addTask(&g_mqttTask);
+    // The REGISTRATION goes with the flag, not just the body. A registered task
+    // whose handler returns immediately still takes one of the 16 slots in this
+    // bucket, and addTask() past the cap drops silently — so a no-op task is
+    // not free, it is a slot charged to a feature that is switched off.
+#if USE_TALKBACK
     g_taskScheduler.addTask(&g_talkBackTask);
+#endif
     g_taskScheduler.addTask(&g_checkMoistureTask);
     g_taskScheduler.addTask(&g_dhtTask);
 
@@ -723,9 +751,11 @@ tasksSetup()
 
     relaysSetup();
 
+#if USE_TALKBACK
     talkBack.setTalkBackID(g_talkBackID);
     talkBack.setAPIKey(g_talkBackAPIKey);
     talkBack.begin(g_wifiClient);
+#endif
 
     // Relay timing must be live before the blocking waits below: they can hold
     // setup() for minutes, and a relay commanded in that window still has to
@@ -769,7 +799,9 @@ tasksSetup()
     }
 
     mqttSetup();
+#if USE_THINGSPEAK
     mqttAddField(g_bootTimeField, String(g_bootTime));
+#endif
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
     sensorsSetupDht();
@@ -781,7 +813,9 @@ tasksSetup()
     g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
     g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
     g_mqttTask.enableDelayed(mqttPeriod);
+#if USE_TALKBACK
     g_talkBackTask.enableDelayed(g_talkBackTaskPeriod);
+#endif
     g_logBackupTask.enableDelayed(g_logBackupTaskPeriod);
     // Trains 5 minutes after boot as well as daily: a device that is power
     // cycled every evening would otherwise never reach its 24 h tick, and the

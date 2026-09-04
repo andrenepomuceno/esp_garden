@@ -1,10 +1,12 @@
 # ESP Garden
 
-Automatic garden irrigation and environmental monitoring system based on the ESP32, built with [PlatformIO](https://platformio.org) and integrated with the [ThingSpeak](https://thingspeak.com) IoT platform.
+Automatic garden irrigation and environmental monitoring system based on the ESP32, built with [PlatformIO](https://platformio.org) and integrated with the [ThingsBoard](https://thingsboard.io) IoT platform over MQTT/TLS.
+
+> **ThingSpeak and TalkBack ship OFF** since firmware 2.12.0 (`USE_THINGSPEAK` / `USE_TALKBACK` in `include/BuildConfig.h`). The code is still here and the flags still build in both positions — see [Telemetry backends](#telemetry-backends).
 
 ## Features
 
-- **Automated irrigation** — timed watering triggered locally or remotely via ThingSpeak TalkBack
+- **Automated irrigation** — timed watering triggered locally, on a schedule, or remotely via ThingsBoard RPC
 - **Multi-zone relay control** — up to 4 independently timed relays, switched off by a dedicated real-time task
 - **Environmental monitoring** — soil moisture (up to 3 probes), luminosity, temperature, humidity, water level, pulse flow meter and a reservoir float switch
 - **Local web UI** — dashboard, configuration editor and account management, served
@@ -21,7 +23,7 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
   default, and validated off-device against a public station before it is worth
   turning on; see [Reference evapotranspiration](#reference-evapotranspiration-et0)
 - **Scheduled watering** — up to 8 timed relay activations, edited in the web UI
-- **Cloud logging** — sensor data published to ThingSpeak or ThingsBoard over MQTT (TLS)
+- **Cloud logging** — sensor data published to ThingsBoard over MQTT (TLS); the ThingSpeak uplink is compiled out by default
 - **On-device history** — append-only segments keep the last N I/O snapshots
   across reboots, served as JSON
 - **Internet watchdog** — pings Google/Cloudflare DNS and reports connectivity losses
@@ -260,6 +262,12 @@ Two things are still decided at build time, and cannot be otherwise:
   `BuildConfig.h`. `MOISTURE_MAX` is pinned to the number of moisture slots in
   the history record by a `static_assert`; raising one without the other would
   give a probe no place in stored history.
+- **Which UPLINKS exist** — `USE_THINGSPEAK` and `USE_TALKBACK`, both 0. Unlike
+  a sensor, an uplink is a whole protocol with its own credential and its own
+  socket, so it is not something a web page should be able to switch on. The
+  flags build in both positions, and a config selecting a backend the image
+  lacks is refused loudly rather than served silently — see
+  [Telemetry backends](#telemetry-backends).
 
 Every driver is compiled into every image. That was measured before it was
 chosen: the minimal board came to 1.166 MB and the fully populated one to
@@ -649,7 +657,16 @@ Two endpoint behaviours worth knowing, because neither has a button:
   rather than sampled — it is sticky precisely because a watering is seconds
   long, and sampling would drop seven activations in eight.
 
-## Remote Control (TalkBack)
+## Remote Control (TalkBack) — compiled out by default
+
+**`USE_TALKBACK` ships at 0 and the whole path is behind it**: the task is not
+registered, `talkback.cpp` compiles to nothing, and the API key is never sent.
+Not only for the ~1.5 KB — `talkback.cpp` speaks **plain HTTP/1.1 on port 80
+with the API key in the request body**, so every poll put a ThingSpeak write key
+on the wire in clear text once a minute. [ThingsBoard RPC](#remote-commands-over-thingsboard-rpc)
+covers the same commands over the MQTT/TLS link that is already up.
+
+Set the flag to 1 and rebuild to get the behaviour below back.
 
 Send commands to the device via the ThingSpeak TalkBack queue:
 
@@ -665,6 +682,24 @@ runs the third relay for 3 seconds.
 
 The broker connection is one `mqtt` block; only the topic and the payload
 format change with `mqtt.backend`.
+
+**The ThingSpeak column is compiled out by default** (`USE_THINGSPEAK 0`). The
+field numbering below stays documented because it is a permanent contract with
+what is already stored in channel 1348790 — compiling the publisher out stops
+*writing* to that channel, it does not erase it or release a single number.
+
+**A build that cannot serve the configured backend REFUSES, loudly.** If
+`mqtt.backend` says `"thingspeak"` on an image built with `USE_THINGSPEAK 0`,
+the device logs a FATAL at boot, never opens a broker connection, queues no
+payloads, and `/data.json` reports
+`MQTT Link: unsupported backend 'thingspeak' — not in this build` for as long
+as the mismatch lasts. It does **not** silently fall back to ThingsBoard: the
+server, port, credentials and CA in the document belong to the backend that was
+chosen, so a fallback would invent a destination nobody configured. It does
+**not** refuse the config either — `loadFile()` returning false means compiled
+defaults and an unreachable board, and the compiled default of `mqtt.backend`
+is `"thingspeak"`, so that would brick every device. The config still loads;
+only publishing stops.
 
 | | ThingSpeak | ThingsBoard |
 |---|---|---|
@@ -753,6 +788,26 @@ The filesystem image is **not** distributable this way — `handleUpdateUpload`
 picks `U_SPIFFS` from the uploaded filename, and the FOTA path always writes
 `U_FLASH`. Use `/update.html` for `littlefs.bin`.
 
+## Off-device tooling
+
+Everything here runs on a workstation, never on the ESP32. All are standard
+library only, and all of them are allowed to answer "the data does not support
+this" — several currently do.
+
+| script | what it is for |
+|---|---|
+| `tb_export.py` | Incremental ThingsBoard → SQLite archive under `backups/`. ~20 s per run; the only durable copy of the telemetry. |
+| `telemetry_ui.py` | Local browser for that archive on **:8090** — charts, key inventory with dead-key detection, boot and gap timeline. Read-only. |
+| `moisture_fit.py` | Fits the soil-moisture parameters off the whole archive instead of the 24 h the board holds. Emits JSON in a dry run; refuses per probe and names the check that refused. |
+| `moisture_thermal.py` | Asks whether ambient temperature biases a resistive probe. Ships two admission GATES and no correction, because this archive cannot measure the coefficient. |
+| `drying_fit.py` | Fits the drying curve — linear against exponential against double-exponential — and refuses an asymptote the data does not constrain. It has refused every segment. |
+| `cloud_fit.py` | Fits the clear-sky reference and writes the generated header. Prints the regime table on every run, which is how the next sensor-mounting change becomes visible. |
+| `et0_fit.py` | Geocodes `postalCode` and scores the device's ET0 against a public station. Allowed to answer "do not enable this", and did. |
+| `moisture_calibration.py` | The older ThingSpeak-channel inspector; refuses a drying rate over a window shorter than three days. |
+
+Each carries `--self-test` where it has pure logic worth pinning; those run in
+Python because `pio test -e native` is C++ Unity and cannot reach them.
+
 ## Task Schedule
 
 Tasks marked **critical** run on a dedicated FreeRTOS task; the rest share the
@@ -769,7 +824,7 @@ TalkBack, an MQTT drain) stalls every other background task for its duration.
 | `history` | `history.periodSec` | Append one I/O snapshot to the newest segment |
 | `schedules` | 20 s | Fire any schedule that is due |
 | `mqtt` | 1 min | Publish averaged sensor data to the configured backend |
-| `talkBack` | 1 min | Poll ThingSpeak TalkBack for remote commands |
+| `talkBack` | 1 min | Poll ThingSpeak TalkBack for remote commands. **Not registered by default** — the whole task is behind `USE_TALKBACK`, which ships at 0 |
 | `clockUpdate` | 24 h | Re-sync NTP clock |
 | `moistureModel` | 24 h | Decay the stored moisture evidence and fold in the day's watering cycles |
 | `logBackup` | 1 h | Flush serial log to LittleFS |

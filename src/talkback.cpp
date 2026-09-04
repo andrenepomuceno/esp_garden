@@ -1,3 +1,11 @@
+#include "BuildConfig.h"
+
+// The whole translation unit is behind the flag, not just its call sites.
+// Leaving the class linked in while nothing calls it keeps a plain-HTTP client
+// and a ThingSpeak write key in the image for no reason, and makes "TalkBack is
+// off" a claim about the caller rather than about the build.
+#if USE_TALKBACK
+
 #include "network/talkback.h"
 #include <Arduino.h>
 
@@ -79,3 +87,5 @@ TalkBack::execute(String& response)
 
     return ret;
 }
+
+#endif // USE_TALKBACK

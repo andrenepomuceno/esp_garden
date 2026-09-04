@@ -218,6 +218,20 @@ ConfigFile::validateThingSpeakFields()
         return; // probe 2 stays off the channel
     }
 
+#if !USE_THINGSPEAK
+    // The field numbering is still a real contract with what is stored in the
+    // channel, which is why the check below survives the flag — but this build
+    // publishes to no channel at all, so saying "probe 2 publishes to field N"
+    // would be a boot line that is simply untrue. Said once, and only when
+    // somebody actually set the key: at the default of 0 this function has
+    // already returned above.
+    logger.warning("thingSpeak.moisture2Field is set to " +
+                   String(thingSpeakMoisture2Field) +
+                   " but ThingSpeak is not compiled into this build; the "
+                   "setting is inert and probe 2 publishes nowhere.");
+    return;
+#endif
+
     struct Claim
     {
         int field;
@@ -303,6 +317,14 @@ ConfigFile::loadFile(unsigned deviceID)
     otaUser = (const char*)ota["username"];
     otaPassword = (const char*)ota["password"];
 
+    // The thingSpeak and talkBack blocks keep parsing WHATEVER USE_THINGSPEAK
+    // and USE_TALKBACK say, and the length check further down keeps counting
+    // both API keys. That is deliberate and it is the conservative half of this
+    // change: loadFile() returning false means compiled defaults, ssid
+    // "undefined", and a board that cannot associate or be reached to fix, so
+    // whether a field device's existing document still loads must not depend on
+    // which features were compiled in. The keys parse into fields nothing reads
+    // — inert, not absent.
     JSONVar thingSpeak = configJson["thingSpeak"];
     thingSpeakAPIKey = (const char*)thingSpeak["apiKey"];
     thingSpeakChannelNumber = (long)thingSpeak["channel"];
