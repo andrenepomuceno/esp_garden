@@ -60,9 +60,10 @@ from pathlib import Path
 
 # Plain sibling modules: this file is run as a script, so scripts/ is
 # sys.path[0], the arrangement moisture_fit.py already has with moisture_stats.
-from drying_models import (MODELS, asymptote, block_bootstrap, choose,
-                           criteria, fit, is_degenerate, profile_interval,
-                           resample, start_sensitivity)
+from drying_evidence import (block_bootstrap, choose, criteria,
+                             profile_interval, start_sensitivity)
+from drying_evidence import self_test as evidence_self_test
+from drying_models import MODELS, asymptote, fit, is_degenerate, resample
 from drying_models import self_test as models_self_test
 from moisture_stats import (MAX_GAP_SEC, STEP_MIN_POINTS, find_drift_segments,
                             find_steps, local)
@@ -98,13 +99,15 @@ HANDLING_MIN_STEPS = 2
 HANDLING_SETTLE_SEC = 2 * 3600
 
 # ...and it is a --settle-hours flag rather than a constant, because it decides
-# the answer. Measured on this archive: with the two hours applied, the two
-# longest segments are won outright by `linear`; with it at zero they are won
-# by exp+linear with a fast tau of 1.96 h. The exponential everybody can see in
-# the trace lives entirely inside the window that a probe just handled is not
-# to be trusted in. Both runs are honest and they disagree, so both are
-# reachable from the command line and neither is buried in a constant.
-_settle_sec = HANDLING_SETTLE_SEC
+# the answer: it changes which model wins the two longest segments, and with it
+# whether a fast tau is reported at all. Both settings are honest and they
+# disagree, so both are reachable from the command line and neither is buried
+# in a constant.
+#
+# It is threaded through segment() and handling_windows() as an ARGUMENT. It
+# used to be a module global that --settle-hours reassigned, so the number
+# deciding the answer appeared in no signature, and self_test() - which runs
+# before main() sets it - silently read whatever the global happened to hold.
 
 # WETTING: a rise of two points inside half an hour opens a new segment at the
 # peak. The garden's own diurnal wobble is 0.6 points over three hours,
@@ -250,7 +253,7 @@ def channels(cursor, since, until, stitch):
 # ---------------------------------------------------------------------------
 
 
-def handling_windows(samples):
+def handling_windows(samples, settle_sec=HANDLING_SETTLE_SEC):
     """Clusters of discontinuities: a probe being moved, not soil drying."""
     steps = find_steps(samples, STEP_MIN_POINTS)
     windows = []
@@ -263,7 +266,7 @@ def handling_windows(samples):
         if end - index + 1 >= HANDLING_MIN_STEPS:
             windows.append({
                 "from": steps[index]["at"],
-                "to": steps[end]["at"] + _settle_sec,
+                "to": steps[end]["at"] + settle_sec,
                 "steps": end - index + 1,
                 "deltas": [round(s["delta"], 2) for s in steps[index:end + 1]],
             })
@@ -312,9 +315,9 @@ def wetting_events(samples):
     return events
 
 
-def segment(samples):
+def segment(samples, settle_sec=HANDLING_SETTLE_SEC):
     """Every stretch of this channel that is genuinely soil drying."""
-    handled, steps = handling_windows(samples)
+    handled, steps = handling_windows(samples, settle_sec)
     step_times = [entry["at"] for entry in steps]
 
     def in_handling(stamp):
@@ -420,13 +423,27 @@ def judge(analysis):
     interval = analysis.get("profile")
     if interval is None:
         return ("profile", "the profile likelihood could not be evaluated")
-    if not interval["bounded"]:
+    if interval.get("offScale"):
+        return ("profile",
+                "the fit puts the asymptote at %.1f, off the %.0f-%.0f scale a"
+                " moisture reading lives on, and no level on that scale fits"
+                " within %.0f %% of its SSE - so there is no interval to report"
+                % (interval.get("point", float("nan")), interval["floorLevel"],
+                   interval["topLevel"], (interval["threshold"] - 1.0) * 100.0))
+    if not interval["boundedBelow"]:
         return ("profile",
                 "the 95 %% profile interval reaches the bottom of the scale:"
                 " every asymptote from %.1f down to 0 fits within %.0f %% of"
                 " the best SSE, at n_eff = %.0f"
                 % (interval["high"], (interval["threshold"] - 1.0) * 100.0,
                    interval["nEff"]))
+    if not interval["boundedAbove"]:
+        return ("profile",
+                "the 95 %% profile interval runs up to the highest reading in"
+                " the segment, %.1f: the fit is as content with an asymptote at"
+                " the top of the record as at %.1f, so nothing above is"
+                " excluded either, at n_eff = %.0f"
+                % (interval["high"], interval["low"], interval["nEff"]))
     if interval["width"] > ASYMPTOTE_MAX_WIDTH:
         return ("profile",
                 "the 95 %% profile interval is %.1f points wide"
@@ -622,11 +639,19 @@ def print_report(results, tz, joint, handled_by_channel):
             print("    point estimate    %.2f  (tau %.2f h)"
                   % (item["fits"]["exp"]["asymptote"],
                      item["fits"]["exp"]["taus"][0] / 3600.0))
-            print("    95%% profile       [%s%.2f]  width %.1f  %s"
-                  % ("0 (floor of the scale), " if not interval["bounded"]
-                     else "%.2f, " % interval["low"],
-                     interval["high"], interval["width"],
-                     "BOUNDED" if interval["bounded"] else "UNBOUNDED"))
+            if interval.get("offScale"):
+                print("    95%% profile       none on the %.0f-%.0f scale"
+                      " - the fit puts it at %.2f"
+                      % (interval["floorLevel"], interval["topLevel"],
+                         interval.get("point", float("nan"))))
+            else:
+                print("    95%% profile       [%s, %s]  width %.1f  %s"
+                      % ("%.2f" % interval["low"] if interval["boundedBelow"]
+                         else "0 (floor of the scale)",
+                         "%.2f" % interval["high"] if interval["boundedAbove"]
+                         else "%.2f (the highest reading)" % interval["high"],
+                         interval["width"],
+                         "BOUNDED" if interval["bounded"] else "UNBOUNDED"))
             boot = item.get("bootstrapExp")
             if boot:
                 print("    block bootstrap   [%.2f, %.2f]  width %.2f"
@@ -644,10 +669,16 @@ def print_report(results, tz, joint, handled_by_channel):
                 loose = (not interval["bounded"]
                          or interval["width"] > ASYMPTOTE_MAX_WIDTH)
                 if ratio < 0.25 and loose:
-                    print("    The bootstrap is %.0fx tighter than the profile,"
+                    # The guard on interval["width"] protects the division that
+                    # makes `ratio`; this one protects the division that
+                    # inverts it. Every refit collapsing onto one level is a
+                    # zero-width bootstrap, and that is the MOST misleading
+                    # case, not a case to crash on.
+                    factor = ("%.0fx" % (1.0 / ratio) if ratio > 0.0
+                              else "immeasurably")
+                    print("    The bootstrap is %s tighter than the profile,"
                           " which is unbounded. That gap is the model being"
-                          " wrong, not the noise being small."
-                          % (1.0 / ratio))
+                          " wrong, not the noise being small." % factor)
             # Printed whichever model won, because "uncertain" and "already
             # refuted" are different verdicts and only one of them is fatal.
             hit = item.get("falsifiedExp")
@@ -732,7 +763,7 @@ def print_report(results, tz, joint, handled_by_channel):
 
 
 def self_test():
-    failures = list(models_self_test())
+    failures = list(models_self_test()) + list(evidence_self_test())
 
     def check(name, condition, detail=""):
         if not condition:
@@ -842,8 +873,7 @@ def main(argv=None):
         print("drying_fit self-test: %s" % ("FAILED" if problems else "ok"))
         return 1 if problems else 0
 
-    global _settle_sec
-    _settle_sec = args.settle_hours * 3600.0
+    settle_sec = args.settle_hours * 3600.0
 
     path = Path(args.db)
     if not path.is_file():
@@ -862,7 +892,7 @@ def main(argv=None):
     results = []
     handled_by_channel = {}
     for name, samples in sorted(found.items()):
-        blocks, handled, _ = segment(samples)
+        blocks, handled, _ = segment(samples, settle_sec)
         handled_by_channel[name] = handled
         for block in blocks:
             item = analyse(name, block, samples, args.step,
