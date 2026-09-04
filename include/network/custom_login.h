@@ -66,9 +66,21 @@ class CustomLogin
     // which this repo has already paid for once during an OTA. The cost is one
     // Session struct per extra slot of static RAM.
     static constexpr size_t kMaxSessions = 8;
+    // At most six of the eight slots may be REMEMBERED. A persistent slot is
+    // exempt from the idle TTL, so without a cap eight remembered logins hold
+    // the whole table forever and every ordinary login then evicts somebody's
+    // remembered device — the failure raising kMaxSessions was meant to
+    // relieve, merely relocated. Two free-or-ephemeral slots always remain, and
+    // session_slots::allocate() drains those first, so an authenticating loop
+    // churns them and never reaches a remembered browser.
+    static constexpr size_t kMaxPersistentSessions = 6;
     static constexpr size_t kMaxNonces = 8;
     static constexpr size_t kMaxAttemptTrackers = 16;
     static constexpr uint32_t kSessionTtlMs = 24UL * 60UL * 60UL * 1000UL;
+    // Remembered sessions do not idle out — that is what "remember me" means —
+    // so they expire on ABSOLUTE age instead, measured in wall-clock seconds so
+    // it survives the reboots that reset millis(). Thirty days.
+    static constexpr uint32_t kPersistentTtlSec = 30UL * 24UL * 60UL * 60UL;
     static constexpr uint32_t kNonceTtlMs = 30UL * 1000UL;
     static constexpr uint32_t kLockoutMs = 60UL * 1000UL;
     static constexpr uint8_t kMaxFailures = 5;
@@ -79,6 +91,11 @@ class CustomLogin
         char token[kTokenLen + 1];
         size_t userIndex;
         uint32_t lastSeenMs;
+        // Wall-clock seconds at creation, 0 when the clock was not yet synced.
+        // millis() cannot carry this: loadPersistentSessions() would restamp
+        // every restored session at every boot, so a millis-based expiry on a
+        // device that reboots weekly would never fire — a TTL in name only.
+        uint32_t createdAtEpoch;
         IPAddress ip;
         bool active;
         bool persistent; // survives reboots via /sessions.json
@@ -109,9 +126,17 @@ class CustomLogin
     void purgeExpiredNonces(uint32_t now);
     void purgeExpiredSessions(uint32_t now);
     Session* findSessionByToken(const String& token);
-    // Index of the slot serving this request, or kMaxSessions for none.
-    size_t sessionSlotIndex(AsyncWebServerRequest* request);
+    // The session serving this request, or nullptr. Four call sites used to
+    // repeat the header read and the lookup; one of them getting the guard
+    // wrong is an authentication bypass.
+    Session* sessionForRequest(AsyncWebServerRequest* request);
+    // Its slot, or session_slots::kNoSlot.
+    int sessionSlotIndex(AsyncWebServerRequest* request);
     Session* allocateSessionSlot();
+    // Frees a remembered slot when the cap is already met, so a new
+    // remember=true login always has one. Returns true when one was given up.
+    bool enforcePersistentCap();
+    void dropSession(Session& session);
     int findUser(const String& username) const;
     AttemptTracker* getOrCreateTracker(const IPAddress& ip);
     bool isLocked(const IPAddress& ip, uint32_t now);

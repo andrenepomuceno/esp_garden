@@ -117,6 +117,12 @@ handleUsersPost(AsyncWebServerRequest* request)
                                 String(g_configMinStringLength) + " characters");
                 return;
             }
+            // Unlike the ota.password push in handleConfigPost, this does NOT
+            // check whether the password actually differs. There the value is
+            // echoed back mechanically by a backup/restore round trip; here a
+            // human deliberately typed into a field that is blank by default
+            // and labelled "leave blank to keep it", so re-typing the same
+            // password is an intentional act and revoking is the right answer.
             userStore.upsert(username, password, (Role)role);
             passwordChanged = true;
         }

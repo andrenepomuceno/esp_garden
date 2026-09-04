@@ -316,6 +316,7 @@ class Handler(BaseHTTPRequestHandler):
                 params.get("username", [""])[0],
                 params.get("nonce", [""])[0],
                 params.get("response", [""])[0],
+                params.get("remember", [""])[0] == "true",
             )
             if token is None:
                 STATE.log("warning", "Unauthorized access attempt")

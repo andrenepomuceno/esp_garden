@@ -217,7 +217,29 @@ handleConfigPost(AsyncWebServerRequest* request)
         JSONVar otaSection = incoming["ota"];
         JSONVar usernameVar = otaSection["username"];
         const String username = (const char*)usernameVar;
-        if (!username.isEmpty()) {
+        const int index = username.isEmpty() ? -1 : userStore.find(username);
+
+        // "ota.password arrived unmasked" is NOT the same as "the password
+        // changed". The documented backup/restore round trip is
+        // GET ?secrets=1 -> edit -> POST, and that GET returns the password in
+        // plaintext, so an ordinary restore echoes the SAME password back. Left
+        // unchecked this re-salts it, rewrites /users.json and signs every
+        // admin out mid-restore with nothing actually altered. Comparing
+        // against the stored hash costs one SHA-256 and skips two blocking
+        // LittleFS writes on the common path.
+        bool changed = true;
+        if (index >= 0) {
+            const StoredUser& stored = userStore.at((size_t)index);
+            changed = (CustomLogin::hashPassword(stored.salt, newOtaPassword) !=
+                       stored.passwordHash);
+        }
+
+        if (username.isEmpty()) {
+            logger.warning("ota.password was set but ota.username is empty; "
+                           "the login credential was left untouched.");
+        } else if (!changed) {
+            logger.info("ota.password is unchanged; sessions were left alone.");
+        } else {
             userStore.upsert(username, newOtaPassword, Role::ADMIN);
             userStore.save();
 
@@ -227,13 +249,20 @@ handleConfigPost(AsyncWebServerRequest* request)
             // stay valid until logout", which was true and was the hole: while
             // only one persistent session per user could exist, the next login
             // revoked the old token by accident. Nothing does that now.
-            const int index = userStore.find(username);
-            if (index >= 0) {
+            //
+            // find() is re-read after the upsert because a brand-new account is
+            // appended, and its index is only known afterwards.
+            const int saved = userStore.find(username);
+            if (saved >= 0) {
                 reauth =
-                  customLogin.invalidateUserSessions((size_t)index, request);
+                  customLogin.invalidateUserSessions((size_t)saved, request);
             }
-            logger.warning("Credentials updated for '" + username +
-                           "'. Every session for that account was ended.");
+            // How many sessions actually ended is logged by
+            // invalidateUserSessions(), which is the only place that counts
+            // them. Claiming it here would overstate on an account that had
+            // none, and /logs is the only durable audit trail this device keeps
+            // for a credential write.
+            logger.warning("Login credential updated for '" + username + "'.");
         }
     }
 

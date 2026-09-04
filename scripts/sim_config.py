@@ -267,10 +267,33 @@ def config_apply(incoming: dict, caller_token: str = "") -> tuple[int, str, bool
     # And it is the SECOND door onto a password, so it owes the same session
     # invalidation POST /users does: several sessions per user are allowed now,
     # so logging in again no longer revokes the old token as a side effect.
+    #
+    # The account is the one the POSTED document names, never a hardcoded one:
+    # a config carrying ota.username "garden" must sign out "garden" here and
+    # on the device, or the two implementations sign out different people.
+    ota = incoming.get("ota")
+    ota_username = ota.get("username", "") if isinstance(ota, dict) else ""
     reauth = False
     if new_ota_password:
-        AUTH.set_password(new_ota_password)
-        reauth = AUTH.invalidate_user(AUTH.USERNAME, caller_token)
+        if not ota_username:
+            # The firmware skips the credential write entirely when the name is
+            # empty — there is no account to upsert into.
+            pass
+        elif (ota_username == AUTH.USERNAME
+              and AUTH.password_matches(new_ota_password)):
+            # Unchanged: the documented backup/restore round trip echoes the
+            # password back verbatim, and re-salting it would sign everybody
+            # out with nothing altered.
+            pass
+        else:
+            if ota_username == AUTH.USERNAME:
+                AUTH.set_password(new_ota_password)
+            elif not any(u["username"] == ota_username for u in SIM_USERS):
+                # Mirrors userStore.upsert() appending a new ADMIN account.
+                # Its password is not stored here: AuthSim holds one credential,
+                # so a non-admin name can never be logged in against anyway.
+                SIM_USERS.append({"username": ota_username, "role": 2})
+            reauth = AUTH.invalidate_user(ota_username, caller_token)
 
     return 200, "saved", reauth
 

@@ -2,12 +2,14 @@
 #include "core/config.h"
 #include "core/logger.h"
 #include "core/session_slots.h"
+#include "core/tasks.h" // g_safeTimestamp: one definition of "the clock is usable"
 #include "core/user_store.h"
 #include <Arduino_JSON.h>
 #include "core/filesystem.h"
 #include <esp_random.h>
 #include <mbedtls/sha256.h>
 #include <string.h>
+#include <time.h>
 
 CustomLogin customLogin;
 
@@ -20,6 +22,7 @@ CustomLogin::CustomLogin()
     for (auto& session : sessions) {
         session.active = false;
         session.persistent = false;
+        session.createdAtEpoch = 0;
     }
     for (auto& nonce : nonces) {
         nonce.active = false;
@@ -135,15 +138,55 @@ CustomLogin::consumeNonce(const String& candidate)
 void
 CustomLogin::purgeExpiredSessions(uint32_t now)
 {
+    const time_t wallClock = time(NULL);
+    const bool clockUsable = (wallClock >= g_safeTimestamp);
+    bool fileStale = false;
+
     for (auto& session : sessions) {
-        if (!session.active || session.persistent) {
+        if (!session.active) {
             continue;
         }
+
+        // A remembered session deliberately does NOT idle out — that is what
+        // the tick means — so it expires on absolute age instead of on disuse.
+        if (session.persistent) {
+            if (!clockUsable) {
+                continue; // no trustworthy clock yet; ask again next request
+            }
+            if (session.createdAtEpoch == 0) {
+                // Age unknown: either the clock was down when it was issued, or
+                // it was written by a firmware that stored no timestamp. Stamp
+                // it now and persist the stamp, so it ages from here rather
+                // than being immortal, and so a reboot does not reset it again.
+                session.createdAtEpoch = (uint32_t)wallClock;
+                fileStale = true;
+                continue;
+            }
+            if (((uint32_t)wallClock - session.createdAtEpoch) >
+                kPersistentTtlSec) {
+                dropSession(session);
+                fileStale = true;
+            }
+            continue;
+        }
+
         if ((now - session.lastSeenMs) > kSessionTtlMs) {
-            session.active = false;
-            memset(session.token, 0, sizeof(session.token));
+            dropSession(session);
         }
     }
+
+    if (fileStale) {
+        savePersistentSessions();
+    }
+}
+
+void
+CustomLogin::dropSession(Session& session)
+{
+    session.active = false;
+    session.persistent = false;
+    session.createdAtEpoch = 0;
+    memset(session.token, 0, sizeof(session.token));
 }
 
 CustomLogin::Session*
@@ -166,22 +209,45 @@ CustomLogin::findSessionByToken(const String& token)
 CustomLogin::Session*
 CustomLogin::allocateSessionSlot()
 {
-    const int index = session_slots::allocate(sessions, kMaxSessions);
-    return (index >= 0) ? &sessions[(size_t)index] : nullptr;
+    const int index = session_slots::allocate(sessions, kMaxSessions, millis());
+    return (index != session_slots::kNoSlot) ? &sessions[(size_t)index]
+                                             : nullptr;
 }
 
-size_t
-CustomLogin::sessionSlotIndex(AsyncWebServerRequest* request)
+bool
+CustomLogin::enforcePersistentCap()
+{
+    if (session_slots::countPersistent(sessions, kMaxSessions) <
+        kMaxPersistentSessions) {
+        return false;
+    }
+
+    const int oldest =
+      session_slots::oldestPersistent(sessions, kMaxSessions, millis());
+    if (oldest == session_slots::kNoSlot) {
+        return false;
+    }
+
+    logger.info("Session cap reached: forgetting the oldest remembered device.");
+    dropSession(sessions[(size_t)oldest]);
+    return true;
+}
+
+CustomLogin::Session*
+CustomLogin::sessionForRequest(AsyncWebServerRequest* request)
 {
     if (!request || !request->hasHeader("Authorization-Token")) {
-        return kMaxSessions;
+        return nullptr;
     }
-    Session* session =
-      findSessionByToken(request->getHeader("Authorization-Token")->value());
-    if (!session) {
-        return kMaxSessions;
-    }
-    return (size_t)(session - sessions);
+    return findSessionByToken(
+      request->getHeader("Authorization-Token")->value());
+}
+
+int
+CustomLogin::sessionSlotIndex(AsyncWebServerRequest* request)
+{
+    Session* session = sessionForRequest(request);
+    return session ? (int)(session - sessions) : session_slots::kNoSlot;
 }
 
 int
@@ -387,10 +453,29 @@ CustomLogin::handleLogin(AsyncWebServerRequest* request)
 
     clearFailures(ip);
 
+    const bool remembered = (remember == "true");
+
+    // Free a remembered slot BEFORE allocating, so a seventh remembered device
+    // takes the slot the oldest one just gave up instead of evicting a live
+    // ephemeral session.
+    bool fileStale = remembered && enforcePersistentCap();
+
     Session* slot = allocateSessionSlot();
     if (!slot) {
         request->send(503, "text/plain", "No session slots available");
         return;
+    }
+
+    // Overwriting the slot revokes whatever token it held. When that token was
+    // a REMEMBERED one it also lives in /sessions.json, and the file has to be
+    // rewritten even if this new login is not itself persistent — otherwise the
+    // next boot restores a token this firmware already threw away, and since
+    // purgeExpiredSessions() does not idle out a persistent slot, it would be
+    // live forever. Removing the per-user cap is exactly what makes a table
+    // full of remembered slots normal, so this is the common path, not a
+    // corner case.
+    if (slot->active && slot->persistent) {
+        fileStale = true;
     }
 
     generateRandomHex(slot->token, kTokenLen);
@@ -399,16 +484,23 @@ CustomLogin::handleLogin(AsyncWebServerRequest* request)
     slot->ip = ip;
     slot->active = true;
     slot->persistent = false;
+    slot->createdAtEpoch = 0;
 
-    if (remember == "true") {
-        // Several remembered devices per user, bounded only by the slot table.
-        // This used to revoke every other persistent session of the same user,
-        // which made "remember me" on a phone silently un-remember a laptop.
-        // What that eviction also did, invisibly, was revoke the old token
-        // whenever a password change was followed by a fresh login — so
-        // removing it is only safe alongside invalidateUserSessions(), which
-        // every password-writing path now calls.
+    if (remembered) {
+        // Several remembered devices per user, bounded by kMaxPersistentSessions
+        // rather than by the old one-per-user rule, which made "remember me" on
+        // a phone silently un-remember a laptop. What that eviction also did,
+        // invisibly, was revoke the old token whenever a password change was
+        // followed by a fresh login — so removing it is only safe alongside
+        // invalidateUserSessions(), which every password-writing path calls.
+        const time_t wallClock = time(NULL);
+        slot->createdAtEpoch =
+          (wallClock >= g_safeTimestamp) ? (uint32_t)wallClock : 0;
         slot->persistent = true;
+        fileStale = true;
+    }
+
+    if (fileStale) {
         savePersistentSessions();
     }
 
@@ -429,22 +521,17 @@ CustomLogin::handleLogin(AsyncWebServerRequest* request)
 void
 CustomLogin::handleLogout(AsyncWebServerRequest* request)
 {
-    if (request->hasHeader("Authorization-Token")) {
-        String token = request->getHeader("Authorization-Token")->value();
-        Session* session = findSessionByToken(token);
-        if (session) {
-            String name = (session->userIndex < userStore.size())
-                            ? userStore.at(session->userIndex).username
-                            : String("?");
-            logger.info("Logout: user='" + name + "'");
+    Session* session = sessionForRequest(request);
+    if (session) {
+        String name = (session->userIndex < userStore.size())
+                        ? userStore.at(session->userIndex).username
+                        : String("?");
+        logger.info("Logout: user='" + name + "'");
 
-            bool wasPersistent = session->persistent;
-            session->active = false;
-            session->persistent = false;
-            memset(session->token, 0, sizeof(session->token));
-            if (wasPersistent) {
-                savePersistentSessions();
-            }
+        const bool wasPersistent = session->persistent;
+        dropSession(*session);
+        if (wasPersistent) {
+            savePersistentSessions();
         }
     }
 
@@ -471,6 +558,8 @@ CustomLogin::savePersistentSessions()
         json += session.token;
         json += "\",\"u\":";
         json += String(session.userIndex);
+        json += ",\"c\":";
+        json += String(session.createdAtEpoch);
         json += "}";
     }
     json += "]";
@@ -507,39 +596,47 @@ CustomLogin::loadPersistentSessions()
     }
 
     int restored = 0;
+    int discarded = 0;
     for (int i = 0; i < arr.length(); ++i) {
         JSONVar entry = arr[i];
         if (JSON.typeof(entry) != "object") {
+            ++discarded;
             continue;
         }
 
         String token = (const char*)entry["t"];
         int userIndex = (int)entry["u"];
+        JSONVar createdVar = entry["c"];
+        const uint32_t createdAtEpoch = (JSON.typeof(createdVar) == "number")
+                                          ? (uint32_t)(double)createdVar
+                                          : 0;
         if (token.length() != kTokenLen) {
+            ++discarded;
             continue;
         }
         if (userIndex < 0 || (size_t)userIndex >= userStore.size()) {
+            ++discarded;
             continue;
         }
 
-        // allocateSessionSlot() evicts the least-recently-seen slot rather
-        // than failing, which is right for a login and wrong here: a file with
-        // more entries than slots would restore each one over the last and
-        // report a count nothing holds. Stop at the table size instead.
-        if ((size_t)restored >= kMaxSessions) {
-            logger.warning(String(kSessionFile) + " holds more than " +
-                           String((int)kMaxSessions) +
-                           " sessions; the rest were dropped.");
-            break;
+        // allocateSessionSlot() EVICTS rather than failing, which is right for
+        // a login and wrong here — a file with more entries than slots would
+        // restore each one over the last and report a count the table does not
+        // hold. Take only free slots, and only up to the persistent cap, or a
+        // full file would leave no room for an ordinary login at all.
+        const int index = ((size_t)restored < kMaxPersistentSessions)
+                            ? session_slots::allocateFree(sessions, kMaxSessions)
+                            : session_slots::kNoSlot;
+        if (index == session_slots::kNoSlot) {
+            ++discarded;
+            continue;
         }
 
-        Session* slot = allocateSessionSlot();
-        if (!slot) {
-            break;
-        }
+        Session* slot = &sessions[(size_t)index];
         token.toCharArray(slot->token, kTokenLen + 1);
         slot->userIndex = (size_t)userIndex;
         slot->lastSeenMs = millis();
+        slot->createdAtEpoch = createdAtEpoch;
         slot->active = true;
         slot->persistent = true;
         ++restored;
@@ -548,6 +645,17 @@ CustomLogin::loadPersistentSessions()
     if (restored > 0) {
         logger.info("Restored " + String(restored) +
                     " persistent session(s) from " + String(kSessionFile));
+    }
+
+    // Anything the table could not take is REWRITTEN AWAY, not merely skipped.
+    // Left on flash it would warn on every boot, and — because
+    // invalidateUserSessions() can only rewrite the file from the slots it
+    // loaded — a token living solely in that untouched tail would survive the
+    // password change that was supposed to kill it.
+    if (discarded > 0) {
+        logger.warning("Dropped " + String(discarded) + " unusable or surplus "
+                       "entr(y/ies) from " + String(kSessionFile) + ".");
+        savePersistentSessions();
     }
 }
 
@@ -560,11 +668,11 @@ CustomLogin::begin()
 void
 CustomLogin::invalidateAllSessions()
 {
-    for (auto& session : sessions) {
-        session.active = false;
-        session.persistent = false;
-        memset(session.token, 0, sizeof(session.token));
-    }
+    session_slots::invalidateAll(
+      sessions, kMaxSessions, session_slots::kNoSlot, [](Session& session) {
+          session.createdAtEpoch = 0;
+          memset(session.token, 0, sizeof(session.token));
+      });
     savePersistentSessions();
     logger.warning("All sessions invalidated; every client must sign in again.");
 }
@@ -573,7 +681,7 @@ bool
 CustomLogin::invalidateUserSessions(size_t userIndex,
                                     AsyncWebServerRequest* request)
 {
-    const size_t callerSlot = sessionSlotIndex(request);
+    const int callerSlot = sessionSlotIndex(request);
 
     const session_slots::InvalidateResult result =
       session_slots::invalidateUser(sessions,
@@ -581,6 +689,7 @@ CustomLogin::invalidateUserSessions(size_t userIndex,
                                     userIndex,
                                     callerSlot,
                                     [](Session& session) {
+                                        session.createdAtEpoch = 0;
                                         memset(session.token,
                                                0,
                                                sizeof(session.token));
@@ -607,16 +716,7 @@ CustomLogin::authorizeFunction(AsyncWebServerRequest* request,
     uint32_t now = millis();
     purgeExpiredSessions(now);
 
-    if (!request->hasHeader("Authorization-Token")) {
-        AsyncWebServerResponse* response =
-          request->beginResponse(401, "text/plain", "Unauthorized");
-        response->addHeader("Cache-Control", "no-store");
-        request->send(response);
-        return;
-    }
-
-    String token = request->getHeader("Authorization-Token")->value();
-    Session* session = findSessionByToken(token);
+    Session* session = sessionForRequest(request);
     if (!session) {
         AsyncWebServerResponse* response =
           request->beginResponse(401, "text/plain", "Unauthorized");
@@ -632,12 +732,7 @@ CustomLogin::authorizeFunction(AsyncWebServerRequest* request,
 bool
 CustomLogin::sessionRole(AsyncWebServerRequest* request, Role& outRole)
 {
-    if (!request->hasHeader("Authorization-Token")) {
-        return false;
-    }
-
-    String token = request->getHeader("Authorization-Token")->value();
-    Session* session = findSessionByToken(token);
+    Session* session = sessionForRequest(request);
     if (!session || session->userIndex >= userStore.size()) {
         return false;
     }

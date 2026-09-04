@@ -12,8 +12,8 @@ using namespace session_slots;
 namespace {
 
 // The minimum a slot has to expose. The firmware's CustomLogin::Session also
-// carries a token and an IPAddress, neither of which this policy may know
-// about — that is exactly why the policy is a template over the slot type.
+// carries a token, a creation stamp and an IPAddress, none of which this policy
+// may know about — that is exactly why it is a template over the slot type.
 struct TestSlot
 {
     size_t userIndex;
@@ -42,6 +42,8 @@ occupy(TestSlot& slot, size_t user, uint32_t seen, bool persistent)
 }
 
 // Counts calls, so a test can assert the wipe callback ran exactly per drop.
+// Reset from setUp(), not from individual tests: resetting in only some of them
+// is what makes a suite pass in one order and fail in another.
 size_t g_drops = 0;
 void
 countDrop(TestSlot&)
@@ -51,6 +53,12 @@ countDrop(TestSlot&)
 
 } // namespace
 
+void
+reset_session_slots_state(void)
+{
+    g_drops = 0;
+}
+
 static void
 test_allocate_prefers_a_free_slot_over_the_least_recently_seen()
 {
@@ -59,7 +67,7 @@ test_allocate_prefers_a_free_slot_over_the_least_recently_seen()
     occupy(slots[0], 0, 100, false);
     occupy(slots[1], 0, 1, false); // the LRU, but slot 2 is free
 
-    TEST_ASSERT_EQUAL_INT(2, allocate(slots, kCount));
+    TEST_ASSERT_EQUAL_INT(2, allocate(slots, kCount, 200));
 }
 
 static void
@@ -72,7 +80,126 @@ test_a_full_table_evicts_the_least_recently_seen()
     }
     slots[5].lastSeenMs = 7; // oldest
 
-    TEST_ASSERT_EQUAL_INT(5, allocate(slots, kCount));
+    TEST_ASSERT_EQUAL_INT(5, allocate(slots, kCount, 2000));
+}
+
+// millis() wraps every 49.7 days. Ranking slots by comparing lastSeenMs as
+// absolute values evicts the slot with the SMALLEST number, which after a wrap
+// is the most recently seen session — so a device up for seven weeks starts
+// signing out whoever is actively using it and keeps the stale entries. The
+// earlier version of this file had exactly that bug, and the first tests could
+// not see it because they only ever fed increasing timestamps.
+static void
+test_allocate_survives_the_millis_wraparound()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+
+    const uint32_t now = 5000; // just after the wrap
+    for (size_t i = 0; i < kCount; ++i) {
+        // Seen a few seconds ago, i.e. just BEFORE the wrap: a huge number.
+        occupy(slots[i], i, (uint32_t)(0xFFFFFF00u + i), false);
+    }
+    // The genuinely oldest: seen ~60 s before the wrap.
+    slots[3].lastSeenMs = 0xFFFFFF00u - 60000u;
+    // A slot stamped after the wrap is the NEWEST, and must not be chosen.
+    slots[6].lastSeenMs = 4990;
+
+    TEST_ASSERT_EQUAL_INT(3, allocate(slots, kCount, now));
+}
+
+static void
+test_age_is_computed_across_the_wraparound()
+{
+    // 100 ms before the wrap to 50 ms after it is 150 ms, not 4.29 billion.
+    TEST_ASSERT_EQUAL_UINT32(150, age(50u, 0xFFFFFFFFu - 99u));
+}
+
+// A login must never cost somebody their remembered device while an ordinary
+// slot is available to take instead.
+static void
+test_allocate_evicts_an_ephemeral_slot_before_a_persistent_one()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    for (size_t i = 0; i < kCount; ++i) {
+        occupy(slots[i], i, (uint32_t)(1000 + i), true);
+    }
+    // The oldest slot in the table is remembered; slot 7 is ordinary and newer.
+    slots[0].lastSeenMs = 1;
+    occupy(slots[7], 7, 9000, false);
+
+    TEST_ASSERT_EQUAL_INT(7, allocate(slots, kCount, 10000));
+}
+
+// ...but a login is never REFUSED. With every slot remembered, the oldest one
+// is given up rather than answering 503.
+static void
+test_a_table_of_only_persistent_slots_still_yields_one()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    for (size_t i = 0; i < kCount; ++i) {
+        occupy(slots[i], i, (uint32_t)(1000 + i * 10), true);
+    }
+    slots[2].lastSeenMs = 5;
+
+    TEST_ASSERT_EQUAL_INT(2, allocate(slots, kCount, 4000));
+}
+
+// The restore path must not evict: overwriting a slot it just filled would
+// report a count the table does not hold.
+static void
+test_allocate_free_refuses_rather_than_evicting()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    TEST_ASSERT_EQUAL_INT(0, allocateFree(slots, kCount));
+
+    for (size_t i = 0; i < kCount; ++i) {
+        occupy(slots[i], i, (uint32_t)i, true);
+    }
+    TEST_ASSERT_EQUAL_INT(kNoSlot, allocateFree(slots, kCount));
+}
+
+static void
+test_the_persistent_census_counts_only_live_remembered_slots()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    occupy(slots[0], 0, 10, true);
+    occupy(slots[1], 1, 20, false);
+    occupy(slots[2], 2, 30, true);
+    slots[3].persistent = true; // inactive: a stale flag, not a session
+
+    TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)countPersistent(slots, kCount));
+}
+
+static void
+test_the_cap_gives_up_the_oldest_remembered_slot()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    occupy(slots[0], 0, 900, true);
+    occupy(slots[1], 1, 100, false); // older, but not remembered
+    occupy(slots[2], 2, 300, true);  // the oldest remembered one
+
+    TEST_ASSERT_EQUAL_INT(2, oldestPersistent(slots, kCount, 5000));
+
+    clear(slots);
+    TEST_ASSERT_EQUAL_INT(kNoSlot, oldestPersistent(slots, kCount, 5000));
+}
+
+static void
+test_oldest_persistent_survives_the_millis_wraparound()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    occupy(slots[0], 0, 0xFFFFFF00u, true);          // just before the wrap
+    occupy(slots[1], 1, 0xFFFFFF00u - 60000u, true); // a minute earlier
+    occupy(slots[2], 2, 300, true);                  // just after it: newest
+
+    TEST_ASSERT_EQUAL_INT(1, oldestPersistent(slots, kCount, 5000));
 }
 
 // The feature. Allocation has never cared who owns a slot, so two devices for
@@ -84,14 +211,14 @@ test_one_user_can_hold_several_sessions_at_once()
     TestSlot slots[kCount];
     clear(slots);
 
-    const int first = allocate(slots, kCount);
+    const int first = allocate(slots, kCount, 100);
     occupy(slots[(size_t)first], 3, 10, true);
 
-    const int second = allocate(slots, kCount);
+    const int second = allocate(slots, kCount, 200);
     TEST_ASSERT_NOT_EQUAL(first, second);
     occupy(slots[(size_t)second], 3, 20, true);
 
-    const int third = allocate(slots, kCount);
+    const int third = allocate(slots, kCount, 300);
     TEST_ASSERT_NOT_EQUAL(first, third);
     TEST_ASSERT_NOT_EQUAL(second, third);
     occupy(slots[(size_t)third], 3, 30, false);
@@ -111,9 +238,8 @@ test_invalidate_ends_every_session_of_one_user_and_no_other()
     occupy(slots[2], 2, 30, true);
     occupy(slots[3], 1, 40, true);
 
-    g_drops = 0;
     const InvalidateResult result =
-      invalidateUser(slots, kCount, 2, kCount, countDrop);
+      invalidateUser(slots, kCount, 2, kNoSlot, countDrop);
 
     TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)result.dropped);
     TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)g_drops);
@@ -132,14 +258,14 @@ test_invalidate_reports_whether_a_persistent_session_died()
     clear(slots);
     occupy(slots[0], 5, 10, false);
 
-    InvalidateResult result = invalidateUser(slots, kCount, 5, kCount, countDrop);
+    InvalidateResult result = invalidateUser(slots, kCount, 5, kNoSlot, countDrop);
     TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)result.dropped);
     TEST_ASSERT_FALSE(result.persistentDropped);
 
     clear(slots);
     occupy(slots[0], 5, 10, false);
     occupy(slots[1], 5, 20, true);
-    result = invalidateUser(slots, kCount, 5, kCount, countDrop);
+    result = invalidateUser(slots, kCount, 5, kNoSlot, countDrop);
     TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)result.dropped);
     TEST_ASSERT_TRUE(result.persistentDropped);
 }
@@ -179,9 +305,8 @@ test_invalidate_ignores_slots_that_are_already_inactive()
     slots[0].userIndex = 7; // stale, already signed out
     occupy(slots[1], 7, 20, false);
 
-    g_drops = 0;
     const InvalidateResult result =
-      invalidateUser(slots, kCount, 7, kCount, countDrop);
+      invalidateUser(slots, kCount, 7, kNoSlot, countDrop);
 
     TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)result.dropped);
     TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)g_drops);
@@ -195,7 +320,7 @@ test_invalidate_on_a_user_with_no_sessions_changes_nothing()
     occupy(slots[0], 1, 10, true);
 
     const InvalidateResult result =
-      invalidateUser(slots, kCount, 9, kCount, countDrop);
+      invalidateUser(slots, kCount, 9, kNoSlot, countDrop);
 
     TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)result.dropped);
     TEST_ASSERT_FALSE(result.persistentDropped);
@@ -203,15 +328,49 @@ test_invalidate_on_a_user_with_no_sessions_changes_nothing()
     TEST_ASSERT_TRUE(slots[0].active);
 }
 
+// A user DELETE shifts every later index, so nothing may be spared.
+static void
+test_invalidate_all_ends_every_account_and_wipes_the_stale_slots()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    occupy(slots[0], 0, 10, true);
+    occupy(slots[1], 1, 20, false);
+    occupy(slots[4], 2, 30, true);
+    slots[5].persistent = true; // stale flag on an inactive slot
+
+    const InvalidateResult result = invalidateAll(slots, kCount, 1, countDrop);
+
+    TEST_ASSERT_EQUAL_UINT32(3, (uint32_t)result.dropped);
+    TEST_ASSERT_TRUE(result.persistentDropped);
+    TEST_ASSERT_TRUE(result.droppedSlot);
+    // The callback runs for every slot, so the token bytes are wiped whether or
+    // not the slot was live.
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)kCount, (uint32_t)g_drops);
+    for (size_t i = 0; i < kCount; ++i) {
+        TEST_ASSERT_FALSE(slots[i].active);
+        TEST_ASSERT_FALSE(slots[i].persistent);
+    }
+}
+
 void
 run_session_slots_tests(void)
 {
     RUN_TEST(test_allocate_prefers_a_free_slot_over_the_least_recently_seen);
     RUN_TEST(test_a_full_table_evicts_the_least_recently_seen);
+    RUN_TEST(test_allocate_survives_the_millis_wraparound);
+    RUN_TEST(test_age_is_computed_across_the_wraparound);
+    RUN_TEST(test_allocate_evicts_an_ephemeral_slot_before_a_persistent_one);
+    RUN_TEST(test_a_table_of_only_persistent_slots_still_yields_one);
+    RUN_TEST(test_allocate_free_refuses_rather_than_evicting);
+    RUN_TEST(test_the_persistent_census_counts_only_live_remembered_slots);
+    RUN_TEST(test_the_cap_gives_up_the_oldest_remembered_slot);
+    RUN_TEST(test_oldest_persistent_survives_the_millis_wraparound);
     RUN_TEST(test_one_user_can_hold_several_sessions_at_once);
     RUN_TEST(test_invalidate_ends_every_session_of_one_user_and_no_other);
     RUN_TEST(test_invalidate_reports_whether_a_persistent_session_died);
     RUN_TEST(test_invalidate_reports_when_the_caller_signed_itself_out);
     RUN_TEST(test_invalidate_ignores_slots_that_are_already_inactive);
     RUN_TEST(test_invalidate_on_a_user_with_no_sessions_changes_nothing);
+    RUN_TEST(test_invalidate_all_ends_every_account_and_wipes_the_stale_slots);
 }

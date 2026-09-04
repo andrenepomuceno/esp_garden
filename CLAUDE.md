@@ -458,32 +458,53 @@ called it missing three times.
 
 **Unverified — written, compiles, never run on hardware:**
 
-- **Several sessions per user, and the revocation that had to come with it**
-  (firmware 2.11.0). Host-tested in `test_session_slots`, built in all five
-  envs, and **verified end to end against `scripts/dev_server.py`** — four
-  remembered logins alive at once, a password change from one of them ending all
-  four and answering `{"reauth":true}`, the old password refused and the new one
-  accepted, an ADMIN changing another account's password staying signed in, a
-  role-only change signing nobody out, a ninth login evicting rather than being
-  refused, and `POST /config.json` with a new `ota.password` reporting `reauth`
-  too. **The device has run none of it.** Specifically untested on hardware:
+- **Several sessions per user, the bounds that had to replace the old one, and
+  the revocation that had to come with it** (firmware 2.11.0, corrected in
+  2.11.1). Host-tested in `test_session_slots` (17 cases), built in all five
+  envs. **Nothing here has run on the device.**
 
-  - **`kMaxSessions` = 8 on the real chip.** The +352 bytes is a build number
-    (`espgarden2`, 66 412 → 66 764 static), not a measurement of the device
-    holding eight live sessions. Nothing has observed the heap with eight
-    tokens issued.
-  - **The persistent restore at the new size.** `/sessions.json` has never been
-    written with more than one entry, so neither the larger file nor the new
-    `kMaxSessions` stop in `loadPersistentSessions()` has been exercised, and no
-    file written by the 4-slot firmware has been loaded by this one — the
-    argument that it still loads is that the format did not change, which is an
-    argument, not a run.
+  **A correction to this file's own claim, which is why the rest of this entry
+  is worded carefully.** The 2.11.0 entry said the behaviour was *"verified end
+  to end against `scripts/dev_server.py`"*. That was **false for the half that
+  mattered**: the simulator's `/login` did not read the `remember` parameter at
+  all, `AuthSim` had no persistent flag, no session file and no restore path, so
+  **the persistence half was never executed anywhere** — and a code review found
+  two token-resurrection bugs living in exactly the code that claim covered. The
+  claim was the reason they stayed invisible. What had actually run in 2.11.0
+  was four concurrent tokens over HTTP, and nothing about `remember=true`.
+
+  The simulator now implements the whole contract — `remember`, the cap, tiered
+  eviction, a `/sessions.json` equivalent under `.pio/`, the TTL — and seven
+  reboot and eviction properties were executed against it in process (a
+  remembered token surviving a reboot; forty plain logins evicting no remembered
+  device; the seventh remembered device forgetting the first and it staying dead
+  across a reboot; a 20-entry file pruned to 6 on load; a token past the TTL
+  dropped; a revoked remembered token staying revoked). **That is evidence about
+  `scripts/sim_auth.py`, not about the firmware** — the two are separate
+  implementations, which is the entire point of keeping the mirror, and a green
+  mirror has never been a statement about the C++.
+
+  Specifically untested on hardware:
+
+  - **`kMaxSessions` = 8 and `kMaxPersistentSessions` = 6 on the real chip.**
+    The RAM figure is a build number (`espgarden2`, 66 412 → 66 796 static),
+    not a measurement of the device holding eight live sessions.
+  - **Every `/sessions.json` path.** The file has never been written with more
+    than one entry on the device, so the `"c"` timestamp, the load-time prune,
+    the restore cap and the rewrite-on-eviction have run only in the mirror. A
+    2.11.0 file carries no `"c"`; those entries load and are stamped at the
+    first purge with a synced clock, which has also never happened on a board.
+  - **The 30-day persistent TTL.** It cannot be exercised in under 30 days by
+    definition, and its wall-clock anchor depends on NTP having answered before
+    a remembered login — `customLogin.begin()` runs in `webSetup()`, which is
+    step 8, *before* the NTP wait in step 9, so a session created while the
+    clock is down stores 0 and is stamped later.
   - **`invalidateUserSessions()` on the board.** Neither password door has been
-    walked on hardware: no `POST /users` and no `ota.password` push has ended a
-    session on 6224, and the warning it logs has never printed there.
-  - **The two pages signing themselves out.** `users.js` and `config.js` were
-    exercised against the simulator only; no browser has been redirected to the
-    login page by a device response.
+    walked on hardware; the warning it logs has never printed there.
+  - **The unchanged-password check on a real restore.** `GET ?secrets=1` → POST
+    against 6224 has not been repeated since 2.11.1.
+  - **The two pages signing themselves out.** No browser has been redirected to
+    the login page by a device response.
 
 - **The whole evapotranspiration model** (firmware 2.10.0). Host-tested in
   `test_evapotranspiration`, built in all five envs, and **shipped OFF**:
@@ -904,32 +925,53 @@ Facts worth knowing before touching it:
 
 **A `Session` stores the user's INDEX, not the username.** `UserStore::remove()` erases from a `std::vector`, so every later entry shifts and a live session silently starts resolving to a different account — and to its role. `POST /users` with `action=delete` therefore calls `customLogin.invalidateAllSessions()` and answers `{"reauth":true}`; the page signs itself out. Any future code path that reorders the store owes the same call. **`upsert()` is not such a path** — it replaces in place or appends, so no index moves and a per-user invalidation is exact.
 
-### One user, several devices — and the hole that opened
+### One user, several devices — and the bounds that replace the old cap
 
 Ordinary sessions were **always** multi-device: `allocateSessionSlot()` takes
 any free slot and has never cared who owns it. What was restricted was the
 REMEMBERED session — `handleLogin()` deactivated every other `active &&
 persistent` session with the same `userIndex`, so ticking "remember me" on a
 phone silently un-remembered the laptop. That eviction is gone, and
-**`kMaxSessions` is 8, not 4**: four slots shared across every account made
-multi-device unusable at two people with two devices each, and the OTA note
-above is the same table running out from the other direction. The cost is one
-`Session` per slot — **measured at +352 bytes of static RAM on `espgarden2`**,
-against ~110 KB of free heap.
+**`kMaxSessions` is 8, not 4**.
+
+**Removing it was not free, because that eviction was the only thing bounding
+remembered sessions**, and a persistent slot is exempt from the idle TTL. Eight
+remembered logins would have held every slot for ever, and from then on every
+ordinary login evicts somebody's remembered device — which is the OTA failure
+above, relocated rather than fixed. Two deliberate bounds replace it:
+
+- **`kMaxPersistentSessions` = 6 of 8.** Two slots always remain for ordinary
+  logins. A seventh remembered device forgets the oldest remembered one, which
+  is explicable to an operator in a way that a refused login is not.
+- **Tiered eviction in `session_slots::allocate()`**: a free slot, else the
+  oldest NON-persistent slot, else the oldest persistent one. With the cap in
+  force the third tier is unreachable, so **a script authenticating in a loop
+  churns the two ephemeral slots and never touches a remembered browser**. It
+  stays as a tier anyway, so a login can never be refused outright.
+- **A 30-day absolute TTL on remembered sessions**, anchored on WALL-CLOCK
+  seconds stored in `/sessions.json` as `"c"`. millis() cannot carry it:
+  `loadPersistentSessions()` restamps every restored session at boot, so a
+  millis-based expiry on a device that reboots weekly would never fire — a TTL
+  in name only. An entry with no `"c"` (anything written by 2.11.0) is stamped
+  at the first purge that has a synced clock, so it ages from then rather than
+  being immortal.
+
+The cost is one `Session` per slot plus four bytes for the stamp — **measured at
++384 bytes of static RAM on `espgarden2`** (66 412 → 66 796), against ~110 KB of
+free heap.
 
 **More concurrent live tokens is a wider surface than before, and it is
 accepted deliberately.** Eight bearer tokens can be valid at once where four
-could; a stolen one still has the 24 h idle TTL and nothing else. What buys it
-back is that revocation is now explicit instead of accidental.
+could. What buys it back is that revocation is now explicit instead of
+accidental, and that a remembered token is no longer immortal.
 
 **Because the restriction was ALSO doing security work, removing it opened a
-hole that had to close in the same commit.** Nothing invalidated a session when
-a password changed — `invalidateAllSessions()` was called from exactly one
-place, the user DELETE. That was survivable only because one persistent session
-per user meant the next login revoked the old token as a by-product. Without
-the restriction, changing a compromised password would have left every stolen
-token alive, which is the precise thing the person changing it is trying to
-prevent.
+hole that had to close with it.** Nothing invalidated a session when a password
+changed — `invalidateAllSessions()` was called from exactly one place, the user
+DELETE. That was survivable only because one persistent session per user meant
+the next login revoked the old token as a by-product. Without the restriction,
+changing a compromised password would have left every stolen token alive, which
+is the precise thing the person changing it is trying to prevent.
 
 So **every path that writes a password calls
 `customLogin.invalidateUserSessions(index, request)`**, and there are two of
@@ -953,11 +995,45 @@ A **role** change invalidates nothing, on purpose: `sessionRole()` resolves the
 role from the store on every request, so a demotion is already in force for
 live sessions.
 
-`/sessions.json` did not change format — a file written by the 4-slot firmware
-loads unchanged. What did change is that `loadPersistentSessions()` now stops at
-`kMaxSessions` instead of calling `allocateSessionSlot()`, which **evicts rather
-than failing**: a file with more entries than slots would have restored each one
-over the last and reported a count nothing held.
+**"`ota.password` arrived unmasked" is NOT "the password changed", and treating
+it as such broke the documented backup.** The restore round trip this file
+lists as verified is `GET /config.json?secrets=1` → edit → `POST`, and that GET
+returns the password in PLAINTEXT — so an ordinary restore echoes the same
+password back. Invalidating on that re-salts an unchanged credential, rewrites
+`/users.json`, and signs every admin out mid-restore with nothing altered.
+`handleConfigPost` now compares `hashPassword(stored.salt, incoming)` against
+the stored hash and does nothing when they match, which also skips two blocking
+LittleFS writes on the common path. **The account it acts on is the one the
+POSTED document names**, not a hardcoded one, and an empty `ota.username`
+writes nothing at all.
+
+**Traps in the session table that were real defects first:**
+
+- **An evicted persistent token used to come back at the next boot.**
+  `handleLogin()` overwrites the token of whatever slot it was given, but the
+  file was rewritten only when the NEW login was itself `remember=true`. A
+  plain login that displaced a remembered slot therefore left the dead token in
+  `/sessions.json`, `loadPersistentSessions()` restored it active and
+  persistent, and `purgeExpiredSessions()` skips persistent slots — so a token
+  the firmware had already thrown away was live for ever. The file is now
+  rewritten whenever a remembered token is created **or destroyed**.
+- **`loadPersistentSessions()` must not use `allocateSessionSlot()`.** That
+  function EVICTS rather than failing, so a file with more entries than slots
+  restored each one over the last and reported a count the table did not hold.
+  It uses `session_slots::allocateFree()`, which returns `kNoSlot` instead.
+- **A surplus entry is rewritten away, not merely skipped.** Left on flash it
+  warns at every boot, and — because `invalidateUserSessions()` can only rewrite
+  the file from the slots it loaded — a token living solely in that untouched
+  tail would survive the password change meant to kill it.
+- **LRU must be computed as `now - lastSeenMs`, never by comparing the
+  timestamps.** millis() wraps at 49.7 days, and absolute comparison then evicts
+  the MOST recently seen session while keeping the stale ones. `session_slots.h`
+  ranks by age for that reason, and `test_allocate_survives_the_millis_wraparound`
+  pins it — the first version of those tests fed only increasing values and could
+  not see the bug.
+
+`/sessions.json` gained one optional field (`"c"`) and is otherwise unchanged, so
+a file written by 2.11.0 or by the 4-slot firmware still loads.
 
 **There is no default password compiled into the firmware.** `UserStore::load()` seeds the first account by migrating `config.json`'s `ota.username` / `ota.password` into `/users.json` as ADMIN (salted SHA-256). A device whose config never loaded has no users, logs a FATAL, and the web UI is unreachable by design.
 
@@ -968,9 +1044,11 @@ image in under a minute; a script here took ~7 minutes for the same image, and
 the difference was that script's own wait loop from a previous run, still
 logging in every 5 s while the upload was in flight. The board serves HTTP from
 a single `async_tcp` task, so anything polled during an upload competes with it
-— and `kMaxSessions` is 8, so a loop that authenticates still evicts whoever is
-using the browser once it has burned through the table. (It was 4 when this was
-first written, which is part of why 8 exists.) This file already recorded the same mistake once, under the
+— and a loop that authenticates burns session slots. `kMaxSessions` was 4 when
+this was first written, which is part of why it is 8; the tiering added with the
+persistent cap means such a loop can no longer evict a REMEMBERED browser, but
+it will still churn the two ephemeral slots and sign out an operator who did not
+tick "remember me". This file already recorded the same mistake once, under the
 filesystem upload; it was made again. **Wait on liveness with an unauthenticated
 GET of a public path, authenticate once at the end, and send nothing else while
 an upload is running.**
