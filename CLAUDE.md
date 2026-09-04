@@ -40,7 +40,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | Filesystem image | `scripts/build_assets.py` → `.pio/assets/` | Bundles each page's scripts into one file and gzips everything the web server serves. `data_dir` points the image here, so `-t buildfs` cannot pack the unbundled sources |
 | Partitions | `partitions/esp_garden_4mb.csv` | 1.69 MB per OTA slot, 512 KB LittleFS. **Cannot be changed over OTA** |
 | Filesystem | `include/core/filesystem.h` | The one line naming the driver. Everything else says `FILESYSTEM`, never `LittleFS` |
-| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `cloud_fit.py` (fits the clear-sky reference from the archive and writes the generated header), `et0_fit.py` (geocodes `postalCode`, pulls the public daily record and scores the device's ET0 against a station's — it is allowed to answer "do not enable this", and did), `feeds_plot.py`, `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`, wide CSV on `--csv`), `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090** — charts, the dead-key inventory, boots and gaps; it imports `tb_export`'s seam constant and its sync rather than restating either) |
+| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` · `sim_moisture.py` · `sim_config.py` · `sim_auth.py` (host simulator of the device HTTP API), `check_lines.py` (the file-size gate), `moisture_calibration.py`, `moisture_fit.py` + `moisture_stats.py` (the PC-side moisture fit: reads the archive and the device's config, detects the configuration seams and the handling transients itself, and **refuses to emit a parameter the data cannot support**, naming the check that refused it), `cloud_fit.py` (fits the clear-sky reference from the archive and writes the generated header), `et0_fit.py` (geocodes `postalCode`, pulls the public daily record and scores the device's ET0 against a station's — it is allowed to answer "do not enable this", and did), `feeds_plot.py`, `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`, wide CSV on `--csv`), `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090** — charts, the dead-key inventory, boots and gaps; it imports `tb_export`'s seam constant and its sync rather than restating either) |
 
 **No source file exceeds 1000 lines, and `python scripts/check_lines.py` is what
 says so.** The rule sat in this file unenforced for long enough that two files
@@ -514,6 +514,27 @@ called it missing three times.
     [Evapotranspiration](#evapotranspiration-the-fit-said-no-and-that-is-the-result).
   - **The dropped bare `relay` key.** Nothing here is known to read it, but no
     consumer was checked.
+
+- **The PC-side moisture fit's ACCEPT path** (`scripts/moisture_fit.py`,
+  2026-09-03). The tool has run end to end against the real archive and the
+  live device's `GET /config.json`, and every branch it took was a REFUSAL —
+  which is the outcome the data supports and is recorded as a result, not as a
+  failure. What has never happened is the other half: no real probe has ever
+  produced a proposed `dry`/`wet` pair, so the acceptance path is exercised only
+  by `--self-test`'s synthetic ten-cycle garden. Specifically unexercised:
+
+  - **`--push`.** Written, off by default, and never once run. It POSTs the
+    masked document back with `moisture` replaced; the change would land at the
+    next boot. No byte has been written to 192.168.1.55 by this tool.
+  - **The `WET_ANCHOR_MAX_LAG_SEC` = 2 h window.** Chosen as the firmware's
+    30-minute wet window plus the drift detector's own 30-minute smear, doubled
+    for headroom. It is arithmetic about the two thresholds, not a measurement
+    of how long a real pot takes to settle.
+  - **`DRIFT_MIN_CHANGE` = 1.0 point / 30 min against a whole season.** It sits
+    two orders of magnitude above the measured -0.323 points/day and an order
+    below a handled probe, so it has margin on both sides — but it has only
+    been tested against a spring week. A wetter month that dries faster is the
+    case that would move it.
 
 - **Per-probe polarity and probe power gating** (firmware 2.7.0). The config
   keys parse, the five envs build, and the save/load round trip is verified
@@ -1293,6 +1314,62 @@ why they cannot share a threshold.
   channel/field and states which question the data can answer. It refuses to
   report a drying rate over a window shorter than three days, after an early run
   extrapolated a 0.2-day window into "704 points/day".
+
+### The fit moved to the workstation, and it fitted nothing
+
+`scripts/moisture_fit.py` (with `scripts/moisture_stats.py` beside it) fits the
+same parameters here, off the whole archive rather than off the 24 h the board
+can hold, and emits them as JSON in a dry run. The device keeps its incremental
+half: `moistureModelTrain()` decays the stored statistics and folds the new day
+in, so a seed ages out on its own and is never a freeze.
+
+**Run against the live device and the full archive on 2026-09-03 it proposed
+NOTHING, and that is the honest answer.** Every refusal is named, per probe,
+exactly as `/moisture.json` names its gates:
+
+- **Zero watering events on either probe's own pump since the sensor change.**
+  The last `Zona 1` and `Zona 3` starts were both 2026-08-31 19:46; every relay
+  activation since is `Reservatorio`, which feeds no probe. The classifier
+  labels from watering events, so there is nothing to bound a cycle with —
+  `only 0 watering events, 6 needed`.
+- **Both probes were handled on 2026-09-03 and are still equilibrating.** The
+  tool finds this itself rather than being told: a sustained drift whose change
+  across 30 minutes dominates the residual spread. Measured on probe 0 that
+  night, `+20.74 points` over the last two hours at `+0.536/5 min`; on probe 1,
+  `+15.05` at `+0.537/5 min`. So there is no settled plateau after the last
+  unexplained step, and an anchor read now would be precise and wrong.
+
+Two findings from the run are worth keeping whatever happens next:
+
+- **`moisture2` changed meaning on 2026-09-02 13:41 and nothing in the series
+  says so.** The archive keys probes and relays POSITIONALLY, so deleting
+  `Umidade Zona 2` renumbered everything after it: before that minute
+  `moisture2` is the pot Zona 2 waters, after it the pot Zona 3 waters. The
+  archive states the relay half outright — the `relay`/`relayName` pair shows
+  the reservoir pump moving from index 3 to index 2 — and states the probe half
+  not at all, because the moisture keys carry no name. **The tool therefore
+  treats any seam as a hard boundary for every probe**, which is blunt and
+  deliberate: `--since` can narrow that window and nothing on the command line
+  can widen it.
+- **This garden is also watered by hand, so the relay record is not a complete
+  label source.** Between 12:14 and 12:25 on 2026-09-03 both probes
+  rose together — probe 0 from 72.8 to 86.5, probe 1 from 75.0 to 83.9 — with
+  no relay event anywhere near it, and the reservoir pump was the only thing
+  that ran that day. Every such rise is an unlabelled wetting, and the
+  classifier scores it "humid".
+
+**`/moisture_model.bin` is deliberately NOT written from here.** Five reasons
+are in the block comment above `MODEL_FILE_DECLINED`; two of them are
+structural and survive the data improving. The archive's `moistureN` is the
+accumulator MEAN over one publish period — 300 s since 2.8.0 — while the device
+fits from its own 60 s history records, and `J = Δμ² / (σ²_wet + σ²_dry)` is a
+ratio to a variance that averaging shrinks, so a J fitted here would pass the
+device's gate for the wrong reason. And `consumedUntil` — the epoch past which
+the device skips its own history — has no correct value from another data
+source: zero double-counts the day the board already holds, a current epoch
+throws it away. **The fix for both is to fit from `GET /history.json`**, which
+is the device's own 60 s record, and that is the first thing to change when
+there is finally something to seed.
 
 ---
 
