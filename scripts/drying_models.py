@@ -23,9 +23,11 @@ that there is none.
 WHY THE OBVIOUS CRITERION IS THE WRONG ONE
 
 Soil moisture sampled every 60 s is a smooth curve, so the residuals of ANY of
-these models are almost perfectly autocorrelated - measured here, lag-1 rho of
-0.92 to 0.99. AIC and BIC assume independent residuals, and with rho that high
-they count roughly n independent observations where there are a few dozen. The
+these models are heavily autocorrelated - across the segments this tool
+actually finds, lag-1 rho runs from 0.53 to 0.98, and the segments worth
+fitting sit at the top of that. Measured, not assumed: one 737-sample segment
+reports rho 0.969, which is n_eff 11.6. AIC and BIC assume independent
+residuals, so they count 737 observations where there are twelve. The
 consequence is not a small bias: every extra parameter wins, always. So this
 file reports AIC/BIC twice, once on n and once on an effective sample size
 n*(1-rho)/(1+rho), and the primary criterion is neither. It is HELD-OUT
