@@ -64,6 +64,80 @@ age(uint32_t now, uint32_t lastSeenMs)
     return now - lastSeenMs;
 }
 
+// What a purge should do with ONE slot. Split out for the reason the rest of
+// this header is: the verdict decides whether a token that the operator
+// believes has expired is still accepted, and getting it wrong looks exactly
+// like a working device.
+enum class PurgeVerdict
+{
+    Keep,  // still valid, or not yet decidable
+    Stamp, // remembered but of unknown age: date it now, and persist the date
+    Drop   // past its lifetime
+};
+
+// A REMEMBERED slot. It deliberately does not idle out — that is what the tick
+// means — so it expires on ABSOLUTE age, in wall-clock seconds, which is the
+// only clock that survives the reboots that reset millis().
+//
+// `Keep` while the clock is not yet usable: dropping on an unsynced clock would
+// forget every remembered device on a board that boots before NTP answers, and
+// asking again on the next request costs nothing.
+inline PurgeVerdict
+persistentVerdict(bool clockUsable,
+                  uint32_t createdAtEpoch,
+                  uint32_t wallClock,
+                  uint32_t ttlSec)
+{
+    if (!clockUsable) {
+        return PurgeVerdict::Keep;
+    }
+    // Age unknown: the clock was down when it was issued, or a firmware that
+    // stored no timestamp wrote it. Stamping makes it age from here instead of
+    // being immortal, and the stamp has to reach flash or the next boot asks
+    // the same question again.
+    if (createdAtEpoch == 0) {
+        return PurgeVerdict::Stamp;
+    }
+    return ((wallClock - createdAtEpoch) > ttlSec) ? PurgeVerdict::Drop
+                                                   : PurgeVerdict::Keep;
+}
+
+// An ORDINARY slot expires on disuse. Unsigned subtraction, for the wrap the
+// note on age() describes.
+inline bool
+idledOut(uint32_t now, uint32_t lastSeenMs, uint32_t ttlMs)
+{
+    return age(now, lastSeenMs) > ttlMs;
+}
+
+// Bookkeeping for a /sessions.json write that has been moved OFF the request
+// path. purgeExpiredSessions() runs at the top of the authorization middleware,
+// on the single async_tcp task that also serves a 1.2 MB OTA upload, so it may
+// not touch flash; it marks instead, and a background task writes.
+//
+// `markWritten()` is the half that matters. Any SYNCHRONOUS save renders a
+// strictly newer view of the table, so it supersedes whatever was queued —
+// without that, a deferred write could land after a login and put a file on
+// flash that predates it.
+//
+// `takePending()` clears as it reads: a flush that forgot to clear would write
+// once per background tick for ever, which is worse than the per-request write
+// this replaces.
+struct SaveQueue
+{
+    // Written on the request path, read on a background task.
+    volatile bool stale = false;
+
+    void markStale() { stale = true; }
+    void markWritten() { stale = false; }
+    bool takePending()
+    {
+        const bool pending = stale;
+        stale = false;
+        return pending;
+    }
+};
+
 // The first inactive slot, or kNoSlot. Never evicts — this is what a restore
 // from /sessions.json wants, where evicting means overwriting an entry that was
 // just restored and reporting a count the table does not hold.

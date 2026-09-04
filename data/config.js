@@ -341,10 +341,21 @@
           // Changing ota.password rewrites the login credential, and the device
           // ends every session of that account — this one included. Reloading
           // the form would just 401 and bounce, so say why first.
+          //
+          // It must ALSO say that a restart is still owed. The response carries
+          // saved.restartRequired on both paths, and this branch used to
+          // replace the whole message with the sign-in notice and then navigate
+          // away — so every other field written by the same POST (SSID, MQTT
+          // backend, pins) waited for a reboot nobody had been told about. The
+          // password is the one field that takes effect immediately; saying so
+          // is what stops the sign-out from reading as "it is all applied".
           if (saved && saved.reauth) {
-            setStatus('warning', 'Saved. The login password changed, so your ' +
-                                 'sessions were ended — sign in again.');
-            setTimeout(function () { espAuth.clearToken(); espAuth.redirectToLogin(); }, 2500);
+            setStatus('warning', 'Saved. Restart the device to apply — the new ' +
+                                 'password is already in force, so your sessions ' +
+                                 'were ended. Sign in again.');
+            // Longer than the plain path's dwell, because the operator has one
+            // sentence to read before the page navigates itself away.
+            setTimeout(function () { espAuth.clearToken(); espAuth.redirectToLogin(); }, 5000);
             return;
           }
           load(true);

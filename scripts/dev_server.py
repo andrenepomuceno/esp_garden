@@ -322,8 +322,16 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.log("warning", "Unauthorized access attempt")
                 self._send(HTTPStatus.UNAUTHORIZED, b"Unauthorized")
             else:
-                STATE.log("info", f"Login OK: user='{AUTH.USERNAME}'")
-                self._send_json({"token": token, "role": AUTH.ROLE_ADMIN})
+                # The role comes from the user store, as sessionRole() resolves
+                # it from UserStore on the device. AuthSim now holds a
+                # credential per account rather than one global password, so
+                # answering ADMIN unconditionally would hand an OPERATOR the
+                # admin pages here and nowhere else.
+                username = params.get("username", [""])[0]
+                role = next((u["role"] for u in SIM_USERS
+                             if u["username"] == username), AUTH.ROLE_ADMIN)
+                STATE.log("info", f"Login OK: user='{username}'")
+                self._send_json({"token": token, "role": role})
             return
 
         if path == "/logout":

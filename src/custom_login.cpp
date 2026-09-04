@@ -135,47 +135,65 @@ CustomLogin::consumeNonce(const String& candidate)
     return false;
 }
 
+// Runs at the top of authorizeFunction(), i.e. on EVERY guarded request, on the
+// single async_tcp task that also carries a 1.2 MB OTA upload. It must
+// therefore never touch flash: the rewrite is queued here and written by the io
+// task at 1 Hz, the same shape relaysTick() uses to hand a bit to the io task
+// rather than build a message under a 50 ms deadline.
+//
+// Deferring is safe HERE and would not be safe on the revocation paths, and the
+// difference is what the queue rests on. Everything this function drops is
+// either past an ABSOLUTE TTL — so a reboot inside the one-second window
+// restores it and the very next purge drops it again, converging — or an
+// idempotent timestamp stamp. A token dropped by invalidateUserSessions() or
+// displaced by handleLogin() has no such re-check: restore it once and it lives
+// out its natural life. Those still write synchronously, which is also the
+// reboot the operator is most likely to trigger, since POST /config.json
+// answers restartRequired.
 void
 CustomLogin::purgeExpiredSessions(uint32_t now)
 {
     const time_t wallClock = time(NULL);
     const bool clockUsable = (wallClock >= g_safeTimestamp);
-    bool fileStale = false;
 
     for (auto& session : sessions) {
         if (!session.active) {
             continue;
         }
 
-        // A remembered session deliberately does NOT idle out — that is what
-        // the tick means — so it expires on absolute age instead of on disuse.
         if (session.persistent) {
-            if (!clockUsable) {
-                continue; // no trustworthy clock yet; ask again next request
-            }
-            if (session.createdAtEpoch == 0) {
-                // Age unknown: either the clock was down when it was issued, or
-                // it was written by a firmware that stored no timestamp. Stamp
-                // it now and persist the stamp, so it ages from here rather
-                // than being immortal, and so a reboot does not reset it again.
-                session.createdAtEpoch = (uint32_t)wallClock;
-                fileStale = true;
-                continue;
-            }
-            if (((uint32_t)wallClock - session.createdAtEpoch) >
-                kPersistentTtlSec) {
-                dropSession(session);
-                fileStale = true;
+            switch (session_slots::persistentVerdict(clockUsable,
+                                                     session.createdAtEpoch,
+                                                     (uint32_t)wallClock,
+                                                     kPersistentTtlSec)) {
+                case session_slots::PurgeVerdict::Keep:
+                    break;
+                case session_slots::PurgeVerdict::Stamp:
+                    session.createdAtEpoch = (uint32_t)wallClock;
+                    sessionFile.markStale();
+                    break;
+                case session_slots::PurgeVerdict::Drop:
+                    dropSession(session);
+                    sessionFile.markStale();
+                    break;
             }
             continue;
         }
 
-        if ((now - session.lastSeenMs) > kSessionTtlMs) {
+        if (session_slots::idledOut(now, session.lastSeenMs, kSessionTtlMs)) {
             dropSession(session);
         }
     }
+}
 
-    if (fileStale) {
+// The consumer, called from the io task at 1 Hz. It is the only place a session
+// file write happens off the request path, and it fires a handful of times in a
+// device's life — a 30-day expiry, or the one-off stamping of an entry written
+// by a firmware that stored no date.
+void
+CustomLogin::flushPendingSessionSave()
+{
+    if (sessionFile.takePending()) {
         savePersistentSessions();
     }
 }
@@ -478,11 +496,16 @@ CustomLogin::handleLogin(AsyncWebServerRequest* request)
         fileStale = true;
     }
 
+    // The slot is marked dead for the whole fill and revived on the last line.
+    // /sessions.json is now also written from the io task, so this is the one
+    // place another thread can observe a slot mid-write, and a torn token
+    // reaching flash would be restored at the next boot as a live session
+    // matching nothing. Single-threaded behaviour is unchanged.
+    slot->active = false;
     generateRandomHex(slot->token, kTokenLen);
     slot->userIndex = (size_t)userIdx;
     slot->lastSeenMs = now;
     slot->ip = ip;
-    slot->active = true;
     slot->persistent = false;
     slot->createdAtEpoch = 0;
 
@@ -500,6 +523,12 @@ CustomLogin::handleLogin(AsyncWebServerRequest* request)
         fileStale = true;
     }
 
+    slot->active = true;
+
+    // Synchronous, deliberately: a displaced remembered token that only lives
+    // on flash would be restored at the next boot and, being exempt from the
+    // idle TTL, would never expire — the bug the purge's deferral is careful
+    // not to reintroduce.
     if (fileStale) {
         savePersistentSessions();
     }
@@ -563,6 +592,11 @@ CustomLogin::savePersistentSessions()
         json += "}";
     }
     json += "]";
+
+    // This snapshot is strictly newer than anything the purge queued, so it
+    // supersedes it. Without this a deferred write could land AFTER a login and
+    // put a file on flash that predates the token it just issued.
+    sessionFile.markWritten();
 
     File file = FILESYSTEM.open(kSessionFile, FILE_WRITE);
     if (file == false) {

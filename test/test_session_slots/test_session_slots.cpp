@@ -353,6 +353,114 @@ test_invalidate_all_ends_every_account_and_wipes_the_stale_slots()
     }
 }
 
+// ---- the purge verdict -----------------------------------------------------
+//
+// A remembered slot is exempt from the idle TTL, so this verdict is the ONLY
+// thing that ever ends one. Getting it wrong either forgets every remembered
+// device on a board that boots before NTP answers, or leaves a token immortal.
+
+static const uint32_t kTtlSec = 30UL * 24UL * 60UL * 60UL;
+
+static void
+test_a_remembered_slot_is_kept_while_the_clock_is_unusable()
+{
+    // Dropping on an unsynced clock would forget every remembered device at
+    // every boot, since webSetup() runs before the NTP wait.
+    TEST_ASSERT_TRUE(PurgeVerdict::Keep ==
+                     persistentVerdict(false, 0, 0, kTtlSec));
+    TEST_ASSERT_TRUE(PurgeVerdict::Keep ==
+                     persistentVerdict(false, 1000, 1000 + kTtlSec * 2,
+                                       kTtlSec));
+}
+
+static void
+test_an_undated_remembered_slot_is_stamped_rather_than_dropped_or_kept()
+{
+    // Written by 2.11.0, or issued while the clock was down. Keeping it would
+    // make it immortal; dropping it would sign out a device for a firmware
+    // detail it had no part in.
+    TEST_ASSERT_TRUE(PurgeVerdict::Stamp ==
+                     persistentVerdict(true, 0, 1'700'000'000UL, kTtlSec));
+}
+
+static void
+test_a_remembered_slot_dies_only_past_the_absolute_ttl()
+{
+    const uint32_t created = 1'700'000'000UL;
+    TEST_ASSERT_TRUE(PurgeVerdict::Keep ==
+                     persistentVerdict(true, created, created, kTtlSec));
+    // Exactly at the TTL is still alive; the comparison is strictly greater.
+    TEST_ASSERT_TRUE(PurgeVerdict::Keep ==
+                     persistentVerdict(true, created, created + kTtlSec,
+                                       kTtlSec));
+    TEST_ASSERT_TRUE(PurgeVerdict::Drop ==
+                     persistentVerdict(true, created, created + kTtlSec + 1,
+                                       kTtlSec));
+}
+
+static void
+test_an_ordinary_slot_idles_out_across_the_millis_wraparound()
+{
+    const uint32_t ttl = 24UL * 60UL * 60UL * 1000UL;
+    // Seen just now.
+    TEST_ASSERT_FALSE(idledOut(1000, 1000, ttl));
+    TEST_ASSERT_FALSE(idledOut(1000 + ttl, 1000, ttl));
+    TEST_ASSERT_TRUE(idledOut(1000 + ttl + 1, 1000, ttl));
+    // Straddling the wrap: seen 1 s before it, asked 1 s after. Comparing the
+    // timestamps directly would call this session ancient and sign it out.
+    const uint32_t beforeWrap = 0xFFFFFFFFUL - 1000;
+    TEST_ASSERT_FALSE(idledOut(2000, beforeWrap, ttl));
+}
+
+// ---- the deferred /sessions.json write -------------------------------------
+//
+// The purge runs at the top of the authorization middleware, on the single
+// async_tcp task that also carries a 1.2 MB OTA upload, so the write moved to a
+// background tick. What this bookkeeping has to guarantee is that a queued
+// write is never LOST and never REPEATED, and that a synchronous save — the
+// revocation paths, which may not be deferred — supersedes a pending one.
+
+static void
+test_a_fresh_queue_asks_for_no_write()
+{
+    SaveQueue queue;
+    TEST_ASSERT_FALSE(queue.takePending());
+}
+
+static void
+test_a_marked_queue_yields_exactly_one_write()
+{
+    SaveQueue queue;
+    queue.markStale();
+    queue.markStale(); // several expiries in one sweep are still one file
+    TEST_ASSERT_TRUE(queue.takePending());
+    // A flush that failed to clear would write once per background tick for
+    // ever — worse than the per-request write this replaces.
+    TEST_ASSERT_FALSE(queue.takePending());
+}
+
+static void
+test_a_synchronous_save_supersedes_a_queued_one()
+{
+    SaveQueue queue;
+    queue.markStale();
+    // A login or a revocation rendered the table itself; that snapshot is
+    // strictly newer, so the deferred write must not land after it and put a
+    // file on flash that predates the token just issued.
+    queue.markWritten();
+    TEST_ASSERT_FALSE(queue.takePending());
+}
+
+static void
+test_a_purge_after_a_synchronous_save_is_queued_again()
+{
+    SaveQueue queue;
+    queue.markStale();
+    queue.markWritten();
+    queue.markStale();
+    TEST_ASSERT_TRUE(queue.takePending());
+}
+
 void
 run_session_slots_tests(void)
 {
@@ -373,4 +481,12 @@ run_session_slots_tests(void)
     RUN_TEST(test_invalidate_ignores_slots_that_are_already_inactive);
     RUN_TEST(test_invalidate_on_a_user_with_no_sessions_changes_nothing);
     RUN_TEST(test_invalidate_all_ends_every_account_and_wipes_the_stale_slots);
+    RUN_TEST(test_a_remembered_slot_is_kept_while_the_clock_is_unusable);
+    RUN_TEST(test_an_undated_remembered_slot_is_stamped_rather_than_dropped_or_kept);
+    RUN_TEST(test_a_remembered_slot_dies_only_past_the_absolute_ttl);
+    RUN_TEST(test_an_ordinary_slot_idles_out_across_the_millis_wraparound);
+    RUN_TEST(test_a_fresh_queue_asks_for_no_write);
+    RUN_TEST(test_a_marked_queue_yields_exactly_one_write);
+    RUN_TEST(test_a_synchronous_save_supersedes_a_queued_one);
+    RUN_TEST(test_a_purge_after_a_synchronous_save_is_queued_again);
 }

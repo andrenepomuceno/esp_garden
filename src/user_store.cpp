@@ -38,6 +38,22 @@ UserStore::upsert(const String& username, const String& password, Role role)
     }
 }
 
+// A fresh salt every time, exactly as upsert() does: re-typing the same
+// password must not reproduce the same hash on disk. What it deliberately does
+// NOT touch is the role — a password door has no business deciding one.
+bool
+UserStore::setPassword(const String& username, const String& password)
+{
+    int idx = find(username);
+    if (idx < 0) {
+        return false;
+    }
+    entries[idx].salt = CustomLogin::generateSalt();
+    entries[idx].passwordHash =
+      CustomLogin::hashPassword(entries[idx].salt, password);
+    return true;
+}
+
 bool
 UserStore::setRole(const String& username, Role role)
 {

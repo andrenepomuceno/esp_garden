@@ -240,7 +240,28 @@ handleConfigPost(AsyncWebServerRequest* request)
         } else if (!changed) {
             logger.info("ota.password is unchanged; sessions were left alone.");
         } else {
-            userStore.upsert(username, newOtaPassword, Role::ADMIN);
+            // setPassword(), not upsert(): upsert() writes the whole entry, so
+            // passing a hardcoded Role::ADMIN silently PROMOTED an existing
+            // OPERATOR whenever a config named them in ota.username with a new
+            // password. Only an ADMIN can reach this endpoint and an ADMIN can
+            // already promote anyone through POST /users, so this was never a
+            // way for an unprivileged user to gain admin — what it lost was the
+            // guards (POST /users validates the role and refuses to leave the
+            // device with no admin) and the visibility, since the response says
+            // only "saved". The realistic failure is an admin promoting
+            // somebody by accident while restoring a config backup.
+            //
+            // ADMIN is now the CREATE default and nothing else: it is the same
+            // seeding rule UserStore::load() applies when it migrates ota.* into
+            // an empty /users.json, kept here so renaming ota.username still
+            // produces an account that can administer the device. Creating an
+            // admin cannot reduce the admin count, so this door needs no
+            // last-admin guard; it can no longer change a role at all.
+            if (!userStore.setPassword(username, newOtaPassword)) {
+                userStore.upsert(username, newOtaPassword, Role::ADMIN);
+                logger.warning("ota.username '" + username +
+                               "' had no account; created it as ADMIN.");
+            }
             userStore.save();
 
             // This is the SECOND door onto a password, and it owes the same

@@ -9,6 +9,7 @@
 #include "core/relays.h"
 #include "core/sensors.h"
 #include "core/telemetry.h"
+#include "network/custom_login.h"
 #include "network/mqtt.h"
 #include "network/talkback.h"
 #include "network/web.h"
@@ -339,6 +340,16 @@ ioTaskHandler()
     // a payload built once every five minutes. Both leave through the outbox
     // tbLoop() drains on every loop() iteration, so latency is milliseconds.
     telemetryPublishStepChanges();
+
+#if USE_CUSTOM_LOGIN
+    // /sessions.json, when the session purge marked it stale. The purge itself
+    // runs on the async_tcp task at the top of EVERY guarded request — a
+    // LittleFS write there lands on whichever request arrives first, plausibly
+    // the one carrying a 1.2 MB OTA image. Same shape as publishRelayEvents()
+    // above: the hot path sets a flag, this tick does the work. Usually a
+    // no-op; it fires a handful of times in a device's life.
+    customLogin.flushPendingSessionSave();
+#endif
 }
 
 static void

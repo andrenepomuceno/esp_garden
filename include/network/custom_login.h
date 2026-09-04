@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/role.h"
+#include "core/session_slots.h"
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
 #include <IPAddress.h>
@@ -56,6 +57,14 @@ class CustomLogin
     // path already does.
     bool invalidateUserSessions(size_t userIndex,
                                 AsyncWebServerRequest* request);
+
+    // Writes /sessions.json when the session purge has marked it stale. Call it
+    // from a BACKGROUND task, once a second is ample: the purge runs at the top
+    // of the authorization middleware, on the same single async_tcp task that
+    // carries an OTA upload, and a LittleFS write there lands on whichever
+    // request happens to arrive first. See purgeExpiredSessions() for why this
+    // one write may be deferred and the revocation writes may not.
+    void flushPendingSessionSave();
 
   private:
     static constexpr size_t kTokenLen = 64;
@@ -120,6 +129,8 @@ class CustomLogin
     Session sessions[kMaxSessions];
     PendingNonce nonces[kMaxNonces];
     AttemptTracker attempts[kMaxAttemptTrackers];
+    // Marked on the request path, consumed by flushPendingSessionSave().
+    session_slots::SaveQueue sessionFile;
 
     void generateRandomHex(char* out, size_t hexLen);
     bool consumeNonce(const String& candidate);

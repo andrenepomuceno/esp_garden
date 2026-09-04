@@ -275,24 +275,35 @@ def config_apply(incoming: dict, caller_token: str = "") -> tuple[int, str, bool
     ota_username = ota.get("username", "") if isinstance(ota, dict) else ""
     reauth = False
     if new_ota_password:
+        known = AUTH.knows(ota_username) if ota_username else False
+        # "Unchanged" is asked of the account the DOCUMENT names, exactly as the
+        # firmware asks it of userStore.find(ota.username) — not of whichever
+        # account happens to be called "admin". The documented backup/restore
+        # round trip echoes the password back verbatim, and re-salting it would
+        # sign everybody out with nothing altered.
+        unchanged = known and AUTH.password_matches(ota_username,
+                                                    new_ota_password)
         if not ota_username:
             # The firmware skips the credential write entirely when the name is
-            # empty — there is no account to upsert into.
+            # empty — there is no account to write into.
             pass
-        elif (ota_username == AUTH.USERNAME
-              and AUTH.password_matches(new_ota_password)):
-            # Unchanged: the documented backup/restore round trip echoes the
-            # password back verbatim, and re-salting it would sign everybody
-            # out with nothing altered.
+        elif unchanged:
             pass
         else:
-            if ota_username == AUTH.USERNAME:
-                AUTH.set_password(new_ota_password)
-            elif not any(u["username"] == ota_username for u in SIM_USERS):
-                # Mirrors userStore.upsert() appending a new ADMIN account.
-                # Its password is not stored here: AuthSim holds one credential,
-                # so a non-admin name can never be logged in against anyway.
+            AUTH.set_password(ota_username, new_ota_password)
+            if not any(u["username"] == ota_username for u in SIM_USERS):
+                # Mirrors the firmware's CREATE branch: setPassword() reports
+                # that there is no such account and upsert() appends it as
+                # ADMIN, the same seeding rule that migrates ota.* into an empty
+                # /users.json.
                 SIM_USERS.append({"username": ota_username, "role": 2})
+            # An EXISTING account keeps its role. The firmware used to hardcode
+            # Role::ADMIN into upsert(), which writes the whole entry, so a
+            # config naming an OPERATOR here silently promoted them; it now
+            # writes the password alone. Only an admin can reach this endpoint
+            # and an admin can promote through POST /users anyway, so what was
+            # lost was that endpoint's role validation and last-admin guard —
+            # and the visibility, since this one only answers "saved".
             reauth = AUTH.invalidate_user(ota_username, caller_token)
 
     return 200, "saved", reauth
@@ -333,6 +344,7 @@ def users_apply(params: dict, caller_token: str = "") -> tuple[int, str, bool]:
         if SIM_USERS[index]["role"] == 2 and admins <= 1:
             return 400, "Cannot delete the last admin", False
         SIM_USERS.pop(index)
+        AUTH.forget(username)
         # The device stores a user INDEX in each session, so removing an entry
         # forces EVERY session to be dropped — not just this account's, because
         # every later index shifted. Mirrored here or the simulator would let a
@@ -356,8 +368,11 @@ def users_apply(params: dict, caller_token: str = "") -> tuple[int, str, bool]:
                 SIM_USERS[index]["role"] = role
             else:
                 SIM_USERS.append({"username": username, "role": role})
-            if username == AUTH.USERNAME:
-                AUTH.set_password(password)
+            # Unlike the ota.password door, THIS endpoint does write the role:
+            # the form carries one, it is validated above and the last admin is
+            # guarded. That is the distinction userStore.upsert() vs
+            # setPassword() draws in the firmware.
+            AUTH.set_password(username, password)
             # A changed password ends every session of THAT account, the
             # caller's own included. upsert() replaces in place or appends, so
             # no index shifted and the drop can be exact — unlike a delete.
