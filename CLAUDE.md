@@ -411,6 +411,51 @@ called it missing three times.
   its deadline. A client must wait for the board to go DOWN before waiting for
   it to come back, or "alive" is satisfied by the firmware being replaced.
 
+- **The resistive probes' transfer curve, and the first working two-point
+  calibration** (2026-09-03, device 6224). Five conditions measured by hand and
+  converted to raw ADC — the units the physics is in, since the displayed number
+  is already `100 - ADC%` under `invert`:
+
+  | condition | shown | ADC |
+  |---|---|---|
+  | wet soil, Zona 3 (archive mean, n=1099, undisturbed) | 75.52 | 1002 |
+  | wet soil, Zona 1 (archive mean, n=1099, undisturbed) | 73.48 | 1086 |
+  | air — a still-damp probe, mid-transit | 59.32 | 1666 |
+  | **dry soil**, Zona 1, a different pot | 53.11 | 1920 |
+  | water, submerged | 0.00 | 4095 |
+
+  **Four of the five are monotonic in the direction physics predicts** — wetter
+  reads lower — which is what confirms `invert: true` is right for these
+  resistive probes, measured at both ends of soil rather than inferred. The
+  "air" point is not an anchor and not an anomaly: the probe was still damp, so
+  it lands BETWEEN wet and dry soil, exactly where a drying probe should, and
+  that is a consistency check rather than a reading.
+
+  **Submersion is the one outlier and it is out of domain.** A resistive divider
+  submerged in tap water has its lowest resistance and should read the extreme
+  WET end; it read the opposite rail. Comparator saturation or the electrodes
+  shorting the divider are both plausible and neither was established. It does
+  not matter: soil is never submerged in tap water, so the estimator is anchored
+  on the two soil points and this one is excluded by irrelevance, not by
+  mystery.
+
+  Applied as `moisture[0] = {dry 53.1, wet 73.5, kind "resistive"}`. Sent 1020
+  bytes, device wrote **1060** — the +40 is the five 8-character masks being
+  replaced by real credentials, and since the handler REFUSES a document still
+  carrying a mask, the 200 is itself proof the restore worked. After the reboot
+  `/data.json` carries `state: "Wet"` on Zona 1.
+
+  **Zona 3 was deliberately left uncalibrated** (`dry == wet == 0`), so
+  `moistureState()` returns empty and the field is absent rather than invented.
+  Its wet end is measured; its dry end has never been taken. The two probes'
+  wet ends differ by only 2.0 points, so borrowing was tempting — and is exactly
+  what this file forbids, because a threshold is per-probe.
+
+  **`dry` is an UPPER BOUND, not the dry value.** The probe was still falling at
+  ~0.15 per 30 s when it came out of the dry pot. That narrows the span and
+  makes the badge say "humid" slightly earlier, which for a garden is the right
+  side to err on. It needs redoing when a zone dries on its own.
+
 **Unverified — written, compiles, never run on hardware:**
 
 - **The whole evapotranspiration model** (firmware 2.10.0). Host-tested in
