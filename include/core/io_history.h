@@ -139,6 +139,11 @@ class IoHistory
     // moved. forEach() uses it to stay aligned across the lock it releases.
     uint32_t evicted() const { return evictedTotal; }
 
+    // Public because the fit check below has to size the same files without
+    // opening the history, and two places spelling "/histN.bin" independently
+    // is how one of them ends up measuring nothing and reporting plenty.
+    static String pathFor(uint8_t slot);
+
   private:
     // Holds one segment open across consecutive reads. A logical walk crosses a
     // segment boundary only every `segmentRecords` records, and a binary search
@@ -164,7 +169,6 @@ class IoHistory
     // Recycles the oldest segment (or claims an unused one) and makes it the
     // newest. Assumes the mutex is held.
     bool rotateLocked(uint8_t& slotOut);
-    static String pathFor(uint8_t slot);
     bool adoptSegmentLocked(uint8_t slot);
 
     FS* fs = nullptr;
@@ -187,3 +191,38 @@ class IoHistory
 };
 
 extern IoHistory ioHistory;
+
+// ---------------------------------------------------------------------------
+// The capacity check that the static ceiling in ConfigFile::loadFile() cannot
+// do on its own. The ceiling knows what a record costs; only the device knows
+// what its filesystem has left. See core/segment_index.h for the arithmetic
+// and for why a too-large capacity fails days later rather than at boot.
+
+// The last decision ioHistoryFitCapacity() made, and the numbers behind it.
+//
+// Kept as a record rather than a bool because a clamp nobody can see is a clamp
+// that gets argued with: the boot log names these figures once, and /data.json
+// renders them for as long as the condition lasts — the log is an 8 KB rolling
+// buffer this device overwrites within hours, so the boot line alone would be
+// gone by the time anyone asked why they did not get the records they set.
+struct IoHistoryFit
+{
+    uint32_t requested = 0;      ///< records config.json asked for
+    uint32_t granted = 0;        ///< records actually allowed
+    uint32_t availableBytes = 0; ///< free space plus what the segments hold now
+    uint32_t reserveBytes = 0;   ///< of that, what history may never take
+    uint32_t wantedBytes = 0;    ///< `requested` once every segment has filled
+    uint32_t grantedBytes = 0;   ///< `granted` once every segment has filled
+    bool checked = false;        ///< false when the filesystem could not be asked
+};
+
+// Bytes the segment files occupy right now. Logical lengths and not blocks,
+// which under-credits the history by its own block slack — the conservative
+// direction for a budget.
+uint32_t ioHistoryBytesOnDisk(FS& filesystem = FILESYSTEM);
+
+// Clamps `requested` to what this filesystem can actually hold, and logs the
+// decision either way. Call it BEFORE begin(), with the filesystem mounted.
+uint16_t ioHistoryFitCapacity(uint32_t requested);
+
+const IoHistoryFit& ioHistoryLastFit();

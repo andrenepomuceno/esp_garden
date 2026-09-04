@@ -1,5 +1,6 @@
 #include "core/config.h"
 #include "core/config_io.h"
+#include "core/io_history.h"
 #include "core/tasks.h"
 #include "core/logger.h"
 #include <Arduino_JSON.h>
@@ -698,28 +699,29 @@ ConfigFile::loadFile(unsigned deviceID)
         JSONVar history = configJson["history"];
         if (history.hasOwnProperty("records")) {
             const int records = (int)history["records"];
-            // 2500 records is 120 KB at the current 48-byte record.
+            // 5000 records is 235 KB of segment files, rounded to whole
+            // LittleFS blocks: 8 * ceil((12 + 625 * 48) / 4096) * 4096. That is
+            // what the RECORD costs, and it is the only question this ceiling
+            // is entitled to answer.
             //
-            // Measured on 9e7c after the LittleFS migration, not estimated:
-            // the assets and stores occupy 323 KB of the 512 KB partition, so
-            // 189 KB is free before any history exists. 120 KB of history
-            // leaves ~69 KB for the four rotating log backups and the block
-            // slack LittleFS charges for thirty small files.
+            // It is deliberately larger than any board here can currently
+            // hold. What decides whether a value fits is the state of that
+            // device's partition — the web assets, the log backups and the
+            // moisture model move with every deploy — so the ceiling can only
+            // be an upper bound on the arithmetic, and ioHistoryFitCapacity()
+            // below is what compares it against the space that actually
+            // exists. A number that was small enough to be safe on one device
+            // was necessarily wrong for every other one.
             //
-            // The ceiling used to be 5000 and its comment described a "463 KB
-            // usable" partition — a SPIFFS number that survived the migration
-            // because the driver rename was mechanical. 5000 records is 240 KB,
-            // which no longer fits in what is free, and a config asking for it
-            // would have filled the filesystem at begin() — before webSetup(),
-            // so the admin who caused it would have had no editor left to undo
-            // it. Before that it was 20000, or 800 KB: half again the whole
-            // partition, and that one did happen.
-            //
-            // The ceiling is in RECORDS, so it comes down whenever the record
-            // grows: it was 6000 while a record was 40 bytes. It will want
-            // revisiting again when the ring becomes append-only segments,
-            // because the storage shape changes with it.
-            if (records >= 0 && records <= 2500) {
+            // The ceiling has been 20000 (800 KB, half again the whole
+            // partition, and that one did happen), 6000 while a record was 40
+            // bytes, 5000 under a "463 KB usable" SPIFFS figure that survived
+            // the LittleFS migration because the driver rename was mechanical,
+            // and 2500. Each move was somebody re-deriving the device's free
+            // space by hand and writing the answer down as a constant. The
+            // constant is in RECORDS and still has to come down if the record
+            // grows; the free space is no longer its job.
+            if (records >= 0 && records <= 5000) {
                 historyRecords = records;
             } else {
                 logger.warning("Ignoring out-of-range history.records " +
@@ -738,6 +740,13 @@ ConfigFile::loadFile(unsigned deviceID)
             }
         }
     }
+
+    // Outside the block above on purpose: a document with no `history` key
+    // keeps the compiled default, and a default that does not fit fails
+    // exactly as loudly as a configured one that does not. Clamps in memory
+    // and never touches the stored document — the operator's number stays in
+    // /config.json, so freeing space is all it takes to get it back.
+    historyRecords = (int)ioHistoryFitCapacity((uint32_t)historyRecords);
 
     const unsigned minChar = g_configMinStringLength;
     if ((hostname.length() < minChar) || (ssid.length() < minChar) ||

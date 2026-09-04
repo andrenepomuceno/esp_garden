@@ -3,6 +3,7 @@
 #include "core/accumulator_v2.h"
 #include "core/cloud_model.h"
 #include "core/et0_model.h"
+#include "core/io_history.h"
 #include "core/config.h"
 #include <esp_heap_caps.h>
 #include "core/probe_health.h"
@@ -189,6 +190,37 @@ webUpdateDataCache()
     // the history buffer, the log backups and every web asset share it.
     statusJson["Filesystem"] = String(FILESYSTEM.usedBytes() / 1024) + " / " +
                                String(FILESYSTEM.totalBytes() / 1024) + " KB";
+
+    // The history is the one thing on that partition that grows on purpose,
+    // and the capacity it actually got is a RUNTIME decision — see
+    // ioHistoryFitCapacity(). Reported here because the boot line announcing a
+    // clamp does not survive: the log is an 8 KB rolling buffer this device
+    // overwrites within hours, so an operator who set history.records to 5000
+    // and came back the next day would have nothing left telling them they did
+    // not get it. /config.json would still say 5000, because the clamp is
+    // deliberately not written back.
+    //
+    // `stored` against `capacity` and not against the configured value: a
+    // whole segment is dropped at once, so the buffer touches capacity only in
+    // the moment before a rotation and sits below it the rest of the time.
+    // Reporting the ceiling as if it were a promise is the one thing this row
+    // must not do.
+    {
+        const IoHistoryFit fit = ioHistoryLastFit();
+        String history;
+        if (!ioHistory.ready()) {
+            history = "disabled";
+        } else {
+            history = String(ioHistory.stored()) + " / " +
+                      String(ioHistory.capacity()) + " records";
+        }
+        if (fit.granted < fit.requested) {
+            history += " (config asked for " + String(fit.requested) + "; " +
+                       String(fit.availableBytes / 1024) + " KB available, " +
+                       String(fit.reserveBytes / 1024) + " KB reserved)";
+        }
+        statusJson["History"] = history;
+    }
 
     JSONVar inputsJson;
     for (unsigned i = 0; i < config.moistureCount; ++i) {

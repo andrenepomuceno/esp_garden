@@ -498,3 +498,120 @@ IoHistory::read(IoRecord* out, size_t limit, uint32_t offset)
     xSemaphoreGive(mutex);
     return got;
 }
+
+// ---------------------------------------------------------------------------
+// The fit check. See core/segment_index.h for the arithmetic, which lives
+// there — free of Arduino and of the filesystem — so it can be unit-tested;
+// everything below is the part that has to ask a real partition.
+
+static IoHistoryFit g_lastFit;
+
+const IoHistoryFit&
+ioHistoryLastFit()
+{
+    return g_lastFit;
+}
+
+uint32_t
+ioHistoryBytesOnDisk(FS& filesystem)
+{
+    uint32_t bytes = 0;
+    for (uint8_t slot = 0; slot < segment::kSegments; ++slot) {
+        const String path = IoHistory::pathFor(slot);
+        if (!filesystem.exists(path)) {
+            continue; // segments are created lazily; a missing one costs 0
+        }
+        File file = filesystem.open(path, FILE_READ);
+        if (file) {
+            bytes += (uint32_t)file.size();
+            file.close();
+        }
+    }
+    return bytes;
+}
+
+uint16_t
+ioHistoryFitCapacity(uint32_t requested)
+{
+    g_lastFit = IoHistoryFit();
+    g_lastFit.requested = requested;
+    g_lastFit.granted = requested;
+
+    if (requested == 0) {
+        return 0; // history is off; nothing to check and nothing to say
+    }
+
+    const uint32_t total = (uint32_t)FILESYSTEM.totalBytes();
+    if (total == 0) {
+        // An unmounted or unreadable filesystem is not evidence of a full one,
+        // and clamping on a number nobody produced would silently shrink the
+        // history of every board whose mount failed. Granted as asked, said
+        // out loud, and the static ceiling still applies.
+        logger.warning("io_history: the filesystem reports a size of 0, so "
+                       "history.records " +
+                       String(requested) +
+                       " could not be checked against free space. Using it as "
+                       "configured.");
+        return (uint16_t)requested;
+    }
+
+    const uint32_t used = (uint32_t)FILESYSTEM.usedBytes();
+    const uint32_t free = (used < total) ? (total - used) : 0;
+    const uint32_t onDisk = ioHistoryBytesOnDisk();
+
+    const uint32_t granted =
+      segment::fitCapacity(requested, total, free, onDisk,
+                           IO_SEGMENT_HEADER_SIZE, (uint32_t)sizeof(IoRecord));
+
+    g_lastFit.granted = granted;
+    g_lastFit.availableBytes = free + onDisk;
+    g_lastFit.reserveBytes = segment::reserveBytes(total);
+    g_lastFit.wantedBytes = segment::storageBytes(
+      requested, IO_SEGMENT_HEADER_SIZE, (uint32_t)sizeof(IoRecord));
+    g_lastFit.grantedBytes = segment::storageBytes(
+      granted, IO_SEGMENT_HEADER_SIZE, (uint32_t)sizeof(IoRecord));
+    g_lastFit.checked = true;
+
+    if (granted >= requested) {
+        logger.info("io_history: " + String(granted) + " records fit — " +
+                    String(g_lastFit.grantedBytes / 1024) + " KB of the " +
+                    String(g_lastFit.availableBytes / 1024) +
+                    " KB available once the " +
+                    String(g_lastFit.reserveBytes / 1024) +
+                    " KB reserve is taken out.");
+        return (uint16_t)granted;
+    }
+
+    // Loud, and it names both numbers, because the alternative is a device
+    // that accepts 5000, grows for days and then runs the partition out from
+    // inside append() — which is how this board reboot-looped once already.
+    logger.error(
+      "io_history: history.records " + String(requested) +
+      " DOES NOT FIT and was reduced to " + String(granted) + ". " +
+      String(requested) + " records need " + String(g_lastFit.wantedBytes / 1024) +
+      " KB once every segment has filled, but only " +
+      String(g_lastFit.availableBytes / 1024) + " KB is available (" +
+      String(free / 1024) + " KB free plus " + String(onDisk / 1024) +
+      " KB the current history would release) and " +
+      String(g_lastFit.reserveBytes / 1024) +
+      " KB of that is reserved for the log backups, a single-file "
+      "/spiffs/upload and the free blocks LittleFS needs in order to write at "
+      "all. /config.json is UNCHANGED: lower the value or free space.");
+
+    if (granted == 0) {
+        logger.error("io_history: nothing fits, so the history is DISABLED "
+                     "this boot. Free space and reboot.");
+        return 0;
+    }
+
+    // The swing is worth stating with the number, because a whole segment is
+    // dropped at once: capacity is a ceiling the buffer only touches at the
+    // moment before a rotation, never a promise of what is held.
+    logger.warning("io_history: holding between " +
+                   String(granted - granted / segment::kSegments) + " and " +
+                   String(granted) + " records (" +
+                   String(g_lastFit.grantedBytes / 1024) +
+                   " KB), a whole segment at a time.");
+
+    return (uint16_t)granted;
+}

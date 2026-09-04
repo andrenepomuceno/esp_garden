@@ -249,6 +249,168 @@ test_a_full_rotation_keeps_the_history_contiguous()
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Does the requested capacity fit? Nothing is preallocated, so a capacity the
+// partition cannot hold is accepted at boot, grows for days and only then runs
+// the filesystem out from inside append(). These are the checks that stop that
+// being decided by a constant somebody re-derived by hand.
+
+// sizeof(IoSegmentHeader) and sizeof(IoRecord). Spelled out rather than
+// included, because io_history.h reaches Arduino, FreeRTOS and LittleFS. A
+// change on either side moves the numbers below, which is the point: they are
+// asserted here so a layout change cannot quietly shrink the history.
+static const uint32_t kHeader = 12;
+static const uint32_t kRecord = 48;
+
+// Device 6224 on 2026-09-04, from /data.json's "344 / 512 KB" plus the segment
+// files 1298 records occupy at 180 records per segment.
+static const uint32_t kPartition = 512u * 1024u;
+static const uint32_t kFree = 168u * 1024u;
+static const uint32_t kOnDisk = 7 * (kHeader + 180 * kRecord) +
+                                (kHeader + 38 * kRecord);
+
+static void
+test_littlefs_charges_for_whole_blocks_and_the_estimate_says_so()
+{
+    // 5000 records is 8 * (12 + 625 * 48) = 240 096 bytes of DATA, and that is
+    // the number this repo used to reason with. LittleFS allocates whole 4 KB
+    // blocks, so each of the eight segments really costs ceil(30012 / 4096) =
+    // 8 blocks: 256 KB, not 235. Under-counting by 32 KB is under-counting by
+    // a fifth of what was free on the board this was written for.
+    TEST_ASSERT_EQUAL_UINT32(262144, storageBytes(5000, kHeader, kRecord));
+    TEST_ASSERT_EQUAL_UINT32(98304, storageBytes(1440, kHeader, kRecord));
+    TEST_ASSERT_EQUAL_UINT32(0, storageBytes(0, kHeader, kRecord));
+}
+
+static void
+test_a_capacity_that_fits_is_granted_unchanged()
+{
+    // The clamp is not allowed to be a quiet reduction of everybody's history:
+    // what has been running here for weeks must come back untouched.
+    TEST_ASSERT_EQUAL_UINT32(
+      1440, fitCapacity(1440, kPartition, kFree, kOnDisk, kHeader, kRecord));
+    TEST_ASSERT_EQUAL_UINT32(
+      2500, fitCapacity(2500, kPartition, kFree, kOnDisk, kHeader, kRecord));
+}
+
+static void
+test_the_ceiling_does_not_fit_this_device_and_is_reduced_not_accepted()
+{
+    // The whole reason the static ceiling cannot be the only check. 5000 is
+    // allowed by loadFile() and does not fit here; accepting it would grow the
+    // history for about two and a half days and then fill the partition from
+    // inside append(), on a board reachable only over the air.
+    const uint32_t granted =
+      fitCapacity(5000, kPartition, kFree, kOnDisk, kHeader, kRecord);
+    TEST_ASSERT_EQUAL_UINT32(3408, granted);
+    TEST_ASSERT_TRUE(granted < 5000);
+}
+
+static void
+test_what_is_granted_actually_fits_with_the_reserve_still_intact()
+{
+    // The property the whole exercise exists for, checked across the range
+    // rather than at one point: whatever comes back must still leave the
+    // reserve untouched once every segment has filled.
+    const uint32_t available = kFree + kOnDisk;
+    const uint32_t reserve = reserveBytes(kPartition);
+    for (uint32_t asked = 0; asked <= 5000; asked += 137) {
+        const uint32_t granted =
+          fitCapacity(asked, kPartition, kFree, kOnDisk, kHeader, kRecord);
+        TEST_ASSERT_TRUE(granted <= asked);
+        TEST_ASSERT_TRUE(storageBytes(granted, kHeader, kRecord) + reserve <=
+                         available);
+    }
+}
+
+static void
+test_cost_and_capacity_are_inverses_of_each_other()
+{
+    // capacityForBytes() must be the exact inverse of storageBytes(), or the
+    // clamp either wastes blocks or hands back a number that does not fit. One
+    // more record per segment has to overflow the budget it was derived from.
+    for (uint32_t budget = 0; budget <= 512u * 1024u; budget += 4096) {
+        const uint32_t fits = capacityForBytes(budget, kHeader, kRecord);
+        TEST_ASSERT_TRUE(storageBytes(fits, kHeader, kRecord) <= budget);
+        TEST_ASSERT_TRUE(storageBytes(fits + kSegments, kHeader, kRecord) >
+                         budget);
+    }
+}
+
+static void
+test_the_grant_is_a_whole_number_of_segments()
+{
+    // Segments are equal by construction, so a capacity that is not a multiple
+    // of eight is a capacity one segment cannot deliver.
+    for (uint32_t asked = 1; asked <= 5000; asked += 91) {
+        const uint32_t granted =
+          fitCapacity(asked, kPartition, kFree, kOnDisk, kHeader, kRecord);
+        if (granted != asked) {
+            TEST_ASSERT_EQUAL_UINT32(0, granted % kSegments);
+        }
+    }
+}
+
+static void
+test_the_history_already_on_disk_is_credited_because_it_is_replaced()
+{
+    // A device holding 60 KB of segments is not choosing between its old
+    // history and a new one; the new capacity takes that space over. Charging
+    // for both would shrink the history a little further at every boot.
+    const uint32_t withOld =
+      fitCapacity(5000, kPartition, kFree, kOnDisk, kHeader, kRecord);
+    const uint32_t withoutOld =
+      fitCapacity(5000, kPartition, kFree, 0, kHeader, kRecord);
+    TEST_ASSERT_TRUE(withOld > withoutOld);
+}
+
+static void
+test_a_disabled_history_stays_disabled_and_is_never_clamped_up()
+{
+    // records = 0 disables the feature, and this check must not turn a
+    // deliberate 0 into "as much as fits".
+    TEST_ASSERT_EQUAL_UINT32(
+      0, fitCapacity(0, kPartition, kFree, kOnDisk, kHeader, kRecord));
+    TEST_ASSERT_EQUAL_UINT32(
+      0, fitCapacity(0, kPartition, kPartition, 0, kHeader, kRecord));
+}
+
+static void
+test_a_filesystem_that_cannot_be_asked_grants_what_was_configured()
+{
+    // totalBytes() == 0 is an unmounted or unreadable partition, which is not
+    // evidence of a full one. Clamping on it would silently shrink the history
+    // of every board whose mount failed, and the static ceiling still applies.
+    TEST_ASSERT_EQUAL_UINT32(5000,
+                             fitCapacity(5000, 0, 0, 0, kHeader, kRecord));
+}
+
+static void
+test_a_partition_with_no_room_disables_the_history_rather_than_half_filling_it()
+{
+    // Below the reserve there is no honest answer but zero: a history that
+    // takes the last blocks stops LittleFS being able to write at all,
+    // including the writes that would free space.
+    TEST_ASSERT_EQUAL_UINT32(
+      0, fitCapacity(5000, kPartition, 16u * 1024u, 0, kHeader, kRecord));
+    TEST_ASSERT_EQUAL_UINT32(
+      0, fitCapacity(5000, kPartition, 0, 0, kHeader, kRecord));
+}
+
+static void
+test_the_reserve_has_a_floor_and_a_fraction_and_takes_the_larger()
+{
+    // The floor covers what does not scale with the partition: a 30 KB asset
+    // upload plus the /upload.tmp twin it renames from, log backups nothing
+    // truncates, and the free blocks a copy-on-write filesystem needs in order
+    // to write at all. The fraction covers what does scale: an allocator
+    // hunting for free blocks in a partition run down to its last one.
+    TEST_ASSERT_EQUAL_UINT32(64u * 1024u, reserveBytes(256u * 1024u));
+    TEST_ASSERT_EQUAL_UINT32(64u * 1024u, reserveBytes(512u * 1024u));
+    TEST_ASSERT_EQUAL_UINT32(256u * 1024u, reserveBytes(2048u * 1024u));
+}
+
 void
 run_segment_index_tests(void)
 {
@@ -263,4 +425,15 @@ run_segment_index_tests(void)
     RUN_TEST(test_the_order_is_rebuilt_oldest_first_skipping_unused_slots);
     RUN_TEST(test_a_fresh_device_has_no_order_at_all);
     RUN_TEST(test_a_full_rotation_keeps_the_history_contiguous);
+    RUN_TEST(test_littlefs_charges_for_whole_blocks_and_the_estimate_says_so);
+    RUN_TEST(test_a_capacity_that_fits_is_granted_unchanged);
+    RUN_TEST(test_the_ceiling_does_not_fit_this_device_and_is_reduced_not_accepted);
+    RUN_TEST(test_what_is_granted_actually_fits_with_the_reserve_still_intact);
+    RUN_TEST(test_cost_and_capacity_are_inverses_of_each_other);
+    RUN_TEST(test_the_grant_is_a_whole_number_of_segments);
+    RUN_TEST(test_the_history_already_on_disk_is_credited_because_it_is_replaced);
+    RUN_TEST(test_a_disabled_history_stays_disabled_and_is_never_clamped_up);
+    RUN_TEST(test_a_filesystem_that_cannot_be_asked_grants_what_was_configured);
+    RUN_TEST(test_a_partition_with_no_room_disables_the_history_rather_than_half_filling_it);
+    RUN_TEST(test_the_reserve_has_a_floor_and_a_fraction_and_takes_the_larger);
 }

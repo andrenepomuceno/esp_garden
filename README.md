@@ -169,7 +169,16 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
         "level": 4               // 0 disable .. 4 info (default) .. 6 trace
     },
     "history": {                 // on-device append-only I/O snapshots
-        "records": 1440,         // file capacity; 0 disables. 1440 = 24 h at 60 s
+        // Total capacity, spread over 8 segments; 0 disables. 1440 = 24 h at
+        // 60 s. The ceiling is 5000, which is what the RECORD costs: 256 KB of
+        // segment files once every segment has filled, LittleFS blocks
+        // included. Whether that fits is a separate question and a per-device
+        // one, so the firmware also measures it against the partition at boot
+        // and CLAMPS with a loud log line naming both numbers. /config.json is
+        // never rewritten by that clamp, and Status.History in /data.json says
+        // so for as long as it applies. On device 6224 today, 5000 resolves to
+        // 3408 records.
+        "records": 1440,
         "periodSec": 60          // one record per this many seconds
     },
     "moisture": [                // one entry per probe

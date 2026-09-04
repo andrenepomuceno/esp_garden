@@ -20,10 +20,70 @@ from sim_moisture import (moisture_models, moisture_state, probe_names,
                           resolve_scenario)
 
 
+
+# A SECOND implementation of segment::fitCapacity() in
+# include/core/segment_index.h, and it is a second implementation on purpose:
+# the point of the mirror is that a disagreement is visible. Nothing is
+# preallocated on the device, so a capacity the partition cannot hold is
+# accepted at boot, grows for days and then runs the filesystem out from inside
+# append() -- the device therefore clamps at load and says so, and a simulator
+# that reported the configured number would show a row the device never sends.
+#
+# Bytes, not records: LittleFS rounds every segment file up to a whole 4 KB
+# erase block, and eight segments of slack is 32 KB.
+FIT_SEGMENTS = 8
+FIT_BLOCK_BYTES = 4096
+FIT_HEADER_BYTES = 12   # sizeof(IoSegmentHeader)
+FIT_RECORD_BYTES = 48   # sizeof(IoRecord)
+FIT_RESERVE_FLOOR = 64 * 1024
+FIT_RESERVE_DIVISOR = 8
+
+
+def _fit_reserve_bytes(partition_bytes: int) -> int:
+    return max(FIT_RESERVE_FLOOR, partition_bytes // FIT_RESERVE_DIVISOR)
+
+
+def _fit_storage_bytes(capacity: int) -> int:
+    """What `capacity` records occupy once every segment has filled."""
+    if capacity <= 0:
+        return 0
+    per = -(-capacity // FIT_SEGMENTS)          # rounded UP, as the device does
+    raw = FIT_HEADER_BYTES + per * FIT_RECORD_BYTES
+    blocks = -(-raw // FIT_BLOCK_BYTES)
+    return blocks * FIT_BLOCK_BYTES * FIT_SEGMENTS
+
+
+def _fit_history_capacity(requested: int, total_bytes: int,
+                          used_bytes: int, history_bytes: int = 0) -> int:
+    """The capacity actually granted: never more than asked, never more than
+    fits. `history_bytes` is what the segments already hold, added back because
+    a new capacity replaces the old rather than sitting beside it."""
+    if requested <= 0 or total_bytes <= 0:
+        return max(requested, 0)
+    available = max(total_bytes - used_bytes, 0) + history_bytes
+    budget = available - _fit_reserve_bytes(total_bytes)
+    if budget <= 0:
+        return 0
+    blocks = (budget // FIT_SEGMENTS) // FIT_BLOCK_BYTES
+    usable = blocks * FIT_BLOCK_BYTES
+    if usable <= FIT_HEADER_BYTES:
+        return 0
+    fits = ((usable - FIT_HEADER_BYTES) // FIT_RECORD_BYTES) * FIT_SEGMENTS
+    return min(requested, fits)
+
+
 class DeviceState:
     """In-memory simulation of the ESP Garden device state."""
 
     LOG_CAPACITY = 400
+
+    # The partition /data.json reports, and what the fit check above measures
+    # the history against. LittleFS reports the whole 512 KB partition where
+    # SPIFFS reported 463 KB of usable space. 320 KB used is what a device with
+    # the bundled, gzipped assets and no history sits at, so the free space the
+    # simulator offers the history is the free space a real one does.
+    FS_TOTAL_BYTES = 512 * 1024
+    FS_USED_BYTES = 320 * 1024
 
     # Mirrors USE_THINGSPEAK in include/BuildConfig.h, which ships at 0.
     #
@@ -64,7 +124,9 @@ class DeviceState:
         # config block the device reads — hardcoding them let the simulator
         # report a capacity the device would never return.
         history_cfg = SIM_CONFIG.get("history", {})
-        self.history_capacity = int(history_cfg.get("records", 1440))
+        self.history_requested = int(history_cfg.get("records", 1440))
+        self.history_capacity = _fit_history_capacity(
+            self.history_requested, self.FS_TOTAL_BYTES, self.FS_USED_BYTES)
         # records = 0 means disabled on the device, where /history.json answers
         # 503. Coercing it to 1 here made that branch unreachable in the UI.
         self.history_enabled = self.history_capacity > 0
@@ -98,6 +160,27 @@ class DeviceState:
 
         self._seed_history()
         self.log("info", "Simulator booted")
+
+    def _history_status(self) -> str:
+        """Status.History, mirroring the block in src/web_data.cpp.
+
+        `stored` against CAPACITY and not against the configured value: the
+        device drops a whole segment at a time, so the buffer touches capacity
+        only in the moment before a rotation. The clamp is appended only while
+        it applies, because a row that explains itself on every device trains
+        the eye to skip the one that matters.
+        """
+        if not self.history_enabled:
+            text = "disabled"
+        else:
+            text = f"{len(self.history)} / {self.history_capacity} records"
+        if self.history_capacity < self.history_requested:
+            available = self.FS_TOTAL_BYTES - self.FS_USED_BYTES
+            reserve = _fit_reserve_bytes(self.FS_TOTAL_BYTES)
+            text += (f" (config asked for {self.history_requested}; "
+                     f"{available // 1024} KB available, "
+                     f"{reserve // 1024} KB reserved)")
+        return text
 
     def _seed_history(self) -> None:
         """Backdated records so the charts are testable immediately.
@@ -332,7 +415,9 @@ class DeviceState:
                 "Watering Cycles": str(self.watering_cycles),
                 # LittleFS reports the whole 512 KB partition where SPIFFS
                 # reported 463 KB of usable space.
-                "Filesystem": "320 / 512 KB",
+                "Filesystem": (f"{self.FS_USED_BYTES // 1024} / "
+                               f"{self.FS_TOTAL_BYTES // 1024} KB"),
+                "History": self._history_status(),
             }
             # ET0 is present only once a complete day has closed, exactly as
             # web_data.cpp gates it -- and only when et0.enabled is on. The mock
