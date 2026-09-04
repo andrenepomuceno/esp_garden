@@ -451,9 +451,17 @@ called it missing three times.
   - **`moistureNFault`.** Both probes read healthy, so neither the key nor the
     single publish when a fault CLEARS has been seen on the device.
   - **The DHT plausibility gate.** No out-of-range reading has been rejected on
-    hardware. Note also that the 45.04 C reading which prompted it is INSIDE
-    the rated 0-50 C band and this gate would NOT have rejected it; only the
-    15.1 % RH case is caught, so the temperature spike remains unexplained.
+    hardware, and the gate has since been **corrected twice over**. Its two
+    original justifications were both wrong: the 45.04 C reading is INSIDE the
+    rated 0-50 C band and was never going to be rejected, and the 15.1 % RH
+    reading it *would* have rejected is **real**. This garden is in Brasilia
+    (`postalCode`), where the dry season takes the afternoon below 20 % as a
+    matter of course -- measured in the archive: 261 points, 2.0 %, minimum
+    15.00, on the two driest days. The floor is now 5 %, low enough to catch
+    only garbage. **A datasheet's rated range describes ACCURACY, not what the
+    sensor can physically report**, and clamping to it discards the true
+    extremes -- which on a garden controller are the readings that matter most.
+    The temperature spike remains unexplained.
   - **The dropped bare `relay` key.** Nothing here is known to read it, but no
     consumer was checked.
 
@@ -678,6 +686,13 @@ Facts worth knowing before touching it:
 - **`mqtt.publishSec` (60..300, default 300) sets the PERIODIC payload's period only.** It is applied by `tasksSetup()` through `setPeriod()`, the same way `history.periodSec` is — so `g_mqttTaskPeriod` is now nothing but the compiled fallback the task is constructed on, and **reading it where the real period is meant is a live trap**. Two things must follow it and did not follow it for free:
   - **Every accumulator window is sized from it in `sensorsSetup()`, scalars included.** The scalars used to take their window from `g_mqttTaskPeriod` at *file scope*, which was right only while that period was a constant. Static initialisers run long before `config.json` is read — the exact trap that made a file-scope `DHT_Unified` run for ever on the compiled default pin. `g_pingTime` lives in `tasks.cpp` and is re-sized in `tasksSetup()` for the same reason.
   - **The publish queue depth is `3600000 / mqttPublishPeriodMs()`**, i.e. an hour of buffer at whatever period is configured: 60 messages at the floor, 12 at the ceiling, and it cannot reach zero for any value the clamp allows.
+- **`postalCode` is metadata the firmware never acts on.** It is parsed, stored
+  and otherwise inert: no geocoding, no validation, no behaviour depends on it.
+  It exists so the off-device tooling knows where the device is without being
+  told separately, and so the archive is self-describing. Optional — a device
+  that has never been told where it is boots exactly as before. Named in
+  English per the conventions even though the value here is a Brazilian CEP,
+  because the device can be anywhere.
 - **`mqtt.heartbeatSec` (60..3600, default 900) is the floor under change-based publishing**, not a publish period. See [Sampling vs events](#sampling-vs-events--the-rule-and-where-it-was-broken).
 - **`cloud.enabled` (default FALSE) gates the cloud-cover model entirely** — the
   computation, the `/data.json` badge, `cloudState` and `cloudVariability`. The

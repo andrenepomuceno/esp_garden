@@ -428,12 +428,21 @@ sensorsSetupDht()
 // would fix the first and keep the second, which is why it is counted as an
 // error rather than merely dropped.
 //
-// The bounds are the datasheet's, not a tuning knob: widen them and the gate
-// stops meaning "the sensor cannot have measured this".
+// The bounds say "the sensor cannot have measured this", which is NOT the same
+// as the datasheet's rated range -- and confusing the two cost real data here.
+//
+// The humidity floor was the DHT11's rated 20 %, and this garden is in
+// Brasilia, where the dry season routinely takes the afternoon below it. In the
+// archive: 261 points (2.0 %) under 20 %, a minimum of 15.00, on the two driest
+// days of the record. The gate would have discarded genuine readings on exactly
+// the afternoons a garden most needs them. A rated range describes ACCURACY;
+// outside it the reading is less trustworthy, not impossible. The floor is now
+// low enough to catch only garbage -- the driest air ever recorded on earth is
+// around 1 % -- and NaN from a checksum failure is caught separately, above.
 static const float g_dhtMinTempC = 0.0f;
 static const float g_dhtMaxTempC = 50.0f;
-static const float g_dhtMinHumidityPct = 20.0f;
-static const float g_dhtMaxHumidityPct = 90.0f;
+static const float g_dhtMinHumidityPct = 5.0f;
+static const float g_dhtMaxHumidityPct = 100.0f;
 
 void
 sensorsReadDht()

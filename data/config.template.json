@@ -3,6 +3,7 @@
   "id": "1a2b",
   "hostname": "device hostname",
   "timezone": "<-03>3",
+  "postalCode": "",
   "wifi": {
     "ssid": "wifi name",
     "password": "wifi password"

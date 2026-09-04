@@ -110,6 +110,8 @@ Copy `data/config.template.json` to `data/config.json` and fill in the values be
     "id": "1a2b",            // last 4 hex digits of ESP32 MAC (printed on boot)
     "hostname": "espgarden1",
     "timezone": "<-03>3",    // POSIX TZ string — adjust for your region
+    "postalCode": "",        // where this device is; the firmware never reads it,
+                             // the off-device tooling geocodes it for weather
     "wifi": {
         "ssid": "your-wifi",
         "password": "your-password"

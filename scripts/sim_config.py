@@ -34,6 +34,7 @@ SIM_CONFIG = {
     "id": "1a2b",
     "hostname": "espgarden-sim",
     "timezone": "<-03>3",
+    "postalCode": "",
     "wifi": {"ssid": "sim-wifi", "password": "sim-wifi-password"},
     "ota": {"username": "admin", "password": "admin"},
     "thingSpeak": {"apiKey": "SIMKEY0000000000", "channel": 1348790},

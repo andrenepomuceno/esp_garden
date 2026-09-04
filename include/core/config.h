@@ -30,6 +30,12 @@ class ConfigFile
     String hostname;
     String timezone;
 
+    // Postal code of the installation, free text. Brazilian CEP here, but the
+    // firmware never parses or validates it: it is metadata for the off-device
+    // tooling, which geocodes it to fetch weather for this location. Empty
+    // means unset, and nothing on the device behaves differently either way.
+    String postalCode;
+
     // wifi
     String ssid;
     String wifiPassword;

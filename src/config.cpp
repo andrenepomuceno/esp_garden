@@ -54,6 +54,7 @@ ConfigFile::ConfigFile()
     deviceId = 0;
     hostname = "espgarden";
     timezone = "<-03>3";
+    postalCode = "";
 
     // wifi
     ssid = "undefined";
@@ -285,6 +286,10 @@ ConfigFile::loadFile(unsigned deviceID)
     hostname = (const char*)configJson["hostname"];
     timezone = (const char*)configJson["timezone"];
     setenv("TZ", timezone.c_str(), 1);
+    // Optional: a device that has never been told where it is still boots.
+    if (configJson.hasOwnProperty("postalCode")) {
+        postalCode = (const char*)configJson["postalCode"];
+    }
     tzset();
 
     JSONVar wifi = configJson["wifi"];
