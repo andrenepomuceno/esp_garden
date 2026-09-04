@@ -2,6 +2,7 @@
 #include "core/logger.h"
 #include "core/role.h"
 #include "core/user_store.h"
+#include "network/custom_login.h"
 #include "network/web_config.h"
 #include <Arduino_JSON.h>
 #include <ESPAsyncWebServer.h>
@@ -207,6 +208,7 @@ handleConfigPost(AsyncWebServerRequest* request)
     // The login password lives in /users.json, not /config.json, so changing
     // ota.password has to be pushed into the user store or the new value would
     // only take effect after a filesystem deploy wiped /users.json.
+    bool reauth = false;
     if (!newOtaPassword.isEmpty()) {
         // Named local, not a chained subscript: operator[] returns BY VALUE,
         // so `incoming["ota"]["username"]` cast straight to const char* reads
@@ -218,14 +220,29 @@ handleConfigPost(AsyncWebServerRequest* request)
         if (!username.isEmpty()) {
             userStore.upsert(username, newOtaPassword, Role::ADMIN);
             userStore.save();
+
+            // This is the SECOND door onto a password, and it owes the same
+            // invalidation POST /users does — a veto placed at one call site is
+            // the one that gets forgotten. It used to log "existing sessions
+            // stay valid until logout", which was true and was the hole: while
+            // only one persistent session per user could exist, the next login
+            // revoked the old token by accident. Nothing does that now.
+            const int index = userStore.find(username);
+            if (index >= 0) {
+                reauth =
+                  customLogin.invalidateUserSessions((size_t)index, request);
+            }
             logger.warning("Credentials updated for '" + username +
-                           "'. Existing sessions stay valid until logout.");
+                           "'. Every session for that account was ended.");
         }
     }
 
     // Nothing re-reads config.json at runtime.
     AsyncWebServerResponse* response = request->beginResponse(
-      200, "application/json", "{\"saved\":true,\"restartRequired\":true}");
+      200,
+      "application/json",
+      reauth ? "{\"saved\":true,\"restartRequired\":true,\"reauth\":true}"
+             : "{\"saved\":true,\"restartRequired\":true,\"reauth\":false}");
     response->addHeader("Cache-Control", "no-store");
     request->send(response);
 }

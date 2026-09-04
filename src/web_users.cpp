@@ -99,11 +99,15 @@ handleUsersPost(AsyncWebServerRequest* request)
             return;
         }
 
+        bool passwordChanged = false;
         if (password.isEmpty()) {
             if (index < 0) {
                 request->send(400, "text/plain", "Password required for a new user");
                 return;
             }
+            // A role change needs no invalidation: sessionRole() resolves the
+            // role from the store on every request, so a demotion is already
+            // in force for live sessions.
             userStore.setRole(username, (Role)role);
         } else {
             if (password.length() < g_configMinStringLength) {
@@ -114,11 +118,35 @@ handleUsersPost(AsyncWebServerRequest* request)
                 return;
             }
             userStore.upsert(username, password, (Role)role);
+            passwordChanged = true;
         }
 
         userStore.save();
         logger.info("User '" + username + "' saved with role " + String(role) + ".");
-        request->send(200, "application/json", "{\"reauth\":false}");
+
+        // Several sessions per user are allowed now, so logging in again no
+        // longer revokes the previous token as a side effect — which is what
+        // used to clean up after a password change. Without this, changing a
+        // compromised password would leave every stolen token alive, which is
+        // precisely what the person changing it is trying to prevent.
+        //
+        // The caller's own session goes too. Exempting it would grant the
+        // survivor's slot to whoever makes the request, and an attacker holding
+        // a stolen ADMIN token makes that request just as well as the owner.
+        // upsert() replaces in place or appends, so no index shifted and a
+        // per-user drop is exact; a REMOVAL still owes invalidateAllSessions().
+        bool reauth = false;
+        if (passwordChanged) {
+            const int saved = userStore.find(username);
+            if (saved >= 0) {
+                reauth = customLogin.invalidateUserSessions((size_t)saved,
+                                                            request);
+            }
+        }
+
+        request->send(200,
+                      "application/json",
+                      reauth ? "{\"reauth\":true}" : "{\"reauth\":false}");
         return;
     }
 

@@ -337,7 +337,16 @@
 
       $('#button-save').prop('disabled', true);
       $.post('/config.json', { config: JSON.stringify(result.doc) })
-        .done(function () {
+        .done(function (saved) {
+          // Changing ota.password rewrites the login credential, and the device
+          // ends every session of that account — this one included. Reloading
+          // the form would just 401 and bounce, so say why first.
+          if (saved && saved.reauth) {
+            setStatus('warning', 'Saved. The login password changed, so your ' +
+                                 'sessions were ended — sign in again.');
+            setTimeout(function () { espAuth.clearToken(); espAuth.redirectToLogin(); }, 2500);
+            return;
+          }
           load(true);
           setStatus('success', 'Saved. Restart the device to apply.');
         })

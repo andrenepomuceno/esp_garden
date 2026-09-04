@@ -26,7 +26,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | Logging | `src/logger.cpp` | Level-filtered singleton, 8 KB rolling RAM buffer, LittleFS backup rotating over 4 files |
 | Web | `src/web.cpp` (455) | WiFi events, mDNS, `AsyncWebServer`, **the route table**, `/control`, `/logs`, `/history.json` |
 | Web handlers | `src/web_data.cpp`, `web_config.cpp`, `web_ota.cpp`, `web_users.cpp` | `/data.json` cache · masked `GET`/`POST /config.json` · browser OTA · `/users.json` |
-| Auth | `src/custom_login.cpp`, `src/user_store.cpp` | Nonce + SHA-256 login, role middleware, per-IP lockout, `/users.json`, `/sessions.json` — ported from fullbot |
+| Auth | `src/custom_login.cpp`, `src/user_store.cpp`, `include/core/session_slots.h` (pure policy, host-tested) | Nonce + SHA-256 login, role middleware, per-IP lockout, `/users.json`, `/sessions.json` — ported from fullbot. The session table's slot policy — who is evicted, and which slots a password change ends — lives in the Arduino-free header |
 | MQTT | `src/mqtt.cpp` | Transport only: `PubSubClient` over TLS or plain, reconnect backoff, buffer sizing. `mqtt.backend` picks ThingSpeak `channels/<id>/publish` or ThingsBoard `v1/devices/me/telemetry` |
 | ThingsBoard | `src/thingsboard.cpp` (729) | The downlink half: client/shared attributes, two-way RPC, the chunked `v2/fw` firmware stream |
 | Versions | `src/fw_version.cpp` | Semantic-version compare — the check deciding whether a cloud image is flashed. Host-tested |
@@ -50,7 +50,7 @@ split is expensive, and the useful signal is the file three commits away from
 crossing. `tasks.cpp` (1123), `web.cpp` (1004), `config.cpp` (1125) and
 `devices.js` (1155) were all split at that threshold. `tasks.cpp` kept every `DECLARE_TASK` and every handler and `web.cpp` kept `webSetup()`, in both cases because the ordering *inside* those functions is load-bearing — see the boot sequence and the route-order note below.
 
-Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict, the cloud-cover classifier, the evapotranspiration maths and the step-publisher change detection — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`) rather than to stub the platform: both are small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md), including why the JSON logic must not be trusted to a hand-written stub.
+Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict, the cloud-cover classifier, the evapotranspiration maths, the step-publisher change detection and the session-slot policy — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`) rather than to stub the platform: both are small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md), including why the JSON logic must not be trusted to a hand-written stub.
 
 ---
 
@@ -458,6 +458,33 @@ called it missing three times.
 
 **Unverified — written, compiles, never run on hardware:**
 
+- **Several sessions per user, and the revocation that had to come with it**
+  (firmware 2.11.0). Host-tested in `test_session_slots`, built in all five
+  envs, and **verified end to end against `scripts/dev_server.py`** — four
+  remembered logins alive at once, a password change from one of them ending all
+  four and answering `{"reauth":true}`, the old password refused and the new one
+  accepted, an ADMIN changing another account's password staying signed in, a
+  role-only change signing nobody out, a ninth login evicting rather than being
+  refused, and `POST /config.json` with a new `ota.password` reporting `reauth`
+  too. **The device has run none of it.** Specifically untested on hardware:
+
+  - **`kMaxSessions` = 8 on the real chip.** The +352 bytes is a build number
+    (`espgarden2`, 66 412 → 66 764 static), not a measurement of the device
+    holding eight live sessions. Nothing has observed the heap with eight
+    tokens issued.
+  - **The persistent restore at the new size.** `/sessions.json` has never been
+    written with more than one entry, so neither the larger file nor the new
+    `kMaxSessions` stop in `loadPersistentSessions()` has been exercised, and no
+    file written by the 4-slot firmware has been loaded by this one — the
+    argument that it still loads is that the format did not change, which is an
+    argument, not a run.
+  - **`invalidateUserSessions()` on the board.** Neither password door has been
+    walked on hardware: no `POST /users` and no `ota.password` push has ended a
+    session on 6224, and the warning it logs has never printed there.
+  - **The two pages signing themselves out.** `users.js` and `config.js` were
+    exercised against the simulator only; no browser has been redirected to the
+    login page by a device response.
+
 - **The whole evapotranspiration model** (firmware 2.10.0). Host-tested in
   `test_evapotranspiration`, built in all five envs, and **shipped OFF**:
   `et0.enabled` defaults to false, so on the board today it computes nothing and
@@ -860,7 +887,7 @@ Facts worth knowing before touching it:
 | `/spiffs/upload` | POST | **ADMIN** | replace ONE file instead of rewriting the partition |
 | `/updateEnable`, `/update` | POST | **ADMIN** | OTA arm + upload |
 | `/users.json` | GET | **ADMIN** | usernames and roles only — never the salt or hash |
-| `/users` | POST | **ADMIN** | `action=upsert\|delete`, `username`, `password`, `role` |
+| `/users` | POST | **ADMIN** | `action=upsert\|delete`, `username`, `password`, `role`. Answers `{"reauth":bool}` — true when this request signed ITSELF out |
 | `/devices.html`, `/devices.js` | GET | **public** | sensor + actuator management page (data behind it is ADMIN) |
 | `/spiffs/*` | GET | **ADMIN** | file browse, with `users*` / `sessions*` / `config*` shadowed 403 |
 | `/spiffs/delete` | POST | **ADMIN** | remove ONE file, refusing exactly what the upload refuses |
@@ -875,7 +902,62 @@ Facts worth knowing before touching it:
 
 **TRAP:** `curl -u user:pass` returns 401 on every guarded route — there is no Basic-Auth path. Nonces are one-shot with a 30 s TTL; sessions idle out after 24 h; 5 failures from one IP → `429 Retry-After: 60`. `remember=true` persists the token to `/sessions.json`, so **a filesystem deploy signs everyone out**.
 
-**A `Session` stores the user's INDEX, not the username.** `UserStore::remove()` erases from a `std::vector`, so every later entry shifts and a live session silently starts resolving to a different account — and to its role. `POST /users` with `action=delete` therefore calls `customLogin.invalidateAllSessions()` and answers `{"reauth":true}`; the page signs itself out. Any future code path that reorders the store owes the same call.
+**A `Session` stores the user's INDEX, not the username.** `UserStore::remove()` erases from a `std::vector`, so every later entry shifts and a live session silently starts resolving to a different account — and to its role. `POST /users` with `action=delete` therefore calls `customLogin.invalidateAllSessions()` and answers `{"reauth":true}`; the page signs itself out. Any future code path that reorders the store owes the same call. **`upsert()` is not such a path** — it replaces in place or appends, so no index moves and a per-user invalidation is exact.
+
+### One user, several devices — and the hole that opened
+
+Ordinary sessions were **always** multi-device: `allocateSessionSlot()` takes
+any free slot and has never cared who owns it. What was restricted was the
+REMEMBERED session — `handleLogin()` deactivated every other `active &&
+persistent` session with the same `userIndex`, so ticking "remember me" on a
+phone silently un-remembered the laptop. That eviction is gone, and
+**`kMaxSessions` is 8, not 4**: four slots shared across every account made
+multi-device unusable at two people with two devices each, and the OTA note
+above is the same table running out from the other direction. The cost is one
+`Session` per slot — **measured at +352 bytes of static RAM on `espgarden2`**,
+against ~110 KB of free heap.
+
+**More concurrent live tokens is a wider surface than before, and it is
+accepted deliberately.** Eight bearer tokens can be valid at once where four
+could; a stolen one still has the 24 h idle TTL and nothing else. What buys it
+back is that revocation is now explicit instead of accidental.
+
+**Because the restriction was ALSO doing security work, removing it opened a
+hole that had to close in the same commit.** Nothing invalidated a session when
+a password changed — `invalidateAllSessions()` was called from exactly one
+place, the user DELETE. That was survivable only because one persistent session
+per user meant the next login revoked the old token as a by-product. Without
+the restriction, changing a compromised password would have left every stolen
+token alive, which is the precise thing the person changing it is trying to
+prevent.
+
+So **every path that writes a password calls
+`customLogin.invalidateUserSessions(index, request)`**, and there are two of
+them — `POST /users` with a non-empty `password`, and the `ota.password` push
+inside `POST /config.json`, which used to log *"existing sessions stay valid
+until logout"*. One veto at one call site is the one that gets forgotten; this
+is the same rule `startRelay()` is held to.
+
+**The caller's own session goes with the rest, and that is the deliberate
+choice.** Keeping it alive is the ergonomic answer and it was rejected: the
+exemption would be granted to *whoever makes the request*, and an attacker
+holding a stolen ADMIN token makes that request exactly as well as the account's
+owner — so exempting the caller hands the one surviving token to the wrong party
+in the only scenario the invalidation exists for. The cost is one re-login with
+a password that was **just typed**. Both endpoints therefore answer `reauth`
+(`/config.json` alongside `saved` and `restartRequired`), `users.js` and
+`config.js` sign the page out when it is true, and an ADMIN changing SOMEBODY
+ELSE'S password stays signed in because none of the dropped slots was theirs.
+
+A **role** change invalidates nothing, on purpose: `sessionRole()` resolves the
+role from the store on every request, so a demotion is already in force for
+live sessions.
+
+`/sessions.json` did not change format — a file written by the 4-slot firmware
+loads unchanged. What did change is that `loadPersistentSessions()` now stops at
+`kMaxSessions` instead of calling `allocateSessionSlot()`, which **evicts rather
+than failing**: a file with more entries than slots would have restored each one
+over the last and reported a count nothing held.
 
 **There is no default password compiled into the firmware.** `UserStore::load()` seeds the first account by migrating `config.json`'s `ota.username` / `ota.password` into `/users.json` as ADMIN (salted SHA-256). A device whose config never loaded has no users, logs a FATAL, and the web UI is unreachable by design.
 
@@ -886,8 +968,9 @@ image in under a minute; a script here took ~7 minutes for the same image, and
 the difference was that script's own wait loop from a previous run, still
 logging in every 5 s while the upload was in flight. The board serves HTTP from
 a single `async_tcp` task, so anything polled during an upload competes with it
-— and `kMaxSessions` is 4, so a loop that authenticates also evicts whoever is
-using the browser. This file already recorded the same mistake once, under the
+— and `kMaxSessions` is 8, so a loop that authenticates still evicts whoever is
+using the browser once it has burned through the table. (It was 4 when this was
+first written, which is part of why 8 exists.) This file already recorded the same mistake once, under the
 filesystem upload; it was made again. **Wait on liveness with an unauthenticated
 GET of a public path, authenticate once at the end, and send nothing else while
 an upload is running.**

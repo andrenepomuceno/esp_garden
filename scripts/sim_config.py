@@ -213,12 +213,17 @@ def document_pins_problem(doc: dict):
     return None
 
 
-def config_apply(incoming: dict) -> tuple[int, str]:
-    """Returns (http_status, message). Mirrors handleConfigPost in src/web.cpp."""
+def config_apply(incoming: dict, caller_token: str = "") -> tuple[int, str, bool]:
+    """Returns (http_status, message, reauth). Mirrors handleConfigPost.
+
+    `reauth` says the caller's own session was ended, which happens when the
+    document carried a new ota.password: that rewrites the login credential, so
+    every session of that account goes with it.
+    """
     if not isinstance(incoming, dict):
-        return 400, "config is not a JSON object"
+        return 400, "config is not a JSON object", False
     if str(incoming.get("id", "")).lower() != str(SIM_CONFIG["id"]).lower():
-        return 400, "config id does not match this device"
+        return 400, "config id does not match this device", False
 
     new_ota_password = None
     for section, key in CONFIG_SECRET_PATHS:
@@ -236,18 +241,21 @@ def config_apply(incoming: dict) -> tuple[int, str]:
     for section, key in CONFIG_SECRET_PATHS:
         sec = incoming.get(section)
         if isinstance(sec, dict) and sec.get(key) == CONFIG_SECRET_MASK:
-            return 500, "secret restore failed"
+            return 500, "secret restore failed", False
 
     for section, key in CONFIG_REQUIRED:
         node = incoming if section == "" else incoming.get(section, {})
         value = node.get(key) if isinstance(node, dict) else None
         if not isinstance(value, str) or len(value) < CONFIG_MIN_STRING_LENGTH:
             field = key if section == "" else f"{section}.{key}"
-            return 400, f"'{field}' must have at least {CONFIG_MIN_STRING_LENGTH} characters"
+            return (400,
+                    f"'{field}' must have at least "
+                    f"{CONFIG_MIN_STRING_LENGTH} characters",
+                    False)
 
     problem = document_pins_problem(incoming)
     if problem:
-        return 400, problem
+        return 400, problem, False
 
     SIM_CONFIG.clear()
     SIM_CONFIG.update(incoming)
@@ -255,10 +263,16 @@ def config_apply(incoming: dict) -> tuple[int, str]:
     # The login password lives outside the config on the device too, so a
     # changed ota.password has to reach the auth store or the simulator's login
     # stops matching the firmware's.
+    #
+    # And it is the SECOND door onto a password, so it owes the same session
+    # invalidation POST /users does: several sessions per user are allowed now,
+    # so logging in again no longer revokes the old token as a side effect.
+    reauth = False
     if new_ota_password:
         AUTH.set_password(new_ota_password)
+        reauth = AUTH.invalidate_user(AUTH.USERNAME, caller_token)
 
-    return 200, "saved"
+    return 200, "saved", reauth
 
 
 # Mirrors UserStore. Password hashes and salts are deliberately absent: the
@@ -266,8 +280,13 @@ def config_apply(incoming: dict) -> tuple[int, str]:
 SIM_USERS = [{"username": "admin", "role": 2}]
 
 
-def users_apply(params: dict) -> tuple[int, str, bool]:
-    """Mirrors handleUsersPost in src/web.cpp. Returns (status, message, reauth)."""
+def users_apply(params: dict, caller_token: str = "") -> tuple[int, str, bool]:
+    """Mirrors handleUsersPost in src/web_users.cpp.
+
+    Returns (status, message, reauth), where reauth means the caller signed
+    ITSELF out — a delete always does, and a password change does when it is
+    the caller's own account.
+    """
     action = params.get("action", "")
     username = params.get("username", "").strip()
     password = params.get("password", "")
@@ -292,9 +311,10 @@ def users_apply(params: dict) -> tuple[int, str, bool]:
             return 400, "Cannot delete the last admin", False
         SIM_USERS.pop(index)
         # The device stores a user INDEX in each session, so removing an entry
-        # forces every session to be dropped. Mirrored here or the simulator
-        # would let a stale token keep working.
-        AUTH.tokens.clear()
+        # forces EVERY session to be dropped — not just this account's, because
+        # every later index shifted. Mirrored here or the simulator would let a
+        # stale token keep working.
+        AUTH.invalidate_all()
         return 200, f"User '{username}' deleted", True
 
     if action == "upsert":
@@ -315,6 +335,13 @@ def users_apply(params: dict) -> tuple[int, str, bool]:
                 SIM_USERS.append({"username": username, "role": role})
             if username == AUTH.USERNAME:
                 AUTH.set_password(password)
+            # A changed password ends every session of THAT account, the
+            # caller's own included. upsert() replaces in place or appends, so
+            # no index shifted and the drop can be exact — unlike a delete.
+            reauth = AUTH.invalidate_user(username, caller_token)
+            return 200, f"User '{username}' saved with role {role}", reauth
+        # A role-only change needs no invalidation: the role is resolved from
+        # the store on every request, so a demotion is already in force.
         return 200, f"User '{username}' saved with role {role}", False
 
     return 400, "Invalid action", False

@@ -43,10 +43,29 @@ class CustomLogin
     // would silently start resolving to a different account — and to its role.
     void invalidateAllSessions();
 
+    // Drops every session belonging to ONE user, the caller's own included.
+    // Every path that writes a password owes this call: several sessions per
+    // user are allowed now, so logging in again no longer revokes the previous
+    // token as a side effect. Safe for upsert(), which replaces in place or
+    // appends and therefore never shifts an index; a REMOVAL still owes
+    // invalidateAllSessions() instead.
+    //
+    // `request` is the session making the change, used only to report whether
+    // it signed itself out. Returns true when it did, so the handler can answer
+    // {"reauth":true} and the page can sign itself out — exactly as the delete
+    // path already does.
+    bool invalidateUserSessions(size_t userIndex,
+                                AsyncWebServerRequest* request);
+
   private:
     static constexpr size_t kTokenLen = 64;
     static constexpr size_t kNonceLen = 32;
-    static constexpr size_t kMaxSessions = 4;
+    // Eight, not four. Four slots shared across every user makes multi-device
+    // unusable — two people on two devices each fills the table — and a script
+    // that authenticates in a loop then evicts whoever is using the browser,
+    // which this repo has already paid for once during an OTA. The cost is one
+    // Session struct per extra slot of static RAM.
+    static constexpr size_t kMaxSessions = 8;
     static constexpr size_t kMaxNonces = 8;
     static constexpr size_t kMaxAttemptTrackers = 16;
     static constexpr uint32_t kSessionTtlMs = 24UL * 60UL * 60UL * 1000UL;
@@ -90,6 +109,8 @@ class CustomLogin
     void purgeExpiredNonces(uint32_t now);
     void purgeExpiredSessions(uint32_t now);
     Session* findSessionByToken(const String& token);
+    // Index of the slot serving this request, or kMaxSessions for none.
+    size_t sessionSlotIndex(AsyncWebServerRequest* request);
     Session* allocateSessionSlot();
     int findUser(const String& username) const;
     AttemptTracker* getOrCreateTracker(const IPAddress& ip);

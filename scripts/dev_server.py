@@ -337,7 +337,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/users":
             params = {k: v[0] for k, v in
                       parse_qs(raw.decode("utf-8", errors="replace")).items()}
-            status, message, reauth = users_apply(params)
+            status, message, reauth = users_apply(
+                params, self.headers.get("Authorization-Token") or "")
             if status != 200:
                 self._send(status, message.encode())
             else:
@@ -355,13 +356,15 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self._send(HTTPStatus.BAD_REQUEST, b"config is not a JSON object")
                 return
-            status, message = config_apply(incoming)
+            status, message, reauth = config_apply(
+                incoming, self.headers.get("Authorization-Token") or "")
             if status != 200:
                 STATE.log("error", f"Refusing to save config: {message}")
                 self._send(status, message.encode())
                 return
             STATE.log("info", "Saved /config.json")
-            self._send_json({"saved": True, "restartRequired": True})
+            self._send_json({"saved": True, "restartRequired": True,
+                             "reauth": reauth})
             return
 
         if path == "/control":

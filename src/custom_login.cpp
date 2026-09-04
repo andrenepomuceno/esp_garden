@@ -1,6 +1,7 @@
 #include "network/custom_login.h"
 #include "core/config.h"
 #include "core/logger.h"
+#include "core/session_slots.h"
 #include "core/user_store.h"
 #include <Arduino_JSON.h>
 #include "core/filesystem.h"
@@ -165,16 +166,22 @@ CustomLogin::findSessionByToken(const String& token)
 CustomLogin::Session*
 CustomLogin::allocateSessionSlot()
 {
-    Session* lru = nullptr;
-    for (auto& session : sessions) {
-        if (!session.active) {
-            return &session;
-        }
-        if (lru == nullptr || session.lastSeenMs < lru->lastSeenMs) {
-            lru = &session;
-        }
+    const int index = session_slots::allocate(sessions, kMaxSessions);
+    return (index >= 0) ? &sessions[(size_t)index] : nullptr;
+}
+
+size_t
+CustomLogin::sessionSlotIndex(AsyncWebServerRequest* request)
+{
+    if (!request || !request->hasHeader("Authorization-Token")) {
+        return kMaxSessions;
     }
-    return lru;
+    Session* session =
+      findSessionByToken(request->getHeader("Authorization-Token")->value());
+    if (!session) {
+        return kMaxSessions;
+    }
+    return (size_t)(session - sessions);
 }
 
 int
@@ -394,19 +401,13 @@ CustomLogin::handleLogin(AsyncWebServerRequest* request)
     slot->persistent = false;
 
     if (remember == "true") {
-        // One persistent session per user: logging in again from a new browser
-        // revokes the old remembered token instead of accumulating them in the
-        // four available slots.
-        for (auto& session : sessions) {
-            if (&session == slot) {
-                continue;
-            }
-            if (session.active && session.persistent &&
-                session.userIndex == slot->userIndex) {
-                session.active = false;
-                memset(session.token, 0, sizeof(session.token));
-            }
-        }
+        // Several remembered devices per user, bounded only by the slot table.
+        // This used to revoke every other persistent session of the same user,
+        // which made "remember me" on a phone silently un-remember a laptop.
+        // What that eviction also did, invisibly, was revoke the old token
+        // whenever a password change was followed by a fresh login — so
+        // removing it is only safe alongside invalidateUserSessions(), which
+        // every password-writing path now calls.
         slot->persistent = true;
         savePersistentSessions();
     }
@@ -521,6 +522,17 @@ CustomLogin::loadPersistentSessions()
             continue;
         }
 
+        // allocateSessionSlot() evicts the least-recently-seen slot rather
+        // than failing, which is right for a login and wrong here: a file with
+        // more entries than slots would restore each one over the last and
+        // report a count nothing holds. Stop at the table size instead.
+        if ((size_t)restored >= kMaxSessions) {
+            logger.warning(String(kSessionFile) + " holds more than " +
+                           String((int)kMaxSessions) +
+                           " sessions; the rest were dropped.");
+            break;
+        }
+
         Session* slot = allocateSessionSlot();
         if (!slot) {
             break;
@@ -555,6 +567,37 @@ CustomLogin::invalidateAllSessions()
     }
     savePersistentSessions();
     logger.warning("All sessions invalidated; every client must sign in again.");
+}
+
+bool
+CustomLogin::invalidateUserSessions(size_t userIndex,
+                                    AsyncWebServerRequest* request)
+{
+    const size_t callerSlot = sessionSlotIndex(request);
+
+    const session_slots::InvalidateResult result =
+      session_slots::invalidateUser(sessions,
+                                    kMaxSessions,
+                                    userIndex,
+                                    callerSlot,
+                                    [](Session& session) {
+                                        memset(session.token,
+                                               0,
+                                               sizeof(session.token));
+                                    });
+
+    if (result.persistentDropped) {
+        savePersistentSessions();
+    }
+    if (result.dropped > 0) {
+        const String name = (userIndex < userStore.size())
+                              ? userStore.at(userIndex).username
+                              : String("?");
+        logger.warning("Ended " + String((unsigned)result.dropped) +
+                       " session(s) for '" + name +
+                       "'; that account must sign in again.");
+    }
+    return result.droppedSlot;
 }
 
 void

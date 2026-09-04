@@ -1,0 +1,217 @@
+#include "core/session_slots.h"
+#include <unity.h>
+
+// The session table's policy: which slot a login takes, and which slots a
+// password change has to end. It is unit-tested for the reason segment_index.h
+// is — a wrong answer here does not fail loudly. Allocating the wrong slot
+// signs somebody else out; leaving a slot behind leaves a token alive that the
+// operator believes they revoked. Both look like a working device.
+
+using namespace session_slots;
+
+namespace {
+
+// The minimum a slot has to expose. The firmware's CustomLogin::Session also
+// carries a token and an IPAddress, neither of which this policy may know
+// about — that is exactly why the policy is a template over the slot type.
+struct TestSlot
+{
+    size_t userIndex;
+    uint32_t lastSeenMs;
+    bool active;
+    bool persistent;
+};
+
+const size_t kCount = 8;
+
+void
+clear(TestSlot* slots)
+{
+    for (size_t i = 0; i < kCount; ++i) {
+        slots[i] = TestSlot{ 0, 0, false, false };
+    }
+}
+
+void
+occupy(TestSlot& slot, size_t user, uint32_t seen, bool persistent)
+{
+    slot.userIndex = user;
+    slot.lastSeenMs = seen;
+    slot.active = true;
+    slot.persistent = persistent;
+}
+
+// Counts calls, so a test can assert the wipe callback ran exactly per drop.
+size_t g_drops = 0;
+void
+countDrop(TestSlot&)
+{
+    ++g_drops;
+}
+
+} // namespace
+
+static void
+test_allocate_prefers_a_free_slot_over_the_least_recently_seen()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    occupy(slots[0], 0, 100, false);
+    occupy(slots[1], 0, 1, false); // the LRU, but slot 2 is free
+
+    TEST_ASSERT_EQUAL_INT(2, allocate(slots, kCount));
+}
+
+static void
+test_a_full_table_evicts_the_least_recently_seen()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    for (size_t i = 0; i < kCount; ++i) {
+        occupy(slots[i], i, (uint32_t)(1000 + i * 10), false);
+    }
+    slots[5].lastSeenMs = 7; // oldest
+
+    TEST_ASSERT_EQUAL_INT(5, allocate(slots, kCount));
+}
+
+// The feature. Allocation has never cared who owns a slot, so two devices for
+// one user simply take two slots — and, with the handleLogin() eviction gone,
+// both stay live even when both are persistent.
+static void
+test_one_user_can_hold_several_sessions_at_once()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+
+    const int first = allocate(slots, kCount);
+    occupy(slots[(size_t)first], 3, 10, true);
+
+    const int second = allocate(slots, kCount);
+    TEST_ASSERT_NOT_EQUAL(first, second);
+    occupy(slots[(size_t)second], 3, 20, true);
+
+    const int third = allocate(slots, kCount);
+    TEST_ASSERT_NOT_EQUAL(first, third);
+    TEST_ASSERT_NOT_EQUAL(second, third);
+    occupy(slots[(size_t)third], 3, 30, false);
+
+    TEST_ASSERT_TRUE(slots[(size_t)first].active);
+    TEST_ASSERT_TRUE(slots[(size_t)second].active);
+    TEST_ASSERT_TRUE(slots[(size_t)third].active);
+}
+
+static void
+test_invalidate_ends_every_session_of_one_user_and_no_other()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    occupy(slots[0], 2, 10, false);
+    occupy(slots[1], 3, 20, false); // a neighbouring index must survive
+    occupy(slots[2], 2, 30, true);
+    occupy(slots[3], 1, 40, true);
+
+    g_drops = 0;
+    const InvalidateResult result =
+      invalidateUser(slots, kCount, 2, kCount, countDrop);
+
+    TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)result.dropped);
+    TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)g_drops);
+    TEST_ASSERT_FALSE(slots[0].active);
+    TEST_ASSERT_FALSE(slots[2].active);
+    TEST_ASSERT_TRUE(slots[1].active);
+    TEST_ASSERT_TRUE(slots[3].active);
+    TEST_ASSERT_EQUAL_UINT32(3, (uint32_t)slots[1].userIndex);
+}
+
+// The file on flash only has to be rewritten when a REMEMBERED session died.
+static void
+test_invalidate_reports_whether_a_persistent_session_died()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    occupy(slots[0], 5, 10, false);
+
+    InvalidateResult result = invalidateUser(slots, kCount, 5, kCount, countDrop);
+    TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)result.dropped);
+    TEST_ASSERT_FALSE(result.persistentDropped);
+
+    clear(slots);
+    occupy(slots[0], 5, 10, false);
+    occupy(slots[1], 5, 20, true);
+    result = invalidateUser(slots, kCount, 5, kCount, countDrop);
+    TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)result.dropped);
+    TEST_ASSERT_TRUE(result.persistentDropped);
+}
+
+// A password change signs the caller out too, and the handler has to be able to
+// say so: the page answers {"reauth":true} and redirects to the login screen,
+// exactly as the delete path does.
+static void
+test_invalidate_reports_when_the_caller_signed_itself_out()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    occupy(slots[0], 4, 10, false); // the request's own session
+    occupy(slots[1], 4, 20, true);
+
+    InvalidateResult result = invalidateUser(slots, kCount, 4, 0, countDrop);
+    TEST_ASSERT_TRUE(result.droppedSlot);
+
+    // An ADMIN changing SOMEBODY ELSE'S password keeps working.
+    clear(slots);
+    occupy(slots[0], 4, 10, false); // the admin, unaffected
+    occupy(slots[1], 6, 20, true);  // the account being changed
+
+    result = invalidateUser(slots, kCount, 6, 0, countDrop);
+    TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)result.dropped);
+    TEST_ASSERT_FALSE(result.droppedSlot);
+    TEST_ASSERT_TRUE(slots[0].active);
+}
+
+// An inactive slot still carries the userIndex of whoever last held it. Reading
+// that as ownership would end sessions of an unrelated account on every reuse.
+static void
+test_invalidate_ignores_slots_that_are_already_inactive()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    slots[0].userIndex = 7; // stale, already signed out
+    occupy(slots[1], 7, 20, false);
+
+    g_drops = 0;
+    const InvalidateResult result =
+      invalidateUser(slots, kCount, 7, kCount, countDrop);
+
+    TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)result.dropped);
+    TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)g_drops);
+}
+
+static void
+test_invalidate_on_a_user_with_no_sessions_changes_nothing()
+{
+    TestSlot slots[kCount];
+    clear(slots);
+    occupy(slots[0], 1, 10, true);
+
+    const InvalidateResult result =
+      invalidateUser(slots, kCount, 9, kCount, countDrop);
+
+    TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)result.dropped);
+    TEST_ASSERT_FALSE(result.persistentDropped);
+    TEST_ASSERT_FALSE(result.droppedSlot);
+    TEST_ASSERT_TRUE(slots[0].active);
+}
+
+void
+run_session_slots_tests(void)
+{
+    RUN_TEST(test_allocate_prefers_a_free_slot_over_the_least_recently_seen);
+    RUN_TEST(test_a_full_table_evicts_the_least_recently_seen);
+    RUN_TEST(test_one_user_can_hold_several_sessions_at_once);
+    RUN_TEST(test_invalidate_ends_every_session_of_one_user_and_no_other);
+    RUN_TEST(test_invalidate_reports_whether_a_persistent_session_died);
+    RUN_TEST(test_invalidate_reports_when_the_caller_signed_itself_out);
+    RUN_TEST(test_invalidate_ignores_slots_that_are_already_inactive);
+    RUN_TEST(test_invalidate_on_a_user_with_no_sessions_changes_nothing);
+}

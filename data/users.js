@@ -103,7 +103,16 @@
       $.post('/users', {
         action: 'upsert', username: username, password: password, role: role,
       })
-        .done(function () {
+        .done(function (result) {
+          // A changed password ends every session of that account, this one
+          // included when it is your own — the device will not exempt the
+          // caller, because an attacker holding a stolen token is a caller too.
+          if (result && result.reauth) {
+            espUI.setStatus('warning', 'Saved. Your sessions were ended — ' +
+                                       'sign in again with the new password.');
+            setTimeout(function () { espAuth.clearToken(); espAuth.redirectToLogin(); }, 2000);
+            return;
+          }
           espUI.setStatus('success', 'Saved ' + username + '.');
           $('#input-password').val('');
           load();
