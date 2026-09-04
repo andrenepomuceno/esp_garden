@@ -54,12 +54,20 @@ The four refusals, in the order they are applied:
      20 accumulated weight per class, Fisher's J >= 4, and dry/humid/wet
      ordered. Reimplemented here rather than approximated, so a fit refused
      here would have been refused there.
+  5. THERMAL REGIME.  These probes are resistive and soil conduction is ionic,
+     so a span or a class separation measured partly warm and partly cold has
+     some of its length made of temperature rather than water. Two gates, in
+     scripts/moisture_thermal.py. They REFUSE and never correct: the archive
+     was asked for the coefficient a correction would need and declined to
+     supply one - see that module's header for what it measured instead.
 
-The statistics live in scripts/moisture_stats.py beside this; what stays here
-is the device, the archive and the report. Standard library only, same as
-tb_export.py and cloud_fit.py next door. Reads backups/telemetry.sqlite
-read-only and GETs the device's config; it writes to the device only under
---push, which is off by default and has never been run.
+The statistics live in scripts/moisture_stats.py beside this, the thermal
+confound in scripts/moisture_thermal.py and its archive-facing half in
+scripts/moisture_thermal_report.py; what stays here is the device, the archive
+and the per-probe report. Standard library only, same as tb_export.py and
+cloud_fit.py next door. Reads backups/telemetry.sqlite read-only and GETs the
+device's config; it writes to the device only under --push, which is off by
+default and has never been run.
 """
 
 from __future__ import annotations
@@ -74,12 +82,14 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# Plain sibling module: this file is run as a script, so scripts/ is sys.path[0]
-# — the same arrangement dev_server.py has with its sim_* siblings. The split is
-# statistics on one side and the device, the archive and the report on the
-# other, so the half with the arithmetic in it can be exercised on its own.
+# Plain sibling modules: this file is run as a script, so scripts/ is
+# sys.path[0] — the same arrangement dev_server.py has with its sim_* siblings.
+# The split is statistics on one side and the device, the archive and the
+# report on the other, so the half with the arithmetic in it can be exercised
+# on its own.
 from moisture_stats import (CLASSES, MAX_GAP_SEC, MIN_SEPARATION,
                             analyse_probe, build_proposal, local, self_test)
+from moisture_thermal_report import report_thermal, thermal_findings
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "backups" / "telemetry.sqlite"
@@ -569,6 +579,11 @@ def main():
                 tzinfo=zone
             ).timestamp()
 
+        # The whole temperature series, not the per-probe window: a placebo
+        # needs days OUTSIDE the window it is a null for, and clipping it to
+        # the seam would leave the check with nothing to shift onto.
+        temperature = read_series(conn, "temperature")
+
         findings = []
         for index in range(len(sensors)):
             identity = probe_identity(document, index)
@@ -576,11 +591,12 @@ def main():
                 identity, document, seams, slot_seams
             )
             start = max(boundary, floor)
-            samples = [
-                sample
-                for sample in read_series(conn, identity["key"])
-                if sample[0] >= start
-            ]
+            whole = read_series(conn, identity["key"])
+            samples = [sample for sample in whole if sample[0] >= start]
+            # Kept for the THERMAL section only, and never for a calibration:
+            # the slot may have held a different probe before the seam, which
+            # is exactly what usable_from() refuses to guess about.
+            before = [sample for sample in whole if sample[0] < start]
             events = sorted(
                 event["at"]
                 for event in relay_events
@@ -588,12 +604,24 @@ def main():
                 and event["name"] == relay_name
                 and event["at"] >= start
             )
-            finding = analyse_probe(identity, samples, events, args.tz)
+            finding = analyse_probe(identity, samples, events, args.tz, temperature)
             finding["relayName"] = relay_name
             finding["windowReasons"] = reasons
+            finding["samples_list"] = samples
+            finding["samples_before"] = before
+            # Every start of this probe's pump, INCLUDING before the seam: the
+            # thermal section looks at that era too, and a watering there
+            # disturbs a window just as much as one after it.
+            finding["events"] = sorted(
+                event["at"]
+                for event in relay_events
+                if event["started"] and event["name"] == relay_name
+            )
             findings.append(finding)
 
+        thermal = thermal_findings(findings, temperature, args.tz)
         report(document, findings, seams, slot_seams, args.tz, sys.stderr)
+        report_thermal(thermal, sys.stderr)
 
         calibration = build_proposal(document, findings)
         payload = {
@@ -618,6 +646,34 @@ def main():
                     "model": finding["model"],
                 }
                 for finding in findings
+            ],
+            # The per-window responses are dropped and only the verdicts kept:
+            # a lag scan for every night of every probe is thousands of numbers
+            # nothing downstream reads, and the report already printed the ones
+            # a person would look at.
+            "thermal": [
+                {
+                    "index": entry["index"],
+                    "name": entry["name"],
+                    "predictedSign": entry["predictedSign"],
+                    "eras": [
+                        {
+                            "window": era["label"],
+                            "verdict": era["whole"]["verdict"],
+                            "summary": era["whole"]["summary"],
+                            "nights": [
+                                {
+                                    "night": night["night"],
+                                    "verdict": night["verdict"],
+                                    "summary": night["summary"],
+                                }
+                                for night in era["nights"]
+                            ],
+                        }
+                        for era in entry["eras"]
+                    ],
+                }
+                for entry in thermal
             ],
             "proposal": {"moisture": calibration} if calibration else None,
         }

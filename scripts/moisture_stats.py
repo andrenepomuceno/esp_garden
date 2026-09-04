@@ -20,6 +20,12 @@ import datetime as dt
 import math
 import statistics
 
+# The thermal confound and the two admission checks it produces. A sibling
+# module for the same reason moisture_stats.py is one: it is arithmetic over
+# plain lists, so --self-test can reach all of it, and it grew its own docstring
+# worth of findings. It never corrects a reading - see its header for why.
+import moisture_thermal
+
 # ---------------------------------------------------------------------------
 # The firmware's own constants. Changing one here without changing it in
 # src/moisture_model.cpp makes this tool answer a question the device is not
@@ -366,8 +372,15 @@ def gate_refusal(stats, events):
 # ---------------------------------------------------------------------------
 
 
-def analyse_probe(identity, samples, events, tz_hours):
-    """Everything the report and the proposal need for one probe."""
+def analyse_probe(identity, samples, events, tz_hours, temperature=None):
+    """Everything the report and the proposal need for one probe.
+
+    `temperature` is the archive's own `temperature` series, or None. When it is
+    given, two further admission checks run - the anchors and the classes each
+    have to have been measured in ONE thermal regime. They can only ever refuse
+    more; nothing here rescales a reading, because the coefficient that would
+    take is one this archive has been asked for and has declined to supply.
+    """
     result = {
         "identity": identity,
         "samples": len(samples),
@@ -422,15 +435,25 @@ def analyse_probe(identity, samples, events, tz_hours):
         }
     )
     result["model"]["blockedBy"] = gate_refusal(stats, len(events))
+    # The thermal check runs LAST among the model gates, and only on a fit that
+    # already passed the other four. A probe refused for having two watering
+    # events is not additionally interesting for having been warm, and naming
+    # the cheap physical gate first is the order /moisture.json reports in.
+    if result["model"]["blockedBy"] is None and temperature:
+        result["model"]["blockedBy"] = moisture_thermal.class_thermal_refusal(
+            labelled, temperature, stats
+        )
 
     # --- the two-point anchors ---------------------------------------------
     result["twoPoint"]["blockedBy"] = anchor_refusal(
-        result, samples, plateaus, unexplained, events, tz_hours
+        result, samples, plateaus, unexplained, events, tz_hours, temperature
     )
     return result
 
 
-def anchor_refusal(result, samples, plateaus, unexplained, events, tz_hours):
+def anchor_refusal(
+    result, samples, plateaus, unexplained, events, tz_hours, temperature=None
+):
     """Why no dry/wet pair can be proposed, or None with the pair filled in.
 
     The admission checks, in order:
@@ -444,7 +467,13 @@ def anchor_refusal(result, samples, plateaus, unexplained, events, tz_hours):
         plateau, since the driest reading then sits inside a transient and is an
         UPPER BOUND on dry rather than dry;
       - the wet anchor has to follow a watering of this probe's own pump, or it
-        is a wet day rather than a saturated pot.
+        is a wet day rather than a saturated pot;
+      - and the two anchors have to come from ONE thermal regime, because these
+        probes are resistive and soil conduction is ionic: a span measured
+        partly warm and partly cold has some of its length made of temperature
+        rather than of water. This one is LAST because it is the only check that
+        needs a second series, and because a pair that failed any check above it
+        has no span to contaminate.
     """
     boundary = unexplained[-1]["at"] if unexplained else 0.0
     fresh = [entry for entry in plateaus if entry["from"] >= boundary]
@@ -491,6 +520,13 @@ def anchor_refusal(result, samples, plateaus, unexplained, events, tz_hours):
             f"dry {driest['mean']:.1f} and wet {wettest['mean']:.1f} are the "
             "same reading: this probe has no measured span to divide"
         )
+
+    if temperature:
+        thermal = moisture_thermal.anchor_thermal_refusal(
+            driest, wettest, temperature
+        )
+        if thermal:
+            return thermal
 
     result["twoPoint"]["proposed"] = {
         "dry": round(driest["mean"], 2),
@@ -718,6 +754,42 @@ def self_test():
         (build_proposal({"moisture": [{}]}, [finding]) or [{}])[0].get("dry")
         == proposed.get("dry"),
     )
+
+    # The thermal gates, wired in. An ordinary diurnal cycle must not cost the
+    # garden its calibration - a gate that fires on the normal case is a veto,
+    # not a check - and a pump that runs at the hottest hour every day must.
+    ordinary = [
+        (
+            stamp,
+            24.0 + 10.0 * math.sin(math.pi * max(0.0, (stamp % 86400.0) - 21600.0) / 43200.0),
+        )
+        for stamp in range(0, 10 * 86400, 300)
+    ]
+    warm = analyse_probe(identity, samples, events, 0, ordinary)
+    check(
+        "an ordinary diurnal cycle leaves the fit standing",
+        warm["model"]["blockedBy"] is None
+        and warm["twoPoint"]["proposed"] is not None,
+        f"{warm['model']['blockedBy']} / {warm['twoPoint']['blockedBy']}",
+    )
+    # Watering at the hottest moment of the day is the failure this gate is for:
+    # every WET sample is then read hot and every DRY sample cool, and Fisher's
+    # J is separating the clock rather than the soil.
+    hot_at_noon = [
+        (
+            stamp,
+            50.0 if any(0.0 <= stamp - event <= 2400.0 for event in events) else 25.0,
+        )
+        for stamp in range(0, 10 * 86400, 300)
+    ]
+    biased = analyse_probe(identity, samples, events, 0, hot_at_noon)
+    check(
+        "a pump that always runs at the hottest hour is refused",
+        "thermal regime" in (biased["model"]["blockedBy"] or ""),
+        str(biased["model"]["blockedBy"]),
+    )
+
+    checks.extend(moisture_thermal.checks())
 
     failures = [entry for entry in checks if not entry[1]]
     for name, ok, detail in checks:
