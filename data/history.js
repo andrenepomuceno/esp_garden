@@ -247,8 +247,10 @@
           var x0 = timeFrac(runStart) * 100;
           var x1 = (i >= n) ? 100 : timeFrac(i) * 100;
           var w = Math.max(x1 - x0, 0.4);
-          bars += '<rect x="' + x0 + '%" y="0" width="' + w +
-                  '%" height="14" rx="2" fill="var(--series-1)"/>';
+          bars += '<rect class="relay-run" x="' + x0 + '%" y="0" width="' + w +
+                  '%" height="14" rx="2" fill="var(--series-1)"' +
+                  ' data-r="' + r + '" data-i0="' + runStart +
+                  '" data-i1="' + (i - 1) + '"/>';
           runStart = -1;
         }
       }
@@ -258,9 +260,58 @@
               '<rect x="0" y="0" width="100%" height="14" rx="2" fill="var(--grid)"/>' +
               bars + '</svg></div>';
     }
-    container.append($('<div class="card"><div class="card-header">' +
-      '<span>Relays</span><span class="hint">shaded while energised</span></div>' +
-      '<div class="card-body">' + rows + '</div></div>'));
+    var card = $('<div class="card"><div class="card-header">' +
+      '<span>Relays</span><span class="hint">hover a bar for its time</span></div>' +
+      '<div class="card-body">' + rows + '</div></div>');
+    container.append(card);
+    attachRelayHover(card[0]);
+  }
+
+  // A record's relayMask is the STICKY take OR'd with the live state
+  // (src/tasks.cpp), so a set bit means "ran at some point in this period" and
+  // never "was on for all of it" — a five-second watering draws a bar one whole
+  // record wide. So the tooltip reports a SPAN OF RECORDS and not a switch-on
+  // and switch-off time it does not have. The real edges, with their durations,
+  // are in the relayNEvent stream on ThingsBoard.
+  function attachRelayHover(root) {
+    var tip = document.getElementById('tooltip');
+
+    function hide() { tip.style.display = 'none'; }
+
+    function move(point, target) {
+      var el = target || point.target;
+      if (!el || !el.getAttribute || el.getAttribute('data-i0') === null) {
+        hide();
+        return;
+      }
+      var r = parseInt(el.getAttribute('data-r'), 10);
+      var i0 = parseInt(el.getAttribute('data-i0'), 10);
+      var i1 = parseInt(el.getAttribute('data-i1'), 10);
+      var count = i1 - i0 + 1;
+
+      var html = '<div><span class="swatch" style="background:var(--series-1)">' +
+                 '</span>' + esc(relayNames[r]) + '</div>' +
+                 '<div style="color:var(--text-secondary)">' +
+                 esc(fmtDateTime(records[i0].t)) +
+                 (count > 1 ? ' &rarr; ' + esc(fmtDateTime(records[i1].t)) : '') +
+                 '</div><div class="hint">' + count +
+                 (count === 1 ? ' record' : ' records') +
+                 ' &middot; ran within, not throughout</div>';
+
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+      tip.style.left = Math.min(point.clientX + 12, window.innerWidth - 210) + 'px';
+      tip.style.top = (point.clientY + 12) + 'px';
+    }
+
+    root.addEventListener('mousemove', move);
+    root.addEventListener('mouseleave', hide);
+    root.addEventListener('touchmove', function (e) {
+      if (!e.touches.length) return;
+      var t = e.touches[0];
+      move(t, document.elementFromPoint(t.clientX, t.clientY));
+    });
+    root.addEventListener('touchend', hide);
   }
 
   // ---------- table view ----------

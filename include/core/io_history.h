@@ -49,7 +49,9 @@
 struct IoRecord
 {
     uint32_t timestamp;  ///< epoch seconds; 0 marks an unwritten slot
-    uint16_t relayMask;  ///< bit i set while relay i is energised
+    uint16_t relayMask;  ///< bit i set if relay i ran during the period
+                         ///< (the STICKY take OR'd with the live state),
+                         ///< never "was on throughout"
     uint16_t flags;      ///< see IO_HISTORY_FLAG_*
     float moisture[IO_HISTORY_MAX_MOISTURE];
     float luminosity;
