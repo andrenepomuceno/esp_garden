@@ -377,6 +377,12 @@ mqttTaskHandler()
     telemetryPublish();
 }
 
+// A boot that reaches loop() without a clock retries at this period instead of
+// the task's declared 24 h. It has to be applied in THREE places, because the
+// scheduler reschedules from an absolute `_nextRunTime`: setPeriod() alone
+// changes what happens after the next run and never brings that run closer.
+static const unsigned long g_clockRetryPeriod = 60UL * 1000UL;
+
 void
 clockUpdateTaskHandler()
 {
@@ -384,6 +390,13 @@ clockUpdateTaskHandler()
 
     if (!g_hasInternet) {
         logger.warning("Syncing skipped, no internet connection.");
+        // Measured on 6224, 2026-09-16: this return skipped the setPeriod()
+        // below, so a boot whose WiFi took 50 s of the 60 s internet budget
+        // left the task on 24 h. checkInternet had the network back seconds
+        // later and nothing told the clock — the device sat at 1970 for 17.6 h
+        // with no history written, because the history and schedule tasks both
+        // refuse an unsynced clock.
+        g_clockUpdateTask.setPeriod(g_clockRetryPeriod);
         return;
     }
 
@@ -396,7 +409,7 @@ clockUpdateTaskHandler()
     // While the clock is still unset, come back in a minute instead of a day —
     // otherwise a boot that missed NTP stays undatable until tomorrow.
     if (time(NULL) < g_safeTimestamp) {
-        g_clockUpdateTask.setPeriod(60UL * 1000UL);
+        g_clockUpdateTask.setPeriod(g_clockRetryPeriod);
     } else {
         g_bootTime = (g_bootTime < g_safeTimestamp) ? time(NULL) : g_bootTime;
         g_clockUpdateTask.setPeriod(g_clockUpdateTaskPeriod);
@@ -461,6 +474,15 @@ checkInternetTaskHandler()
         if (success) {
             if (!g_hasInternet) {
                 logger.info("Internet connection detected!");
+
+                // The event half. The retry period covers a boot; this covers
+                // an outage at any other time, when the clock task may be
+                // parked up to 24 h out. enable() sets _nextRunTime to now,
+                // which setPeriod() cannot do.
+                if (time(NULL) < g_safeTimestamp) {
+                    logger.info("Clock still unset; asking for a sync now.");
+                    g_clockUpdateTask.enable();
+                }
 
                 if (connectionLostTime != 0) {
                     time_t downTime = time(NULL) - connectionLostTime;
@@ -810,7 +832,13 @@ tasksSetup()
     if (config.dhtFitted) {
         g_dhtTask.enableDelayed(g_dhtTaskPeriod);
     }
-    g_clockUpdateTask.enableDelayed(g_clockUpdateTaskPeriod);
+    // Arming the 24 h period here regardless of whether NTP answered is what
+    // turned a few seconds of slow WiFi into a day without a clock: the FIRST
+    // run was a day away, so the short retry period above never got a chance
+    // to apply. Arm short when the clock is still unset.
+    g_clockUpdateTask.enableDelayed((time(NULL) < g_safeTimestamp)
+                                      ? g_clockRetryPeriod
+                                      : g_clockUpdateTaskPeriod);
     g_checkInternetTask.enableDelayed(g_checkInternetTaskPeriod);
     g_mqttTask.enableDelayed(mqttPeriod);
 #if USE_TALKBACK
