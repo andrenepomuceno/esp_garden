@@ -24,8 +24,9 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | Config — `io` | `src/config_io.cpp` | Parsers for the `io` block, where every entry accepts several shapes so a field device keeps loading after a firmware update |
 | Config — save | `src/config_document.cpp` | Whole-document validation before a write: the save-time counterpart of `loadFile()` |
 | Logging | `src/logger.cpp` | Level-filtered singleton, 8 KB rolling RAM buffer, LittleFS backup rotating over 4 files |
-| Web | `src/web.cpp` (503) | WiFi events, mDNS, `AsyncWebServer`, **the route table**, `/control`, `/logs`, `/history.json` |
+| Web | `src/web.cpp` (573) | WiFi events, mDNS, `AsyncWebServer`, **the mode decision and the route table**, `/control`, `/logs`, `/history.json` |
 | Web handlers | `src/web_data.cpp`, `web_config.cpp`, `web_ota.cpp`, `web_users.cpp` | `/data.json` cache · masked `GET`/`POST /config.json` · browser OTA · `/users.json` |
+| Onboarding | `src/web_onboarding.cpp`, `include/core/onboarding.h`, `include/core/onboarding_templates.h` | The first-boot setup AP: the compiled page, the compiled per-family board templates, the captive-portal DNS and `POST /onboarding`. **WHEN it runs is `onboarding::decide()`, Arduino-free and host-tested**; the templates are a second per-family table selected from `CONFIG_IDF_TARGET_*`, exactly as `pin_rules.h` and `default_pins.h` are. See [First-boot onboarding](#first-boot-onboarding--the-setup-ap-and-the-marker-that-keeps-a-live-garden-out-of-it) |
 | Auth | `src/custom_login.cpp`, `src/user_store.cpp` | Nonce + SHA-256 login, role middleware, per-IP lockout, `/users.json`, `/sessions.json` — ported from fullbot |
 | MQTT | `src/mqtt.cpp` | Transport only: `PubSubClient` over TLS or plain, reconnect backoff, buffer sizing. `mqtt.backend` picks ThingSpeak `channels/<id>/publish` or ThingsBoard `v1/devices/me/telemetry`; `mqttBackendSupported()` refuses a backend this BUILD has no code for |
 | ThingsBoard | `src/thingsboard.cpp` (791) | The downlink half: client/shared attributes, two-way RPC, the chunked `v2/fw` firmware stream |
@@ -44,7 +45,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 
 **No source file exceeds 1000 lines, and `python scripts/check_lines.py` is what says so.** The rule sat here unenforced long enough that two files crossed it unnoticed — the gate exists because the honour system had already failed. It prints the largest files on success too: a failure arrives when the split is expensive, and the useful signal is the file three commits away from crossing. `tasks.cpp` (1123), `web.cpp` (1004), `config.cpp` (1125) and `devices.js` (1155) were all split at that threshold. `tasks.cpp` kept every `DECLARE_TASK` and every handler and `web.cpp` kept `webSetup()`, in both cases because the ordering *inside* those functions is load-bearing.
 
-Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict, the cloud-cover classifier, the evapotranspiration maths, the step-publisher change detection and the per-family pin rules — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`, `pin_rules.h`) rather than to stub the platform: a stub is small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md).
+Host tests live in `test/` and run under **`[env:native]`** (`pio test -e native`). Coverage is `AccumulatorV2`, the history segment arithmetic, firmware-version comparison, the moisture classifier, the probe-health verdict, the cloud-cover classifier, the evapotranspiration maths, the step-publisher change detection, the per-family pin rules and the onboarding decision plus its compiled templates — everything else reaches WiFi, LittleFS, `Arduino_JSON` or FreeRTOS. **The pattern for making something testable is to put the arithmetic in an Arduino-free header** (`segment_index.h`, `step_publisher.h`, `pin_rules.h`) rather than to stub the platform: a stub is small enough to look obviously right and wrong in a way that produces plausible answers instead of failures. See [test/README.md](test/README.md).
 
 ---
 
@@ -115,6 +116,14 @@ This exists because this document has been wrong: it claimed no page loaded a CD
 - **ThingsBoard RPC, end to end through a dashboard widget** (2026-09-11). A **Command button** on a ThingsBoard Cloud dashboard, target device `espgarden1`, two-way RPC, method `getRelays` — the round trip answered. So the subscription, the request routing, the method dispatch and the response publish all work on the device, which this file recorded as *"no command has been sent"* since the downlink was written. **`getRelays` reads state and energises nothing, which is why it was the first one sent**; which of the WRITE methods have been exercised beyond it is not established here. Two settings matter and are not defaults: the widget must be **two-way**, or `{"ok":false,"error":...}` is invisible and a refused command looks like a successful one; and its **5 000 ms timeout is tight** — the reply leaves from `tbLoop()` inside `loop()`, which a blocking background task (three pings, a model training pass) can stall for seconds, so a timeout there is not a failure.
 
 **Unverified — written, compiles, never run on hardware:**
+
+- **The whole first-boot onboarding portal (firmware 2.14.0).** Six envs build, `pio test -e native` passes at **181 cases** (12 new), `check_lines.py` green. **No board has raised an access point, and the one thing the portal exists for — being reachable on a device that is on no network — is precisely what a localhost mirror cannot exercise.** See [First-boot onboarding](#first-boot-onboarding--the-setup-ap-and-the-marker-that-keeps-a-live-garden-out-of-it).
+
+  **What HAS executed is `scripts/dev_server.py --onboarding`, and that is evidence about the simulator**, the same distinction the 2.11.0 and 2.11.2 entries had to be corrected for. Run in process on 2026-09-16: in portal mode `/`, `/onboarding.json` and `POST /onboarding` answered and **`/data.json`, `/config.json`, `/control`, `/users.json`, `/spiffs/config.json`, `/logs`, `/login.html` and `/nonce` all 302'd to `/`** — they are absent, not guarded; all five field refusals fired with their own messages (unknown template, short ssid, short Wi-Fi password, short admin password, short hostname); a good POST merged the template, and the account it created then logged in and read the document back (`id 1a2b`, `hostname horta`, relays 19/16/17/18, probes 36/34, `mqtt.backend thingsboard` with `/thingsboard.pem`). With `ESP_GARDEN_PIN_FAMILY=esp32s3` the dropdown carried **only `s3-carrier`** and `wroom32-v2` was refused by name. The page and the templates the mirror served are **extracted from `src/web_onboarding.cpp` and `include/core/onboarding_templates.h` rather than copied**, so what a browser rendered is the bytes the device would serve; the refusals are a second implementation, which is the point.
+
+  Specifically unexercised, and specifically a judgement rather than a measurement: **`WiFi.softAP()`, WPA2 with a nine-character password, the `DNSServer` wildcard and whether any phone actually opens a sign-in sheet** — none of it has run, and the captive portal is the part with the most platform behaviour in it. **The 60 s probation wait** (`onboarding::kProbationMs`) is `g_bootWaitMaxMs` reused rather than a measured association time; nothing here has timed a DHCP lease on this hardware, and a router still booting after a power cut could exceed it — which on a marked board means one unnecessary portal. **`WiFi.status() == WL_CONNECTED` is taken as "associated with an IP"**; that is what the Arduino core documents and not something observed here. **The marker file has never been written to a real LittleFS partition**, so `markerWrite()`, its 4 KB block cost and the delete on the first successful association are arithmetic and reasoning. **No compiled template has been through `ConfigFile::loadFile()`** — `configDocumentIsUsable()` runs on the merged document at POST time and `test_onboarding` walks every declared pin through its family's rules, but the boot-time parse is a different code path, and all three templates ship `mqtt.username` EMPTY on purpose, so a freshly onboarded board reports `MQTT Link: down (rc=...)` until somebody pastes a token into `/config.html`. **`requestRestart(3000)`**: 3 s rather than `/control`'s 500 ms is a judgement about a client on an AP that is about to disappear, not a measurement of anything.
+
+  **Two changes here touch a board that is NOT being onboarded, and both are behaviour changes to the live path.** `uploadPathIsProtected()` now refuses `/provisioned.pending` — untested on hardware, and unreachable unless somebody deliberately uploads that name. And `main.cpp` no longer passes `config.otaUser`/`config.otaPassword` into `UserStore::load()` when the config did not load; see [the correction below](#a-correction-there-was-a-default-password-compiled-into-this-firmware-after-all).
 
 - **Seven review fixes (firmware 2.13.1).** Six envs build, `pio test -e native` passes at **169 cases** (7 new here), `check_lines.py` green. **Nothing has run on the device**, which is on 2.11.1, and two of the seven change what a board does at boot. **The compiled pin defaults are now ONE per-family table** (`include/core/default_pins.h`) rather than a relay table beside six scalars: `6387c46` made the relay table per-family because *"a table from the wrong chip drives whatever else is on those numbers"* and did not carry that to `dhtPin`, `flowPin` and `floatPin`, which stayed at the WROOM-32's 23, 27 and 26 — **and on an S3, 27 and 26 are SPI_HD and SPI_CS1**, the octal flash/PSRAM bus, reached by `"flow": {"name": "Fluxo"}` alone, because `loadSensor()` only overwrites a pin when the entry carries a `"pin"` key. That hazard is REASONING about a netlist and a datasheet: no S3 exists, nothing has driven those pins, and nothing has confirmed what happens if something does. `luminosityPin`/`waterLevelPin` left the Arduino aliases `A3`/`A6` in the same change — an alias resolves per board VARIANT, which looks chip-relative and is not: on `esp32s3` `A3` is GPIO 4, this firmware's third probe, while the carrier's LDR is GPIO 6. **On a WROOM-32 every value is byte-identical to what shipped**, except that the probe table gains a fourth entry: both tables were three long against a `MOISTURE_MAX` of four, so slot 3 fell through to `A0` — GPIO 36 here and GPIO 1 on an S3, probe 0's own pin on both. It gains **GPIO 33**, the sixth ADC1 channel and the one `espgarden1` leaves free, reachable only by a config declaring a fourth probe with no pin, which no device here does — so **nothing has read that pin**; a `static_assert` makes raising `MOISTURE_MAX` a compile error until somebody names the pins. **The history fit check now runs on a FAILED config load**: `ioHistoryFitCapacity()` sat below `loadFile()`'s four early returns, so the constructor's 1440 reached `ioHistory.begin()` unchecked — exactly the state after a filesystem deploy that dropped `/config.json`, partition at its fullest and the one check against filling it skipped. The call moved up into `loadConfigFile()`; what is tested is the ARITHMETIC and not the move (1440 on a 130 KB-free partition is reduced to 1360), because no host test can reach `loadFile()`. **`IoHistoryFit::checked` was DROPPED rather than rendered** — set on one path, read nowhere, and the case it named (`totalBytes()` 0, request granted unchecked) cannot reach `/data.json` at all: a filesystem that will not answer its own size has no `/users.json`, so no session exists to serve the row to. It is still said in `ioHistoryFitCapacity()`'s own warning on the serial log, which is the only place anyone could read it in that state — an argument, not a measurement, since no mount has failed here. **`validateThingSpeakFields()`'s conflict check now runs with `USE_THINGSPEAK` off**: the `#if` returned above the `claims[]` loop, so the comment's claim that *"the check below survives the flag"* was false and a colliding `thingSpeak.moisture2Field` was never normalised to 0. Unreachable on any config in this repo, where the key is 0. Plus **`mqttSubscribe(long)` deleted** (no declaration, no callers) and **`pinMaxGpio()` hoisted out of `/capabilities.json`'s loop condition** (~49 out-of-line calls per request on `async_tcp`); neither changes an answer, and the endpoint has not been re-fetched from a board. **Measured on `espgarden2`, a clean A/B against `0c4d1b5` in a separate worktree: +836 B flash (1 256 533 → 1 257 369), −8 B static RAM (66 600 → 66 592)**; on `espgarden_s3` +864 and −8 (1 208 757 → 1 209 621; 65 472 → 65 464). Per object with `xtensa-esp32-elf-size`: `config.cpp.o` **+683**, mostly the `claims[]` table and its loop no longer being dead-code-eliminated behind that early return; `config_pins.cpp.o` **+315**, the new "declared with no pin" message; `io_history.cpp.o` −4 flash and −4 RAM; `web_capabilities.cpp.o` −6; `mqtt.cpp.o` **0**, because the deleted function was already inside `#if USE_THINGSPEAK`.
 - **The whole `espgarden_s3` board** (firmware 2.13.0). Six envs build, `pio test -e native` passes at 161 cases (23 new), `check_lines.py` green, the LittleFS image builds at exactly its partition size. **No such board has been built, so not one line of this has executed on an ESP32-S3** — see [Hardware v3](#hardware-v3--espgarden_s3-and-the-first-board-that-is-not-a-wroom-32). What is and is not evidence:
@@ -258,6 +267,8 @@ wsl.exe -e bash -lc 'cat ~/solarbot/fullbot-firmware/CLAUDE.md'
 
 The simulator serves `data/` and mocks the device API — including the full nonce + SHA-256 login and the same public/guarded split. Credentials are fixed at **`admin` / `admin`** and printed at startup. **It is a second implementation of the device's HTTP contract** — a payload key, a route or an auth rule changed in `web.cpp` must be mirrored here, or the simulator silently drifts from the firmware.
 
+`python scripts/dev_server.py --onboarding arm1` (or `arm2`) serves the **setup portal** instead of the normal UI, with the same all-or-nothing route split the firmware has. It is the only place that page can be rendered until a board exists, so its page and its templates are **extracted** from `src/web_onboarding.cpp` and `include/core/onboarding_templates.h` rather than copied; the refusals are reimplemented, which is what a mirror is for. `ESP_GARDEN_PIN_FAMILY=esp32s3` switches which templates it offers.
+
 ---
 
 ## Boot sequence — and why a device can hang in it
@@ -268,15 +279,21 @@ The simulator serves `data/` and mocks the device API — including the full non
 2. `LED_BUILTIN` output; `logger` is constructed on first use and its constructor calls `Serial.begin(115200)`.
 3. `id = ESP.getEfuseMac() % 0x10000`, printed as hex — the value that must appear in `config.json`'s `"id"`.
 4. `FILESYSTEM.begin(true)` (LittleFS; formats on failure).
-5. `loadConfigFile(id)` → applies `log.level` and re-parks the relays on their configured pins.
+5. `loadConfigFile(id)` → applies `log.level` and re-parks the relays on their configured pins. **Its answer is kept**: it is the first arm of the onboarding decision and is passed to `webSetup()`.
 6. `g_ledBlinkEnabled = error` — set here, not after `tasksSetup()`.
 7. `logger.backupSetup()` → rotates `/log0..3.txt` via `/current.txt`.
-8. `webSetup()` → `WiFi.begin()`, mDNS, **all routes registered, server listening**.
-9. `tasksSetup()` → pins, TalkBack, **critical runner started**, then **two blocking loops**.
+8. `webSetup(configLoaded)` → `WiFi.begin()`, **the mode decision**, mDNS, **all routes registered, server listening**.
+9. `tasksSetup()` → pins, TalkBack, **critical runner started**, then **two blocking loops** — all of it skipped but the two critical tasks when the portal is up.
+
+**`webSetup()` is where a board decides whether it is a garden controller or a setup portal, and that is deliberately ONE branch.** An early return at the top registers either the three unauthenticated onboarding routes or the normal table, never both, so "does an endpoint that rewrites `/config.json` without a token exist on this device" is a question a reader answers by reading one `if`. See [First-boot onboarding](#first-boot-onboarding--the-setup-ap-and-the-marker-that-keeps-a-live-garden-out-of-it).
+
+**TRAP — `webSetup()` can now block for up to 60 s, and only ever on one specific board.** When `/config.json` loaded AND `/provisioned.pending` exists, it polls `WiFi.status()` before deciding. That is the boot after onboarding and no other: the first association deletes the marker, so a configured board never enters the branch and `onboarding::mustProbeAssociation()` is host-tested for exactly that.
+
+**That 60 s is spent with the critical runner NOT yet started**, because `g_criticalRunner.start()` is in step 9 and this is step 8 — so relay timing and the error blink are down for it, which is a window that did not exist before. It is survivable for one reason and it should be checked against any future change: **no relay can be energised during it.** `relayPinsSafeInit()` has run twice, the web server has not called `begin()` yet, there is no schedule task, no TalkBack and no MQTT, so nothing in the firmware has a path to `startRelay()`. Moving the probation after `g_webServer.begin()` is not possible — the route table is what the decision picks.
 
 **TRAP — `tasksSetup()` blocks `setup()`, but no longer forever.** It spins `while (!g_hasInternet)` pinging 8.8.8.8 / 8.8.4.4 / 1.1.1.1 every second, then `while (g_bootTime < g_safeTimestamp)` re-running NTP every 2 s. **Both are capped at `g_bootWaitMaxMs` = 60 s**, so a device with Wi-Fi but no internet reaches `loop()` after two minutes instead of never — which is what makes watering and MQTT start at all behind a captive portal. Two minutes of a dead `loop()` is still two minutes: relay timing and the error blink survive it only because they are CRITICAL tasks on their own runner. The web server is up throughout (step 8 precedes step 9), so `/data.json` answers with accumulators that have never been fed.
 
-**TRAP — a bad config is still fatal, it is just visible now.** `ConfigFile::loadFile` returns false when `/config.json` is missing, unparseable, has an `"id"` that does not match this chip's efuse MAC, or has any credential string shorter than 4 chars. `main.cpp` then continues with **compiled defaults** (`ssid = "undefined"`), which cannot associate — so the device wedges in the loop above. The error blink does run, but the device is still stuck. **A slow-blinking LED means "config did not load".**
+**A bad config used to be fatal. It is now the first arm of the onboarding decision.** `ConfigFile::loadFile` returns false when `/config.json` is missing, unparseable, has an `"id"` that does not match this chip's efuse MAC, or has any credential string shorter than 4 chars. `main.cpp` still continues with **compiled defaults** (`ssid = "undefined"`), which cannot associate — but instead of wedging in the loop above, `webSetup()` raises the setup AP. **A slow-blinking LED now means "this board needs attention": the config did not load, or it is serving the setup portal.** Arm 2 lights it explicitly from `main.cpp`, because there the config loaded perfectly and only the credentials in it are wrong, so `error` is false.
 
 Three traps that used to live here are fixed; do not re-introduce them:
 
@@ -355,6 +372,8 @@ Facts worth knowing before touching it:
 
 `src/web.cpp`, one `AsyncWebServer` on port 80, mDNS as `<hostname>.local`.
 
+**This whole table is the NORMAL mode's table.** A board serving the setup portal registers three other routes and none of these — see [First-boot onboarding](#first-boot-onboarding--the-setup-ap-and-the-marker-that-keeps-a-live-garden-out-of-it).
+
 | Route | Method | Auth | Handler |
 |---|---|---|---|
 | `/`, `/index.*`, `/login.*`, `/update.*`, `/auth.js`, `/sha256.js`, `/favicon.ico` | GET | **public** | `servePublicFile()` — an explicit allow-list, no blanket `serveStatic` |
@@ -413,6 +432,12 @@ The cost is one `Session` per slot plus four bytes for the stamp — **measured 
 `/sessions.json` gained one optional field (`"c"`) and is otherwise unchanged, so a file written by 2.11.0 or by the 4-slot firmware still loads.
 
 **There is no default password compiled into the firmware.** `UserStore::load()` seeds the first account by migrating `config.json`'s `ota.username` / `ota.password` into `/users.json` as ADMIN (salted SHA-256). A device whose config never loaded has no users, logs a FATAL, and the web UI is unreachable by design.
+
+### A correction: there WAS a default password compiled into this firmware after all
+
+The paragraph above has been in this file since the auth stack landed and it was **false in exactly one case**, which is the case the onboarding portal is about. `loadFile()` mutates as it parses and only returns `false` at the end — but it also returns EARLY on a missing, unopenable, unparseable or foreign-`id` document, and on those four paths `config.otaUser` and `config.otaPassword` are still the **constructor's** values: `"admin"` and `"password"`. `main.cpp` passed them into `UserStore::load()` regardless. So a board with no `/config.json` and no `/users.json` — the state after a filesystem deploy that dropped both, and the state a factory-blank board is in — migrated a compiled default pair into a real ADMIN account and **wrote it to flash**.
+
+It mattered little while such a device was simply unreachable: it had no network, so nothing could reach the login page it was serving. It matters now, because that same device raises an AP with a password printed in this repository. `main.cpp` passes empty strings when the load failed, so nothing is seeded and nothing is written; the FATAL and the empty store are what the paragraph above always claimed. **Found by reading, not by a test, and nothing here has run on hardware** — `UserStore` reaches LittleFS and mbedtls, so the host suite cannot see it. The onboarding handler creates the account instead, from the credentials somebody actually typed.
 
 **Registration order is load-bearing.** ESPAsyncWebServer matches handlers in the order added, and `AsyncURIMatcher::prefix` is a prefix match — the 403 shadows for `/spiffs/users`, `/spiffs/sessions` and `/spiffs/config` must stay *above* the `serveStatic("/spiffs", …)` line, or the credential store, the live bearer tokens and the plaintext WiFi/MQTT passwords are served to any admin session.
 
@@ -912,6 +937,75 @@ It was published in every payload: a string that changes at a reboot and at no o
 - **Login failures and per-IP lockouts** — only in the 8 KB rolling log, which a busy device overwrites within hours. These are security events on a device exposed to a LAN and they have no durable record anywhere.
 - **Config writes and restarts** — same: an audit trail that lives only in a log that rotates.
 
+## First-boot onboarding — the setup AP, and the marker that keeps a live garden out of it
+
+A board with no usable configuration raises its own access point — SSID **`espgarden-<id>`**, password **`espgarden`** — serves a setup page, and writes its own `/config.json`. Everything else is configured normally through the existing pages once it is on the LAN. **Nothing in this section has run on hardware; see [the unverified entry](#what-has-actually-run).**
+
+### Say the security property first, because it is real
+
+The AP password is in this repository and **`POST /onboarding` takes no token**. While the portal is up, anyone in radio range can write this board's Wi-Fi credentials and admin account and walk away with the device. That is the flow the operator asked for and the one every consumer device ships, and it is stated here rather than left to be discovered on a controller that switches real pumps.
+
+**What bounds it is WHEN the portal can exist**, not what is behind it:
+
+- a board that has ever associated carries no marker and **can never enter the portal again**, whatever happens to the router afterwards;
+- so the window is "between flashing and the first successful association", which on a working setup is one boot.
+
+**What does NOT bound it is authentication, and that is on purpose.** There is nothing to authenticate against: `UserStore` has no account on a board whose config never loaded, which is the whole reason the normal UI is unreachable in that state.
+
+Two cheap mitigations were considered and are **not** implemented, because both change the operator's stated flow: a per-device AP password derived from the efuse MAC (printed on the serial console and on a sticker — this removes the shared secret entirely and costs one label), and a portal that closes itself after N minutes and reboots (which on a board that cannot associate is a reboot loop wearing a timeout). The first is the one worth doing if the exposure is ever judged too wide.
+
+### The trigger has two arms, and the second one is where the danger is
+
+| Arm | Fires when | Why it cannot be left out |
+|---|---|---|
+| 1 | `loadConfigFile()` returned false | Missing, unparseable, an `id` from another chip, or one of the seven length-checked strings under four characters. Terminal today: compiled defaults, `ssid "undefined"`, unreachable without USB |
+| 2 | the config loaded but has **never** associated | A mistyped Wi-Fi password produces a perfectly VALID document. `loadFile()` accepts it, arm 1 never fires, and the board is off the network for ever |
+
+**"Failed to associate, therefore raise an AP" is exactly the rule that must not exist.** Every router reboot, channel change and ISP outage satisfies it — on the live garden, which would then broadcast an AP with a published password and an unauthenticated config writer. So arm 2 is gated on a **marker file**, `/provisioned.pending`:
+
+- `POST /onboarding` writes `/config.json` **and then** the marker. That order matters: losing power between the two leaves the new config with no marker, i.e. an ordinary configured board — the failure this feature removes, but not a new one. The other order leaves a marker with the OLD config, which is a working board spending 60 s probing at every boot.
+- The first boot that reaches `WL_CONNECTED` **deletes the marker**, and from that moment the board is outside arm 2 structurally — not by a timeout, a counter or a heuristic.
+- **`uploadPathIsProtected()` refuses that path**, so an ADMIN cannot re-arm arm 2 on a working device through `POST /spiffs/upload`. An ADMIN can already rewrite the whole config; the difference is that a config write is visible and this would not be.
+
+`onboarding::decide(configLoaded, markerPresent, associated)` is the only thing in the tree that can answer "portal", it lives in an **Arduino-free header**, and `test_onboarding` holds it to a truth table over every input. The row that matters: **config loaded, no marker → `Normal`, with `associated` never read.** `mustProbeAssociation()` is the same guarantee for the WAIT — a configured board does not spend the 60 s either.
+
+### The mode decision is one branch, in one place
+
+`webSetup(configLoaded)` decides once and returns early. The portal's routes are registered by `onboardingBegin()`, which has **exactly one caller** — `grep -n onboardingBegin src/` is the whole audit. A reader checking whether a configured device exposes an unauthenticated `/config.json` writer reads one `if`, not a middleware chain.
+
+| Portal route | Method | Auth | What it does |
+|---|---|---|---|
+| `/` | GET | **none** | The compiled setup page. No script, no stylesheet, no font |
+| `/onboarding.json` | GET | **none** | Device id, chip family, firmware, the AP name, the refusal reason, and the templates this BUILD carries |
+| `/onboarding` | POST | **none** | `template`, `ssid`, `password`, `username`, `adminPassword`, `hostname` → validate, write, restart |
+| everything else | any | — | `302` to the AP's own address, which is what makes a phone open the sign-in sheet |
+
+`tasksSetup()` returns after registering and starting the two **critical** tasks. It must: the rest of it ends in two bounded waits of up to 60 s each — pinging 8.8.8.8, then re-running NTP — and in AP mode there is no internet by definition, so both run to their deadlines. That is two minutes of a dead portal with somebody standing at the board holding a phone.
+
+### Nothing the portal serves comes off the filesystem
+
+One of the two ways arm 1 fires is `FILESYSTEM.begin(true)` **reformatting** a partition that would not mount, which takes every web asset with it. So the page is a string in `web_onboarding.cpp` and the templates are a table in `onboarding_templates.h`. A portal that needs `/bootstrap.css` to render is blank in half the cases it exists for.
+
+**The templates are compiled in rather than packed into the image, and the family is selected by `CONFIG_IDF_TARGET_*`.** Only the compiler sees that macro; a file chosen by a build script would be a second statement of "this is an S3", free to disagree with the `board` line — the same argument `platformio.ini` makes for carrying no hardware flags. Offering a WROOM-32 template on the S3 carrier is the hazard `config_guard()` in `scripts/pio_assets.py` exists to refuse: relays on `FLOW_PULSE`, `FLOAT_SW` and `BTN_USER`, probes on the octal flash/PSRAM bus. `test_onboarding` walks every declared pin of every template through its own family's `pin_rules` predicates, and asserts that each family's templates are **refused** by the other's rules — without that second half the first proves nothing about the `#if`.
+
+Three templates ship: `wroom32-v2` (hardware v2: relays 19/16/17/18, probes 36/34, DHT 23, LDR 39), `wroom32-minimal` (one relay on 19, one probe on 36), and `s3-carrier` (the `templates/config.espgarden_s3.json` pin map). Each is a whole config document with **six holes** — `id`, `hostname`, `wifi.ssid`, `wifi.password`, `ota.username`, `ota.password` — and the handler fills those and nothing else. A template is a starting pin map, never a claim that the board has these sensors; everything after it is a `/devices.html` edit, which is the point of the runtime-hardware design.
+
+**`mqtt.username` ships empty on purpose.** ThingsBoard carries the device access token there and nobody has one at setup time, so the link reports `down (rc=...)` until an operator pastes it into `/config.html`. An invented token would connect to nothing and report success, which this repo has already paid three years for once.
+
+### The POST refuses before writing, not after rebooting
+
+Otherwise the user submits, the board reboots, the portal comes back and nothing says why. `handleSubmit()` runs, in order: the four typed fields against `g_configMinStringLength` with their own messages; `configDocumentIsUsable()` on the merged document — the same check `POST /config.json` runs, so `documentPinsAreUsable()` is included; the `id` check `handleConfigPost` does; and the **backend/CA pairing**, because crossing `mqtt.backend` with `mqtt.cacert` fails TLS silently while the dashboard keeps saying MQTT is enabled. That pairing table is `onboarding::expectedCaFor()`, host-tested, and its Python twin is `BACKEND_CA` in `scripts/provision_config.py` — whose `refusals()` is the same list expressed for a workstation.
+
+**It calls `requestRestart(3000)`, never `ESP.restart()`.** `request->send()` only queues the response and the `async_tcp` task that flushes it is the one the handler runs on, so a reboot in place guarantees the phone sees a reset instead of the confirmation. 3 s rather than `/control`'s 500 ms because the client is on an AP that is about to disappear.
+
+**The `id` stops being the field that bricks a board.** The firmware knows `ESP.getEfuseMac() % 0x10000`, puts it in the SSID and writes it into the document itself, so nobody reads it off a boot line — which is what the whole [Swapping the board](#swapping-the-board) section is about.
+
+### What it costs
+
+Measured on `espgarden2`, a clean A/B against `bac7ad4` built from a `git archive` of the same tree: **+27 156 B flash (1 257 533 → 1 284 689), +432 B static RAM (66 592 → 67 024)**, taking the app slot 71.1 % → **72.6 %**. On `espgarden_s3`: **+26 060 and +432** (1 209 805 → 1 235 865; 65 464 → 65 896). Where it goes, per object with `xtensa-esp32-elf-size`: `web_onboarding.cpp.o` **18 331 B** — of which the page is **3 754**, the two WROOM-32 templates ~1 950, and `handleSubmit()` alone 6 612 in text, literals and refusal strings; `web.cpp.o` +543, `tasks.cpp.o` +305, `main.cpp.o` +205, `web_files.cpp.o` +126. The rest, about 7.6 KB, is the soft-AP and DNS code nothing linked before: `WiFiAP.cpp.o` **3 479** and `DNSServer.cpp.o` **2 093**, plus what they pull in.
+
+**The captive portal is 2 093 B of that** and it is worth it: it is the difference between "connect and the page opens" and "connect, then find out the device is on 192.168.4.1". **The unused family's templates are dropped by the linker** — both are compiled, as `pin_rules.h` and `default_pins.h` both are, so one host test can hold both.
+
 ## Relay seams — why `startRelay()` is the only door
 
 `src/relays.cpp` owns switching and nothing else. Two seams connect it to the rest of the firmware, both implemented in `tasks.cpp`:
@@ -991,7 +1085,7 @@ Concrete gotchas measured in this tree:
 - [ ] `pio test -e native` passes; new behaviour in testable code has a regression test
 - [ ] `pio run` builds all five envs clean (they share one shape now, so a break in one is a break in all)
 - [ ] `-t buildfs` run if `data/` changed, and **flash usage still under 100 %** of the app slot
-- [ ] `/data.json` payload changes mirrored in `data/index.js` **and** the simulator (`scripts/sim_state.py` for the payload, `sim_config.py` for the document, `sim_moisture.py` for the model, `dev_server.py` for the route and `PUBLIC_PATHS`)
+- [ ] `/data.json` payload changes mirrored in `data/index.js` **and** the simulator (`scripts/sim_state.py` for the payload, `sim_config.py` for the document, `sim_moisture.py` for the model, `sim_onboarding.py` for the setup portal, `dev_server.py` for the route and `PUBLIC_PATHS`)
 - [ ] New config key: all 5 edits, template included; new sensor KIND: all 8
 - [ ] `data/config.json` untouched, no credentials introduced
 - [ ] `python scripts/check_lines.py` passes

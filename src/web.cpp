@@ -3,11 +3,13 @@
 #include "core/config.h"
 #include "core/io_history.h"
 #include "core/logger.h"
+#include "core/onboarding.h"
 #include "core/role.h"
 #include "core/tasks.h"
 #include "network/custom_login.h"
 #include "network/web.h"
 #include "network/web_capabilities.h"
+#include "network/web_onboarding.h"
 #include "network/web_config.h"
 #include "network/web_data.h"
 #include "network/web_files.h"
@@ -340,23 +342,92 @@ wifiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
     g_wifiConnected = false;
     g_hasNetwork = false;
 
+    // The portal owns the radio. onboardingBegin() calls WiFi.disconnect(true),
+    // which raises exactly this event, so without the guard the reconnect below
+    // would drag the STA back up underneath the soft AP — on the stored
+    // credentials that have just been shown not to work.
+    if (onboardingActive()) {
+        return;
+    }
+
     WiFi.begin(g_ssid.c_str(), g_wifiPassword.c_str());
 }
 
+// Spent ONLY on a board carrying the marker — i.e. between onboarding and its
+// first successful association, and never again. A configured board does not
+// call this at all, so nothing here can delay a normal boot.
+//
+// It polls rather than waiting on the events above because it has to answer
+// "did we associate" even when it is about to hand the radio to the AP, and an
+// event-driven flag would then need clearing on a path that no longer exists.
+static bool
+waitForAssociation()
+{
+    logger.info("Setup marker present: proving the stored credentials, up to " +
+                String(onboarding::kProbationMs / 1000) + " s...");
+
+    const unsigned long start = millis();
+    while (millis() - start < onboarding::kProbationMs) {
+        if (WiFi.status() == WL_CONNECTED) {
+            return true;
+        }
+        delay(250);
+    }
+    return false;
+}
+
 void
-webSetup()
+webSetup(bool configLoaded)
 {
     logger.info("Web setup...");
 
     g_dataMutex = xSemaphoreCreateMutex();
     webUpdateDataCache();
 
-    WiFi.mode(WIFI_STA);
-    WiFi.setHostname(g_hostname.c_str());
-    WiFi.onEvent(wifiConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
-    WiFi.onEvent(wifiGotIP, ARDUINO_EVENT_WIFI_STA_GOT_IP);
-    WiFi.onEvent(wifiDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-    WiFi.begin(g_ssid.c_str(), g_wifiPassword.c_str());
+    // ------------------------------------------------------------------
+    // THE MODE DECISION. It is made here, exactly once, and it is the only
+    // thing in the tree that can register the onboarding routes.
+    //
+    // Everything below the early return is the normal route table; everything
+    // the portal serves is in onboardingBegin(). A reader who wants to know
+    // whether an unauthenticated /config.json writer exists on a configured
+    // device checks this one branch, not a middleware chain.
+    //
+    // decide() itself is in core/onboarding.h, Arduino-free and held to its
+    // truth table by test_onboarding. The property it exists for: a board whose
+    // config loaded and which carries no marker gets Mode::Normal
+    // unconditionally, with `associated` never read — so the live garden cannot
+    // reach the portal however long the router stays down.
+    // ------------------------------------------------------------------
+    bool associated = false;
+    const bool markerPresent = configLoaded && onboardingMarkerPresent();
+
+    if (configLoaded) {
+        WiFi.mode(WIFI_STA);
+        WiFi.setHostname(g_hostname.c_str());
+        WiFi.onEvent(wifiConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
+        WiFi.onEvent(wifiGotIP, ARDUINO_EVENT_WIFI_STA_GOT_IP);
+        WiFi.onEvent(wifiDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+        WiFi.begin(g_ssid.c_str(), g_wifiPassword.c_str());
+
+        if (onboarding::mustProbeAssociation(configLoaded, markerPresent)) {
+            associated = waitForAssociation();
+        }
+    }
+
+    const onboarding::Decision decision =
+      onboarding::decide(configLoaded, markerPresent, associated);
+
+    if (decision.clearMarker) {
+        onboardingMarkerClear();
+    }
+
+    if (decision.mode == onboarding::Mode::Portal) {
+        onboardingBegin(g_webServer, decision.reason);
+        g_webServer.begin();
+        logger.info("Web setup done (setup portal).");
+        return;
+    }
 
     if (MDNS.begin(g_hostname.c_str()) == false) {
         logger.warning("Error starting mDNS!");

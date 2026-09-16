@@ -7,6 +7,7 @@
 #include "core/tasks.h"
 #include "core/user_store.h"
 #include "network/web.h"
+#include "network/web_onboarding.h"
 #include <Arduino.h>
 #include <esp_system.h>
 
@@ -138,7 +139,8 @@ setup(void)
         }
     }
 
-    if (!loadConfigFile(id)) {
+    const bool configLoaded = loadConfigFile(id);
+    if (!configLoaded) {
         error = true;
     }
 
@@ -146,7 +148,20 @@ setup(void)
     // Seeded from the legacy ota.{username,password} pair on first boot, so a
     // device that already had a config gets an account without any password
     // being compiled into the firmware.
-    if (!userStore.load(FILESYSTEM, config.otaUser, config.otaPassword)) {
+    //
+    // NOTHING is seeded when the config did not load, and that is a fix rather
+    // than a precaution. loadFile() returns false without clearing what it
+    // parsed, so otaUser/otaPassword are then whatever the CONSTRUCTOR set:
+    // "admin"/"password". On a board with no /users.json — the same filesystem
+    // wipe that loses /config.json — this migrated a compiled default pair into
+    // a real ADMIN account, which contradicts the claim that no default
+    // password is compiled into this firmware. It mattered little while such a
+    // device was simply unreachable; it matters now that the same device raises
+    // a setup AP with a published password.
+    const bool haveCredentials = configLoaded && !config.otaUser.isEmpty();
+    if (!userStore.load(FILESYSTEM,
+                        haveCredentials ? config.otaUser : String(),
+                        haveCredentials ? config.otaPassword : String())) {
         error = true;
     }
 #endif
@@ -180,7 +195,17 @@ setup(void)
     moistureModelSetup();
 
     logger.backupSetup();
-    webSetup();
+    webSetup(configLoaded);
+
+    // A board serving the setup portal is a board that needs attention, and the
+    // blink is the only thing that says so where there is no network to ask.
+    // Arm 1 already lit it through `error`; arm 2 did not, because there the
+    // config loaded perfectly and only the credentials in it are wrong. Still
+    // before tasksSetup(), which is what the ordering rule is about.
+    if (onboardingActive()) {
+        g_ledBlinkEnabled = true;
+    }
+
     tasksSetup();
 
     digitalWrite(LED_BUILTIN, 0);

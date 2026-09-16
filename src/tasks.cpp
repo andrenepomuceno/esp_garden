@@ -15,6 +15,7 @@
 #include "network/talkback.h"
 #endif
 #include "network/web.h"
+#include "network/web_onboarding.h"
 #include <CriticalTaskScheduler.h>
 #include <ESP32Ping.h>
 #include <WiFi.h>
@@ -755,10 +756,48 @@ moistureModelTaskHandler()
     moistureModelTrain();
 }
 
+// The setup portal's whole task set: relay timing and the error blink, and
+// nothing else.
+//
+// SKIPPED, and the reason is the two bounded waits at the bottom of
+// tasksSetup(): up to 60 s pinging 8.8.8.8, then up to 60 s re-running NTP. In
+// AP mode there is no internet BY DEFINITION, so both run to their deadlines —
+// two minutes of a dead portal with somebody standing at the board holding a
+// phone. mqttSetup() goes for the same reason; io, dht, history, schedules and
+// the models because there is nothing to publish and no clock to stamp a record
+// with.
+//
+// NOT SKIPPED, and must never be: the two critical tasks, registered and then
+// enabled BEFORE start(), because the library documents mutation after start()
+// as unsafe. Nothing in the portal can command a relay — there is no /control
+// route — so this is belt and braces, on a boot where something has already
+// gone wrong.
+static void
+tasksSetupOnboarding()
+{
+    g_taskScheduler.addTask(&g_relaysTask);
+    g_taskScheduler.addTask(&g_ledBlinkTask);
+
+    relaysSetup();
+
+    g_relaysTask.enable();
+    g_ledBlinkTask.enable();
+    if (!g_criticalRunner.start()) {
+        logger.fatal("Failed to start the critical task runner.");
+    }
+
+    logger.info("Tasks setup done (setup portal: relays and blink only).");
+}
+
 void
 tasksSetup()
 {
     logger.info("Tasks setup...");
+
+    if (onboardingActive()) {
+        tasksSetupOnboarding();
+        return;
+    }
 
     g_taskScheduler.addTask(&g_ioTask);
     g_taskScheduler.addTask(&g_relaysTask);
@@ -912,9 +951,9 @@ static volatile bool g_restartRequested = false;
 static volatile unsigned long g_restartDeadline = 0;
 
 void
-requestRestart()
+requestRestart(unsigned delayMs)
 {
-    g_restartDeadline = millis() + 500;
+    g_restartDeadline = millis() + delayMs;
     g_restartRequested = true;
 }
 
@@ -922,6 +961,11 @@ void
 tasksLoop()
 {
     g_taskScheduler.execute();
+
+    // Answers the phone's DNS lookups so connecting to the AP opens the setup
+    // page instead of a "no internet" notice. A no-op on every other boot.
+    onboardingLoop();
+
     mqttLoop();
 
     // Gives the queued HTTP response time to leave before the reboot.

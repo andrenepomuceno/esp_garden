@@ -1,4 +1,5 @@
 #include "core/logger.h"
+#include "core/onboarding.h"
 #include "network/web_files.h"
 #include <ESPAsyncWebServer.h>
 #include <MD5Builder.h>
@@ -41,11 +42,19 @@ static String g_uploadError;
 // /spiffs/config.html.gz costs nothing — the same bytes are served from its own
 // public route — while a prefix there is one less thing to get exactly right on
 // the side where a mistake exposes WiFi passwords and live session tokens.
+//
+// The marker is in the list for a fourth reason. Its ABSENCE is what keeps a
+// board that has ever reached the network out of the setup portal for ever, so
+// putting the file back would re-arm that path on a working device: the next
+// boot would probe for 60 s and, if the router happened to be down, raise an AP
+// with a published password and an unauthenticated /config.json writer. Only an
+// ADMIN can reach this endpoint and an ADMIN can already rewrite the whole
+// config — but a config write is visible and this would not be.
 static bool
 uploadPathIsProtected(const String& path)
 {
     return path == "/users.json" || path == "/sessions.json" ||
-           path == "/config.json";
+           path == "/config.json" || path == onboarding::kMarkerPath;
 }
 
 static bool
@@ -83,9 +92,13 @@ uploadPathIsUsable(const String& path, String& reason)
         return false;
     }
     if (uploadPathIsProtected(path)) {
-        reason = (path == "/config.json")
-                   ? "use POST /config.json, which validates the document"
-                   : "credential store";
+        if (path == "/config.json") {
+            reason = "use POST /config.json, which validates the document";
+        } else if (path == onboarding::kMarkerPath) {
+            reason = "writing this re-arms the first-boot setup portal";
+        } else {
+            reason = "credential store";
+        }
         return false;
     }
     return true;

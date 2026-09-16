@@ -29,6 +29,10 @@ Automatic garden irrigation and environmental monitoring system based on the ESP
 - **Internet watchdog** — pings Google/Cloudflare DNS and reports connectivity losses
 - **NTP time sync** — clock synchronized daily via Brazilian NTP pool
 - **Authenticated web UI** — nonce + SHA-256 login with OPERATOR/ADMIN roles, per-IP lockout and persistent sessions
+- **First-boot setup portal** — an unconfigured board raises its own Wi-Fi AP
+  and writes its own `/config.json` from a board template, so provisioning needs
+  no serial cable. A board that has ever joined a network can never fall back
+  into it; see [First boot](#first-boot--the-setup-portal)
 - **Over-The-Air firmware update** — from the web UI (ADMIN only) or pushed from ThingsBoard over MQTT
 - **Remote commands** — ThingsBoard RPC for relay control and status, with the same guards as the web UI
 
@@ -168,6 +172,37 @@ pio run -e espgarden1 --target uploadfs
 # Open serial monitor
 pio device monitor
 ```
+
+### First boot — the setup portal
+
+A board with no usable `/config.json` raises **its own access point** instead of
+sitting unreachable:
+
+- SSID **`espgarden-<id>`**, password **`espgarden`**, page at
+  `http://192.168.4.1/` (or `http://espgarden-<id>.local/`). A captive-portal
+  DNS answers every name, so most phones open the page on their own.
+- Pick a board template, type the Wi-Fi network and password and an admin
+  account, and submit. The device writes its own `/config.json` — **including
+  the `id`, which it reads from its own efuse MAC**, so the one field that
+  bricks a board cannot be typed wrong — and restarts onto the network.
+- Everything else is configured from `/devices.html`, `/config.html` and
+  `/schedules.html` once it is on the LAN. The templates offered are only the
+  ones for the chip the image was built for.
+
+**Read this before using it on a network you care about.** The AP password is
+published here and the setup endpoint takes no token, so while the portal is up
+anyone in radio range can claim the device. What bounds that is *when* the
+portal can exist at all: the first boot that successfully joins a network
+deletes a marker file, and from then on the board can never raise the AP again —
+not after a router reboot, not after an outage. A board that has been on your
+network once is outside this path for good.
+
+The portal also comes back **once** if the credentials you typed never
+associate: the marker is still there, so a mistyped Wi-Fi password is fixable
+instead of terminal.
+
+If you would rather provision from a workstation, `scripts/provision_config.py`
+writes `data/config.json` from a template with the same refusals.
 
 ### Configuration
 
@@ -720,7 +755,9 @@ Two endpoint behaviours worth knowing, because neither has a button:
   as a multipart upload whose **filename is the destination path**, with an
   `MD5` form field; the bytes land in a temp file and are moved into place only
   once the checksum matches, so a dropped connection cannot leave half a file
-  in production. `/users*`, `/sessions*` and `/config*` are refused.
+  in production. `/users*`, `/sessions*`, `/config*` and `/provisioned.pending`
+  are refused — the last one because putting it back would re-arm the
+  [first-boot setup portal](#first-boot--the-setup-portal) on a working device.
 - **`POST /spiffs/delete`** (ADMIN) removes one file, refusing exactly what the
   upload refuses — nothing there may delete the file that lets you undo a
   mistake made there.
