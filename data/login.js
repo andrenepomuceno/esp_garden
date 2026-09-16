@@ -5,9 +5,14 @@
 // sha256(nonce + ":" + sha256(salt + ":" + password)), which is useless on a
 // second attempt because the nonce is one-shot with a 30 s TTL.
 (function () {
+  // Deliberately NOT a local copy. auth.js exports espUI.setStatus so the alert
+  // markup and the escaping rule live in one place, and this page — the one
+  // that handles credentials — was the only one opted out of it. Every caller
+  // here happens to pass a literal today, so there was no live hole; the first
+  // one to forward a device response body, which is what the other pages
+  // already do, would have injected it into the DOM.
   function setStatus(kind, message) {
-    var cls = kind === 'danger' ? 'alert alert-danger' : 'alert alert-info';
-    $('#status').html('<div class="' + cls + '">' + message + '</div>');
+    espUI.setStatus(kind, message);
   }
 
   function busy(on) {

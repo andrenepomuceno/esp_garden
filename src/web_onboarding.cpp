@@ -281,6 +281,10 @@ handleInfo(AsyncWebServerRequest* request)
 
     AsyncWebServerResponse* response =
       request->beginResponse(200, "application/json", out);
+    if (!response) {
+        request->abort();
+        return;
+    }
     response->addHeader("Cache-Control", "no-store");
     request->send(response);
 }
@@ -492,11 +496,23 @@ handleSubmit(AsyncWebServerRequest* request)
                    "' (ssid '" + ssid + "', admin '" + username +
                    "'). Restarting.");
 
-    AsyncWebServerResponse* response = request->beginResponse(
-      200,
-      "application/json",
-      String("{\"saved\":true,\"restarting\":true,\"marker\":") +
-        (marker ? "true" : "false") + ",\"ssid\":\"" + ssid + "\"}");
+    // JSONVar rather than concatenation: an 802.11 SSID is arbitrary bytes and
+    // the form accepts any non-empty string, so a network called Net"work would
+    // otherwise emit a body no client can parse — and this response is the only
+    // record a client has that the write landed, three seconds before the
+    // reboot takes the AP away.
+    JSONVar out;
+    out["saved"] = true;
+    out["restarting"] = true;
+    out["marker"] = marker;
+    out["ssid"] = ssid.c_str();
+
+    AsyncWebServerResponse* response =
+      request->beginResponse(200, "application/json", JSON.stringify(out));
+    if (!response) {
+        request->abort();
+        return;
+    }
     response->addHeader("Cache-Control", "no-store");
     request->send(response);
 
@@ -518,11 +534,16 @@ static void
 handleCaptive(AsyncWebServerRequest* request)
 {
     AsyncWebServerResponse* response = request->beginResponse(302);
-    // Kept from a diagnostic session. Without it the next line would
-    // dereference null on a heap too tired to build a 302, and a panic on
+    // abort(), not a bare return. Returning without sending does NOT avoid the
+    // panic: the library's _send() then builds its own 501, which allocates
+    // again on the same exhausted heap and dereferences the result
+    // unconditionally — so a plain return moves the crash one frame into
+    // ESPAsyncWebServer and makes it a LARGER allocation than the 302 that
+    // just failed. abort() closes the socket without allocating, and a panic on
     // the portal is a board nobody can configure.
     if (!response) {
         logger.error("portal: no heap for a redirect response.");
+        request->abort();
         return;
     }
     response->addHeader("Location",

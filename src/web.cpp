@@ -16,6 +16,7 @@
 #include "network/web_moisture.h"
 #include "network/web_ota.h"
 #include "network/web_users.h"
+#include <Arduino_JSON.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
@@ -482,23 +483,55 @@ webSetup(bool configLoaded)
     servePublicFile("/update.js", "/update.js", "application/javascript");
     servePublicFile("/favicon.ico", "/favicon.ico", "image/x-icon");
 
+    // PUBLIC, and deliberately carries one field. The login page has to say
+    // WHICH board is being signed into — there is more than one of these on a
+    // LAN now, and an operator reaching one by IP has nothing on screen to tell
+    // them apart — but it runs before there is any session to authorise with,
+    // so the answer has to be public. The hostname already is: mDNS broadcasts
+    // it to the whole segment. The firmware version is NOT here: an
+    // unauthenticated reader learning the exact build is a fingerprint, and it
+    // is on /data.json for anyone who has logged in.
+    //
+    // OUTSIDE the USE_CUSTOM_LOGIN block on purpose. /login.html and /login.js
+    // are served unconditionally above, so a build with that flag off would
+    // still serve a page asking for this route — and scripts/dev_server.py
+    // answers it unconditionally, so gating it here is exactly the mirror drift
+    // this repo keeps correcting itself for.
+    //
+    // Built ONCE. The hostname is fixed for the life of the boot (nothing
+    // re-reads config.json at runtime), and the alternative is a String
+    // concatenation per request on the single async_tcp task that also carries
+    // OTA uploads — the heap already measured fragmenting under parallel loads.
+    // JSONVar rather than concatenation because `hostname` is operator text,
+    // checked only for length: a quote in it would otherwise emit JSON the
+    // login page cannot parse, which fails as a page that never names the
+    // board — the exact thing this route exists to prevent.
+    g_webServer.on("/device.json", HTTP_GET, [](AsyncWebServerRequest* request) {
+        static String body;
+        if (body.length() == 0) {
+            JSONVar doc;
+            doc["hostname"] = g_hostname.c_str();
+            body = JSON.stringify(doc);
+        }
+        AsyncWebServerResponse* response =
+          request->beginResponse(200, "application/json", body);
+        if (!response) {
+            // Allocation-free exit. Returning without sending does NOT avoid a
+            // panic: the library then builds its own 501, which allocates
+            // again on the same exhausted heap and dereferences the result
+            // unconditionally.
+            request->abort();
+            return;
+        }
+        response->addHeader("Cache-Control", "no-store");
+        request->send(response);
+    });
+
 #if USE_CUSTOM_LOGIN
     customLogin.begin();
 
     g_webServer.on("/nonce", HTTP_GET, [](AsyncWebServerRequest* request) {
         customLogin.handleNonce(request);
-    });
-    // PUBLIC, and deliberately carries one field. The login page has to say
-    // WHICH board is being signed into — there are two on this LAN now, and an
-    // operator reaching one by IP has nothing on screen to tell them apart —
-    // but it runs before there is any session to authorise with, so the answer
-    // has to be public. The hostname already is: mDNS broadcasts it to the
-    // whole segment. The firmware version is NOT here, because an unauthenticated
-    // reader learning the exact build is a fingerprint, and it is on /data.json
-    // for anyone who has logged in.
-    g_webServer.on("/device.json", HTTP_GET, [](AsyncWebServerRequest* request) {
-        request->send(200, "application/json",
-                      "{\"hostname\":\"" + g_hostname + "\"}");
     });
     g_webServer.on("/login", HTTP_POST, [](AsyncWebServerRequest* request) {
         customLogin.handleLogin(request);

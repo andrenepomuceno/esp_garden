@@ -82,7 +82,7 @@ def declared_pins(document):
     return found
 
 
-def config_guard(env_name, root):
+def config_guard(env_name, root, deploying=True):
     """Why this env must not pack data/config.json, or None if it may.
 
     THE HAZARD. The filesystem image carries whatever data/config.json holds,
@@ -128,24 +128,42 @@ def config_guard(env_name, root):
         "    cp templates/config.%s.json data/config.json\n"
         "and put yours back afterwards." % (env_name, env_name))
 
-    # NO config.json is the INTENDED first-boot shape since 2.15.0, not an
-    # omission. The onboarding portal compiles its board templates into the
-    # FIRMWARE, so a virgin board carrying no document raises the
-    # espgarden-<id> setup AP and writes its own -- with the id read from its
-    # own efuse, which is the single field that bricks a board when it is
-    # wrong. Refusing here is what made provisioning circular: the document
-    # needed the id, and reading the id needed the board flashed.
+    # NO config.json is the INTENDED first-boot shape since 2.15.0 -- but only
+    # when BUILDING an image. The onboarding portal compiles its board templates
+    # into the FIRMWARE, so a virgin board carrying no document raises the
+    # espgarden-<id> setup AP and writes its own, with the id read from its own
+    # efuse. Refusing to BUILD that image is what made provisioning circular:
+    # the document needed the id, and reading the id needed the board flashed.
     #
-    # This relaxes NOTHING about the hazard the guard exists for. The
-    # foreign-pin check below is untouched, and it is the half that keeps a
-    # WROOM-32 document -- relays on this carrier's flow input, float switch
-    # and user button, probes on its flash and PSRAM bus -- out of an S3 image.
-    # An absent document cannot put a relay anywhere.
+    # DEPLOYING it is a different act, and the guard must keep refusing it.
+    # data/config.json is gitignored, so "absent" is the NORMAL state of a fresh
+    # checkout and says nothing about the board on the other end of the cable. A
+    # `-t uploadfs` rewrites the whole partition, so allowing this would erase a
+    # PROVISIONED board's /config.json -- along with its history and its
+    # moisture model -- and bring it back raising an AP whose own boot log says
+    # "anyone in radio range can write its configuration". That is not a first
+    # boot; it is de-provisioning a working device, silently, from a command
+    # that used to be refused.
     if not config.is_file():
-        print("%s: no data/config.json, so the image carries none. The board "
-              "will raise the espgarden-<id> setup AP on its first boot."
-              % env_name)
-        return None
+        if not deploying:
+            print("%s: no data/config.json, so the image carries none. A board "
+                  "flashed with it raises the espgarden-<id> setup AP on its "
+                  "first boot." % env_name)
+            return None
+        return ("%s would DEPLOY a filesystem image carrying no config.json,\n"
+                "and there is no data/config.json here to check.\n"
+                "\n"
+                "That erases /config.json on whatever board is attached, along\n"
+                "with its history and its moisture model, and brings it back\n"
+                "raising the open espgarden-<id> setup AP. On a virgin board\n"
+                "that is the intended first boot; on a provisioned one it is\n"
+                "de-provisioning a working device, and this check cannot tell\n"
+                "them apart.\n"
+                "\n"
+                "Build the image and write it deliberately instead:\n"
+                "    pio run -e %s -t buildfs\n"
+                "then flash .pio/build/%s/littlefs.bin with esptool.\n"
+                "\n%s" % (env_name, env_name, env_name, how))
 
     try:
         wanted = declared_pins(json.loads(template.read_text(encoding="utf-8")))
@@ -188,7 +206,11 @@ if "Import" in globals():
 
         # Before build_assets, so the refusal arrives instead of a staging
         # directory that looks ready to pack.
-        _why = config_guard(env.subst("$PIOENV"), _root)  # noqa: F821
+        # buildfs only makes a file; uploadfs and uploadfsota write it to a
+        # board, and an absent config.json means something different in each.
+        _deploying = bool({"uploadfs", "uploadfsota"}.intersection(
+            COMMAND_LINE_TARGETS))  # noqa: F821
+        _why = config_guard(env.subst("$PIOENV"), _root, _deploying)  # noqa: F821
         if _why:
             raise SystemExit("\n[config] " + _why + "\n")
 
