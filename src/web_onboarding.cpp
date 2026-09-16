@@ -151,6 +151,8 @@ label{display:block;margin:.8rem 0 .2rem;font-weight:600;font-size:.9rem}
 input,select{width:100%;box-sizing:border-box;padding:.55rem;font-size:1rem;
  border:1px solid #8888;border-radius:.35rem;background:transparent;color:inherit}
 small{display:block;opacity:.7;margin-top:.25rem}
+.rev{display:flex;align-items:center;gap:.5rem;font-weight:400;margin-top:1rem}
+.rev input{width:auto;margin:0}
 button{margin-top:1.4rem;width:100%;padding:.7rem;font-size:1rem;font-weight:600;
  border:0;border-radius:.35rem;background:#2e7d32;color:#fff}
 button[disabled]{opacity:.5}
@@ -180,6 +182,12 @@ button[disabled]{opacity:.5}
 <label for="apw">Admin password</label>
 <input id="apw" name="adminPassword" type="password" required minlength="4">
 
+<label class="rev"><input id="reveal" type="checkbox"> Show passwords</label>
+<small>Typed on a phone, standing next to the board. A mistyped Wi-Fi
+password is the one error this page cannot catch: the document is valid, the
+board accepts it and reboots, and only the provisioning marker keeps it from
+being unreachable.</small>
+
 <label for="host">Hostname</label>
 <input id="host" name="hostname" autocapitalize="off" autocorrect="off"
  spellcheck="false">
@@ -191,6 +199,11 @@ button[disabled]{opacity:.5}
 <script>
 var msg=document.getElementById('msg');
 function show(t,cls){msg.textContent=t;msg.className=cls;msg.hidden=false;}
+document.getElementById('reveal').onchange=function(){
+  var t=this.checked?'text':'password';
+  document.getElementById('pw').type=t;
+  document.getElementById('apw').type=t;
+};
 fetch('/onboarding.json').then(function(r){return r.json();}).then(function(d){
   document.getElementById('sub').textContent =
     'device '+d.id+' | '+d.chip+' | firmware '+d.firmware+' | '+d.reason;
@@ -505,6 +518,13 @@ static void
 handleCaptive(AsyncWebServerRequest* request)
 {
     AsyncWebServerResponse* response = request->beginResponse(302);
+    // Kept from a diagnostic session. Without it the next line would
+    // dereference null on a heap too tired to build a 302, and a panic on
+    // the portal is a board nobody can configure.
+    if (!response) {
+        logger.error("portal: no heap for a redirect response.");
+        return;
+    }
     response->addHeader("Location",
                         "http://" + WiFi.softAPIP().toString() + "/");
     response->addHeader("Cache-Control", "no-store");
