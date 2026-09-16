@@ -83,7 +83,6 @@ AccumulatorV2 g_pingTime(g_mqttTaskPeriod / g_checkInternetTaskPeriod);
 // Set by relayStartedHook on any thread, consumed by the io task. A single
 // unsigned written by one producer and cleared by one consumer needs no lock:
 // the worst interleaving loses a duration, not memory.
-static volatile unsigned g_wateringStartedMs = 0;
 
 static float g_moistureBeforeWatering[MOISTURE_MAX] = { 0.0 };
 
@@ -136,27 +135,33 @@ relayStartAllowed(unsigned index, String& reason)
 // telemetry never got it. Now there are both — an immediate event for the
 // transition, and a sticky mask so the periodic payload says "this ran during
 // the period" rather than "it happens to be on right now".
+
+// A relay IRRIGATES when some probe names it in `moisture[i].relay`. That is
+// the config the classifier already uses to label its training data, so this
+// adds no key and no second place to keep in step — and the reservoir pump,
+// which no probe names, is excluded for the right reason rather than by index.
+//
+// It used to be `index != 0`, the single-relay contract from when relay 0 WAS
+// the watering relay. On a multi-zone board that silently counted one zone and
+// ignored the rest: measured on 6224, a 10 s run of Zona 3 (relay 1) left
+// `wateringCycles` at 0 and published no `wateringMs`.
+static bool
+relayWaters(unsigned index)
+{
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
+        if (config.moistureRelay[i] >= 0 &&
+            (unsigned)config.moistureRelay[i] == index) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void
 publishRelayEvents()
 {
     RelayPendingEvent pending[RELAY_MAX];
     relayTakePendingEvents(pending);
-
-    // The watering bookkeeping relayStartedHook could not do safely from a
-    // request handler. All of it touches state only this task may touch.
-    if (g_wateringStartedMs > 0) {
-        const unsigned duration = g_wateringStartedMs;
-        g_wateringStartedMs = 0;
-        ++g_wateringCycles;
-        g_pendingWateringMs = duration;
-        // ThingSpeak field 2. The ThingsBoard side of the same fact is
-        // g_pendingWateringMs, read into `wateringMs` by the periodic payload
-        // above — so nothing is lost here when the uplink is compiled out.
-#if USE_THINGSPEAK
-        mqttAddField(g_wateringField, String(duration));
-#endif
-        g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
-    }
 
     for (unsigned i = 0; i < config.relayCount; ++i) {
         if (pending[i].refused) {
@@ -192,6 +197,23 @@ publishRelayEvents()
             event["durationMs"] = (int)pending[i].duration;
         }
         tbPublishEvent(JSON.stringify(event));
+
+        // The watering bookkeeping relayStartedHook could not do safely from a
+        // request handler. All of it touches state only this task may touch.
+        //
+        // Derived from pending[] rather than from a single shared slot, which
+        // is what it used to be: two zones starting inside one 1 Hz drain
+        // overwrote each other and one cycle went uncounted. `wateringMs` is
+        // still one value and the last zone in the tick wins it — the per-relay
+        // truth is in relayNEvent's own durationMs, published just above.
+        if (pending[i].started && relayWaters(i)) {
+            ++g_wateringCycles;
+            g_pendingWateringMs = pending[i].duration;
+#if USE_THINGSPEAK
+            mqttAddField(g_wateringField, String(pending[i].duration));
+#endif
+            g_checkMoistureTask.enableDelayed(g_checkMoistureTaskPeriod);
+        }
     }
 }
 
@@ -295,7 +317,7 @@ publishEt0Event()
 void
 relayStartedHook(unsigned index, unsigned int duration)
 {
-    if (index != 0) {
+    if (!relayWaters(index)) {
         return;
     }
 
@@ -317,10 +339,17 @@ relayStartedHook(unsigned index, unsigned int duration)
     // task publishes under a spinlock — so the pre-watering baseline is taken
     // here rather than deferred, where it would be a second late and a second
     // of watering wrong.
+    // Only the probes THIS relay feeds. Resetting every probe's baseline was
+    // harmless on a one-relay board, where every probe was in the watered zone;
+    // on a multi-zone board it threw away the baseline of a zone that was not
+    // watered, so its next rise was measured from the wrong starting point.
     for (unsigned i = 0; i < config.moistureCount; ++i) {
-        g_moistureBeforeWatering[i] = moistureReading(i).average;
+        if (config.moistureRelay[i] >= 0 &&
+            (unsigned)config.moistureRelay[i] == index) {
+            g_moistureBeforeWatering[i] = moistureReading(i).average;
+        }
     }
-    g_wateringStartedMs = duration;
+    (void)duration; // the count and the duration are taken from pending[]
 }
 
 static void
