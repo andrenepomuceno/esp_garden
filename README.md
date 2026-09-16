@@ -870,6 +870,7 @@ this" — several currently do.
 
 | script | what it is for |
 |---|---|
+| `provision_config.py` | Turns a board template into one device's `data/config.json`. Reads the `ID:` line off the serial port — the number `loadFile()` actually compares against — and refuses anything that would be rejected at boot: a placeholder left in, a credential under four characters, a probe pointing at a relay that does not exist, or a CA that does not match the chosen backend. |
 | `tb_export.py` | Incremental ThingsBoard → SQLite archive under `backups/`. ~20 s per run; the only durable copy of the telemetry. |
 | `telemetry_ui.py` | Local browser for that archive on **:8090** — charts, key inventory with dead-key detection, boot and gap timeline. Read-only. |
 | `moisture_fit.py` | Fits the soil-moisture parameters off the whole archive instead of the 24 h the board holds. Emits JSON in a dry run; refuses per probe and names the check that refused. |
