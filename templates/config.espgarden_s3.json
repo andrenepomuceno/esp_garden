@@ -143,7 +143,7 @@
     {
       "dry": 0,
       "wet": 0,
-      "relay": 3,
+      "relay": -1,
       "invert": true,
       "kind": "resistive"
     }
