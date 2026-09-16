@@ -20,6 +20,16 @@
     // Arriving here means any stored token is gone or was rejected.
     espAuth.clearToken();
 
+    // Which board is this? There is more than one of them on a LAN now, and
+    // reaching one by IP leaves nothing on screen to tell them apart. Public,
+    // because it runs before there is a session. It stays a blank line on a
+    // failure rather than showing an error: not knowing the hostname must not
+    // look like not being able to sign in.
+    $.getJSON('/device.json')
+      .done(function (d) {
+        if (d && d.hostname) { $('#device-name').text(d.hostname); }
+      });
+
     $('#login-form').on('submit', function (event) {
       event.preventDefault();
 

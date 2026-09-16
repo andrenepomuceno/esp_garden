@@ -488,6 +488,18 @@ webSetup(bool configLoaded)
     g_webServer.on("/nonce", HTTP_GET, [](AsyncWebServerRequest* request) {
         customLogin.handleNonce(request);
     });
+    // PUBLIC, and deliberately carries one field. The login page has to say
+    // WHICH board is being signed into — there are two on this LAN now, and an
+    // operator reaching one by IP has nothing on screen to tell them apart —
+    // but it runs before there is any session to authorise with, so the answer
+    // has to be public. The hostname already is: mDNS broadcasts it to the
+    // whole segment. The firmware version is NOT here, because an unauthenticated
+    // reader learning the exact build is a fingerprint, and it is on /data.json
+    // for anyone who has logged in.
+    g_webServer.on("/device.json", HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->send(200, "application/json",
+                      "{\"hostname\":\"" + g_hostname + "\"}");
+    });
     g_webServer.on("/login", HTTP_POST, [](AsyncWebServerRequest* request) {
         customLogin.handleLogin(request);
     });

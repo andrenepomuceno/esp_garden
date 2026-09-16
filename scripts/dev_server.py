@@ -294,6 +294,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(AUTH.issue_nonce(username))
             return
 
+        # Public, and one field. Mirrors web.cpp: the login page names the board
+        # it is signing into, and it runs before any session exists. The
+        # firmware version is deliberately NOT here.
+        if path == "/device.json":
+            self._send_json({"hostname": SIM_CONFIG.get("hostname", "espgarden")})
+            return
+
         if path in PUBLIC_PATHS:
             self._serve_static(path)
             return
