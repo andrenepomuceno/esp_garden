@@ -42,8 +42,13 @@ mqttEnable(bool enable);
 // async_tcp task that would flush it is the same one the handler runs on — so
 // the caller always saw a connection reset and could not tell a reboot from a
 // failure.
+//
+// `delayMs` is how long the queued response is given to leave. 500 ms is the
+// LAN default and has always been enough; the setup portal asks for more,
+// because its client is on a soft AP that the reboot takes away and there is no
+// second chance to tell it anything.
 void
-requestRestart();
+requestRestart(unsigned delayMs = 500);
 
 // Why the last boot happened, as a readable string. A panic, a watchdog and a
 // power cut are three different investigations and the enum alone hides that.

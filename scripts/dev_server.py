@@ -36,6 +36,7 @@ from urllib.parse import parse_qs, urlparse
 # sim_moisture is imported as a module as well, because main() has to write back
 # into its MOISTURE_SCENARIO global.
 import sim_moisture
+import sim_onboarding
 from sim_auth import AUTH, AuthSim
 from sim_config import (SIM_CONFIG, SIM_USERS, config_apply, config_masked,
                         users_apply)
@@ -149,6 +150,16 @@ if PIN_FAMILY not in PIN_RULES:
         f"ESP_GARDEN_PIN_FAMILY={PIN_FAMILY!r} is not a family this mirror "
         f"carries. Known: {', '.join(sorted(PIN_RULES))}.")
 
+# Which boot this simulator is pretending to be, set by --onboarding.
+#
+# The firmware makes this decision ONCE, at the top of webSetup(), and
+# registers either the normal route table or the portal's three routes — never
+# both. The mirror has to have the same shape or it stops being able to show
+# the property that matters: on a configured device the unauthenticated
+# /config.json writer does not exist, it is not merely guarded.
+ONBOARDING_MODE = "off"     # off | portal
+ONBOARDING_REASON = "configured"
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "ESPGardenSim/1.0"
@@ -210,10 +221,73 @@ class Handler(BaseHTTPRequestHandler):
     def _unauthorized(self) -> None:
         self._send(HTTPStatus.UNAUTHORIZED, b"Unauthorized")
 
+    # ---------- the setup portal ----------
+    # Registered INSTEAD of everything below, never beside it — the early
+    # return here is this file's copy of the early return at the top of
+    # webSetup(). Three routes and a catch-all redirect; no /data.json, no
+    # /control, no /config.json, no /spiffs, no login.
+    def _portal_get(self, path: str) -> None:
+        if path in ("/", "/index.html"):
+            body = sim_onboarding.page_html().encode("utf-8")
+            self._send(HTTPStatus.OK, body, "text/html; charset=utf-8")
+            return
+        if path == "/onboarding.json":
+            self._send_json(sim_onboarding.info(
+                SIM_CONFIG["id"], PIN_FAMILY, STATE.firmware,
+                ONBOARDING_REASON))
+            return
+        self._portal_redirect()
+
+    def _portal_post(self, path: str, raw: bytes) -> None:
+        global ONBOARDING_MODE
+        if path != "/onboarding":
+            self._portal_redirect()
+            return
+
+        params = {k: v[0] for k, v in
+                  parse_qs(raw.decode("utf-8", errors="replace")).items()}
+        status, message, doc = sim_onboarding.onboarding_apply(
+            params, PIN_RULES[PIN_FAMILY], SIM_CONFIG["id"], PIN_FAMILY)
+        if status != 200:
+            STATE.log("warning", f"Onboarding refused: {message}")
+            self._send(status, message.encode())
+            return
+
+        # The device writes /config.json, writes the marker and reboots. Here
+        # the stored document is replaced and the portal is left, which is the
+        # reboot's visible effect: reload and the normal UI is there. The
+        # marker is not simulated beyond that, because nothing in a localhost
+        # mirror can fail to associate.
+        SIM_CONFIG.clear()
+        SIM_CONFIG.update(doc)
+        AUTH.set_password(params["username"], params["adminPassword"])
+        if not any(u["username"] == params["username"] for u in SIM_USERS):
+            SIM_USERS.append({"username": params["username"], "role": 2})
+        ONBOARDING_MODE = "off"
+        STATE.log("warning",
+                  f"Onboarding wrote /config.json for template "
+                  f"'{params.get('template')}' (ssid '{params.get('ssid')}', "
+                  f"admin '{params.get('username')}'). Leaving the portal.")
+        self._send_json({"saved": True, "restarting": True, "marker": True,
+                         "ssid": params.get("ssid", "")})
+
+    def _portal_redirect(self) -> None:
+        # Mirrors handleCaptive(): every name resolves to the AP on a real
+        # board, so every probe URL a phone tries has to land on the page.
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", "/")
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     # ---------- routes ----------
     def do_GET(self) -> None:  # noqa: N802 - stdlib signature
         url = urlparse(self.path)
         path = url.path
+
+        if ONBOARDING_MODE == "portal":
+            self._portal_get(path)
+            return
 
         if path == "/nonce":
             username = parse_qs(url.query).get("username", [""])[0]
@@ -371,6 +445,10 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
 
+        if ONBOARDING_MODE == "portal":
+            self._portal_post(path, raw)
+            return
+
         if path == "/login":
             params = parse_qs(raw.decode("utf-8", errors="replace"))
             token = AUTH.login(
@@ -486,6 +564,11 @@ class Handler(BaseHTTPRequestHandler):
             return "path longer than 31 characters"
         if path == "/upload.tmp":
             return "reserved path"
+        if path == sim_onboarding.marker_path():
+            # Its absence is what keeps a board that has ever reached the
+            # network out of the setup portal for good; putting it back re-arms
+            # that path on a working device.
+            return "writing this re-arms the first-boot setup portal"
         if path.startswith("/config"):
             return "use POST /config.json, which validates the document"
         if path.startswith(cls.UPLOAD_PROTECTED):
@@ -630,7 +713,27 @@ def main() -> None:
         help="force every probe in /moisture.json onto one scenario "
              "(default: a different one per probe). One of: "
              + ", ".join(moisture_scenario_names()))
+    parser.add_argument(
+        "--onboarding", default="off",
+        choices=["off", "arm1", "arm2"],
+        help="serve the first-boot setup portal instead of the normal UI. "
+             "arm1 = /config.json did not load; arm2 = it loaded but its "
+             "credentials have never associated. This is the ONLY place that "
+             "page can be rendered until a board exists")
     args = parser.parse_args()
+
+    global ONBOARDING_MODE, ONBOARDING_REASON
+    if args.onboarding != "off":
+        ONBOARDING_MODE = "portal"
+        ONBOARDING_REASON = ("no-usable-config" if args.onboarding == "arm1"
+                             else "never-associated")
+        # Asserted rather than assumed: the mirror must not show a portal on a
+        # state the device would answer Normal to.
+        mode, reason, _ = sim_onboarding.decide(
+            args.onboarding != "arm1", args.onboarding == "arm2", False)
+        if mode != "portal" or reason != ONBOARDING_REASON:
+            raise SystemExit("sim_onboarding.decide() disagrees with "
+                             f"--onboarding {args.onboarding}")
 
     # The flag lives in sim_moisture; `global` here would rebind a name in this
     # module instead, and resolve_scenario() would never see it.
@@ -643,6 +746,26 @@ def main() -> None:
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}/"
+
+    if ONBOARDING_MODE == "portal":
+        print(f"ESP Garden SETUP PORTAL ({args.onboarding}) on {url}")
+        print(f"  reason: {sim_onboarding.REASON_TEXT[ONBOARDING_REASON]}")
+        print(f"  device {SIM_CONFIG['id']} | family {PIN_FAMILY} | "
+              f"AP would be espgarden-{SIM_CONFIG['id']} / espgarden")
+        print("  routes: /  /onboarding.json  /onboarding  "
+              "(everything else 302 to /)")
+        print("  templates: " + ", ".join(
+            t["id"] for t in sim_onboarding.templates_for(PIN_FAMILY)))
+        print("A successful POST leaves the portal, which is what the device's "
+              "reboot does.")
+        print("Press Ctrl+C to stop.")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+            server.server_close()
+        return
+
     print(f"ESP Garden simulator serving {DATA_DIR} on {url}")
     print(f"Login: {AuthSim.USERNAME} / {AuthSim.PASSWORD}")
     print("Endpoints: /  /nonce  /login  /logout  /data.json  /logs"
