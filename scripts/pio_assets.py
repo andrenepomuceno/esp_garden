@@ -128,9 +128,24 @@ def config_guard(env_name, root):
         "    cp templates/config.%s.json data/config.json\n"
         "and put yours back afterwards." % (env_name, env_name))
 
+    # NO config.json is the INTENDED first-boot shape since 2.15.0, not an
+    # omission. The onboarding portal compiles its board templates into the
+    # FIRMWARE, so a virgin board carrying no document raises the
+    # espgarden-<id> setup AP and writes its own -- with the id read from its
+    # own efuse, which is the single field that bricks a board when it is
+    # wrong. Refusing here is what made provisioning circular: the document
+    # needed the id, and reading the id needed the board flashed.
+    #
+    # This relaxes NOTHING about the hazard the guard exists for. The
+    # foreign-pin check below is untouched, and it is the half that keeps a
+    # WROOM-32 document -- relays on this carrier's flow input, float switch
+    # and user button, probes on its flash and PSRAM bus -- out of an S3 image.
+    # An absent document cannot put a relay anywhere.
     if not config.is_file():
-        return ("%s packs data/config.json into its filesystem image, and there\n"
-                "is no data/config.json here.\n\n%s" % (env_name, how))
+        print("%s: no data/config.json, so the image carries none. The board "
+              "will raise the espgarden-<id> setup AP on its first boot."
+              % env_name)
+        return None
 
     try:
         wanted = declared_pins(json.loads(template.read_text(encoding="utf-8")))
