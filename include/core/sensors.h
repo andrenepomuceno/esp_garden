@@ -54,10 +54,28 @@ moistureState(unsigned index);
 
 extern AccumulatorV2 g_luminosity;
 
+// Air temperature and humidity, from whichever ambient sensor this board has —
+// a DHT11 on one wire or an SHT40 on I2C. ONE pair of accumulators, and the
+// same telemetry keys behind them.
+//
+// That is a deliberate choice and the argument is worth keeping. This repo
+// refuses to give a stored key a second meaning: `moisture2` silently became a
+// different pot once, and a relay index was deleted rather than renumbered. A
+// better thermometer is not that. It is the same quantity in the same units,
+// measured more accurately, so every existing chart keeps working and no series
+// changes meaning part-way through. What DOES change is the accuracy, and that
+// is discoverable rather than silent: config.ambientSensorName() reaches
+// /data.json as Status."Ambient Sensor" and ThingsBoard as the `ambient_sensor`
+// client attribute.
 extern AccumulatorV2 g_temperature;
 extern AccumulatorV2 g_airHumidity;
-extern unsigned g_dhtReadErrors;
-extern unsigned g_dhtTotalReads;
+
+// Named for the ROLE, not for the part. They used to be g_dhtReadErrors /
+// g_dhtTotalReads and an SHT40 feeding a counter called "dht" is a counter a
+// reader has to decode. The published telemetry key is still `dhtErrorRate`,
+// and that is on purpose — see telemetry.cpp.
+extern unsigned g_ambientReadErrors;
+extern unsigned g_ambientTotalReads;
 
 extern AccumulatorV2 g_waterLevel;
 
@@ -79,13 +97,16 @@ sensorsSetup();
 void
 sensorsReadIo();
 
-// Constructs the DHT driver on the configured pin. Separate from
-// sensorsSetup() because it must run after the blocking boot waits, exactly
-// where tasksSetup() enables the dht task. Does nothing when no DHT is
-// declared, and the dht task is then left disabled.
+// Brings up whichever ambient sensor is declared: constructs the DHT driver on
+// its configured pin, or starts the I2C bus and probes for the SHT40. Separate
+// from sensorsSetup() because it must run after the blocking boot waits,
+// exactly where tasksSetup() enables the ambient task. Does nothing when
+// neither is declared, and that task is then left disabled.
 void
-sensorsSetupDht();
+sensorsSetupAmbient();
 
-// Body of the dht task.
+// Body of the ambient task. Reads one of the two, never both — loadFile()
+// clears dhtFitted when a document declares both, so the two flags are mutually
+// exclusive by the time anything here runs.
 void
-sensorsReadDht();
+sensorsReadAmbient();

@@ -16,7 +16,7 @@ const time_t g_safeTimestamp = 1609459200; // 01/01/2021
 // publish interval.
 extern const unsigned g_ioTaskPeriod;
 extern const unsigned g_mqttTaskPeriod;
-extern const unsigned g_dhtTaskPeriod;
+extern const unsigned g_ambientTaskPeriod;
 
 extern time_t g_bootTime;
 extern bool g_hasInternet;

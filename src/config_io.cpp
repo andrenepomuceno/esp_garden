@@ -5,6 +5,7 @@
 #include "core/config_io.h"
 #include "core/config.h"
 #include "core/logger.h"
+#include "core/sht4x_protocol.h"
 #include <Arduino_JSON.h>
 
 // Reads `io.relays` (array of {pin, on, name}) when present, otherwise falls
@@ -185,4 +186,105 @@ loadSoilMoisture(ConfigFile& cfg, JSONVar& io)
     }
 
     cfg.moistureCount = 0;
+}
+
+// `io.i2c` is {sda, scl, hz}, every key optional.
+//
+// It is NOT a fitted flag and there is deliberately no `io.i2cFitted` to drift
+// out of step with it: this block says what the bus IS, and whether the bus
+// comes up is answered by whether any I2C device is declared. Presence is still
+// the key — it is just the device's key, not the bus's. Declaring `io.i2c` on a
+// board with nothing on the bus changes nothing and drives no pin.
+//
+// A pin outside the chip's range is refused rather than truncated. uint8_t
+// takes 264 to 8 silently, and 8 is SDA on the carrier this exists for, so a
+// typo would land the bus on top of itself with nothing said.
+void
+loadI2c(ConfigFile& cfg, JSONVar& io)
+{
+    if (JSON.typeof(io["i2c"]) != "object") {
+        return; // family defaults; see include/core/default_pins.h
+    }
+
+    JSONVar entry = io["i2c"];
+
+    struct BusPin
+    {
+        const char* key;
+        uint8_t* field;
+    };
+    const BusPin pins[] = { { "sda", &cfg.i2cSdaPin }, { "scl", &cfg.i2cSclPin } };
+
+    for (unsigned i = 0; i < sizeof(pins) / sizeof(pins[0]); ++i) {
+        if (!entry.hasOwnProperty(pins[i].key)) {
+            continue;
+        }
+        const int pin = (int)entry[pins[i].key];
+        if (pin < 0 || pin > (int)pinMaxGpio()) {
+            logger.warning("io.i2c." + String(pins[i].key) + " GPIO " +
+                           String(pin) + " is not a pin on this chip; keeping " +
+                           String(*pins[i].field) + ".");
+            continue;
+        }
+        *pins[i].field = (uint8_t)pin;
+    }
+
+    if (JSON.typeof(entry["hz"]) == "number") {
+        const double hz = (double)entry["hz"];
+        // Standard mode through fast mode plus. Below 10 kHz the SHT4x's own
+        // clock stretching becomes the limit rather than the bus; above 1 MHz
+        // is past what the part is specified for, and past what a bus brought
+        // off the board on a header will carry.
+        if (hz >= 10000.0 && hz <= 1000000.0) {
+            cfg.i2cHz = (uint32_t)hz;
+        } else {
+            logger.warning("io.i2c.hz outside 10000..1000000; keeping " +
+                           String(cfg.i2cHz) + ".");
+        }
+    }
+}
+
+// `io.sht4x` is {name, address}, or any object at all — presence is the key.
+//
+// No pin: the part is on the bus, which is the one structural difference
+// between this kind and every other one in the io block. A `pin` here would be
+// a number nothing reads, so it is not accepted rather than silently ignored in
+// a shape that looks like it works.
+void
+loadSht4x(ConfigFile& cfg, JSONVar& io)
+{
+    cfg.sht4xFitted = io.hasOwnProperty("sht4x");
+    if (!cfg.sht4xFitted) {
+        return;
+    }
+
+    if (JSON.typeof(io["sht4x"]) != "object") {
+        return; // "sht4x": true and friends: fitted, all defaults
+    }
+
+    JSONVar entry = io["sht4x"];
+
+    // Same non-empty rule loadSensor() applies: a row saved with the name
+    // cleared must keep the compiled default rather than blanking the label
+    // /data.json keys its Inputs by.
+    if (JSON.typeof(entry["name"]) == "string") {
+        const String label = (const char*)JSONVar(entry["name"]);
+        if (label.length() > 0) {
+            cfg.sht4xName = label;
+        }
+    }
+
+    if (entry.hasOwnProperty("address")) {
+        const int address = (int)entry["address"];
+        if (sht4x::addressIsValid(address)) {
+            cfg.sht4xAddress = (uint8_t)address;
+        } else {
+            // Refused rather than clamped, for the reason et0.latitude is:
+            // a clamped typo hides which number was wrong, and here the wrong
+            // number produces a bus that answers nothing with no clue why.
+            logger.warning("io.sht4x.address 0x" + String(address, HEX) +
+                           " is not an SHT4x address (0x44..0x46); keeping 0x" +
+                           String(cfg.sht4xAddress, HEX) + ".");
+        }
+    }
 }

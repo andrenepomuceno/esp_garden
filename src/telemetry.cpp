@@ -230,9 +230,23 @@ telemetryPublishStepChanges()
         }
     }
 
-    if (g_dhtTotalReads > 0) {
+    // THE KEY IS STILL `dhtErrorRate` ON A BOARD WITH NO DHT, and that is a
+    // decision rather than an oversight.
+    //
+    // It is a published step key with a deadband and there is stored history
+    // under it. Renaming it orphans that series for the sake of a label, and
+    // adding a second key beside it doubles a diagnostic that reads 0 almost
+    // always. This repo kept the `/spiffs/` URL prefix through the move to
+    // LittleFS on exactly this argument: renaming a contract to match an
+    // internal driver change is a breaking change bought for nothing.
+    //
+    // What it MEANS has not changed — the fraction of ambient-sensor reads that
+    // failed — and which part it describes is answered next to it, by the
+    // `ambient_sensor` client attribute and by /data.json's Status row. The
+    // counters behind it are named for the role.
+    if (g_ambientTotalReads > 0) {
         const double rate =
-          (double)g_dhtReadErrors * 100.0 / (double)g_dhtTotalReads;
+          (double)g_ambientReadErrors * 100.0 / (double)g_ambientTotalReads;
         if (stepDue(STEP_DHT_ERROR_RATE,
                     rate,
                     g_dhtErrorRateDeadband,
@@ -535,7 +549,7 @@ telemetryPublish()
                          FLOAT_TO_STRING(g_luminosity.getAverage()));
         }
 
-        if (config.dhtFitted) {
+        if (config.ambientFitted()) {
             mqttAddField(g_temperatureField,
                          FLOAT_TO_STRING(g_temperature.getAverage()));
             mqttAddField(g_airHumidityField,

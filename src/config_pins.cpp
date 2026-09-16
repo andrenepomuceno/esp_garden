@@ -83,7 +83,8 @@ ConfigFile::validatePins() const
     {
         ROLE_OUTPUT, // relay: must drive
         ROLE_ANALOG, // must be on ADC1
-        ROLE_DIGITAL // needs an internal pull-up
+        ROLE_DIGITAL, // needs an internal pull-up
+        ROLE_I2C      // open-drain, bidirectional, and legally SHARED
     };
 
     struct PinUse
@@ -93,7 +94,8 @@ ConfigFile::validatePins() const
         Role role;
     };
 
-    PinUse used[1 + RELAY_MAX + 2 * MOISTURE_MAX + 5];
+    // +2 over the old array for SDA and SCL.
+    PinUse used[1 + RELAY_MAX + 2 * MOISTURE_MAX + 7];
     size_t count = 0;
     static char relayLabel[RELAY_MAX][12];
     static char probeLabel[MOISTURE_MAX][12];
@@ -155,16 +157,62 @@ ConfigFile::validatePins() const
         used[count++] = { floatPin, "floatSwitch", ROLE_DIGITAL };
     }
 
+    // The I2C bus, audited ONCE and only while something is on it.
+    //
+    // A bus is not a peripheral: `io.i2c` says what it is and the devices say
+    // whether it exists. Registering it per device would audit the same two
+    // pins twice on a two-device board for no extra information, so it is
+    // registered by the bus and the sharing rule below is what makes a second
+    // device legal.
+    //
+    // Auditing it at all is the point — the pins are not a free choice. On the
+    // WROOM-32 the natural-looking 34-39 have no output driver and an
+    // open-drain line that cannot be pulled low is a bus that never starts, and
+    // on either family SDA on a flash pin hangs the chip.
+    if (sht4xFitted) {
+        // SDA on SCL is the ONE duplicate the sharing rule below must not
+        // swallow, and it would: the two lines of one bus are two ROLE_I2C
+        // entries, so the exemption that makes a second DEVICE legal would also
+        // have made a bus shorted to itself legal. Reported here, before the
+        // loop that would forgive it.
+        if (i2cSdaPin == i2cSclPin) {
+            logger.error("GPIO " + String(i2cSdaPin) +
+                         " is both i2c SDA and SCL. An I2C bus needs two "
+                         "lines; this one cannot work.");
+        }
+        used[count++] = { i2cSdaPin, "i2c SDA", ROLE_I2C };
+        used[count++] = { i2cSclPin, "i2c SCL", ROLE_I2C };
+    }
+
     for (size_t i = 0; i < count; ++i) {
         const uint8_t pin = used[i].pin;
         const char* owner = used[i].owner;
 
         for (size_t j = i + 1; j < count; ++j) {
-            if (pin == used[j].pin) {
-                logger.error("Pin conflict: GPIO " + String(pin) +
-                             " assigned to both " + owner + " and " +
-                             used[j].owner + ".");
+            if (pin != used[j].pin) {
+                continue;
             }
+            // SEVERAL DEVICES ON ONE BUS IS THE NORMAL CASE, not a conflict.
+            // The carrier brings SDA and SCL off the board on J8 precisely so
+            // that another part can be plugged onto them, and an audit that
+            // called that a fault would be an audit an operator learns to
+            // ignore — the same reason two probes sharing one powerPin is
+            // allowed above.
+            //
+            // The exemption is between two I2C owners and no further. A relay
+            // or a probe on SDA still reports, and that is the case that
+            // matters: it breaks the bus AND the peripheral, silently.
+            //
+            // Nothing exercises this today. One bus registers its pins once, so
+            // there is no repeat to exempt until a second I2C KIND exists. It
+            // is here rather than in that future change because the rule
+            // belongs with the role, not with whichever device arrives second.
+            if (used[i].role == ROLE_I2C && used[j].role == ROLE_I2C) {
+                continue;
+            }
+            logger.error("Pin conflict: GPIO " + String(pin) +
+                         " assigned to both " + owner + " and " +
+                         used[j].owner + ".");
         }
 
         // A sensor declared without a `pin` key, on a chip whose compiled
@@ -225,6 +273,27 @@ ConfigFile::validatePins() const
                     logger.error("GPIO " + String(pin) + " (" + owner +
                                  ") has no internal pull-up; this input will "
                                  "float.");
+                }
+                break;
+
+            case ROLE_I2C:
+                if (pinIsInputOnly(pin)) {
+                    // An I2C line is open-drain: every device on it, the master
+                    // included, talks by pulling it to ground. A pin with no
+                    // output driver can only ever listen, so the bus never
+                    // starts — and Wire.begin() does not say so.
+                    logger.error("GPIO " + String(pin) + " (" + owner +
+                                 ") cannot drive low, and an I2C line is "
+                                 "open-drain. This bus will never start.");
+                }
+                if (pinIsStrapping(pin)) {
+                    // The bus pull-ups hold both lines HIGH from the instant
+                    // power arrives, which is exactly when a strapping pin is
+                    // sampled. On a WROOM-32 GPIO 12 held high selects 1.8 V
+                    // flash and the board does not boot at all.
+                    logger.warning("GPIO " + String(pin) + " (" + owner +
+                                   ") is a strapping pin, and an I2C bus keeps "
+                                   "it pulled high through reset.");
                 }
                 break;
         }

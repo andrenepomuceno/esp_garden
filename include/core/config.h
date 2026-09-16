@@ -176,12 +176,46 @@ class ConfigFile
     // out of step with the pin it names.
     uint8_t moistureCount;
     bool dhtFitted;
+
+    // SHT40 on I2C — the only temperature and humidity part on the
+    // esp-garden-hardware carrier, which dropped its DHT22 header for it.
+    //
+    // It feeds THE SAME accumulators and THE SAME telemetry keys as the DHT
+    // (`temperature`, `airHumidity`). That is deliberate and it is the one
+    // decision here worth arguing with. Renumbering a relay index or moving
+    // `moisture2` to another pot gives one name two different physical
+    // meanings; a better thermometer does not. It is the same quantity in the
+    // same units, measured more accurately, so every stored series stays
+    // honest and every existing chart keeps working. What DOES change is
+    // accuracy, and that is published as the `ambient_sensor` client attribute
+    // rather than left for a reader to infer from a noise floor that dropped.
+    bool sht4xFitted;
+
     bool luminosityFitted;
     bool waterLevelFitted;
     bool flowFitted;
     bool floatFitted;
 
     uint8_t dhtPin;
+
+    // The I2C bus. NOT a fitted flag: `io.i2c` carries the bus's parameters and
+    // never its presence, because a bus with nothing on it is not a peripheral.
+    // The bus is started if and only if an I2C DEVICE is declared, which today
+    // means sht4xFitted, so a board with no I2C part never touches these pins.
+    //
+    // Two pins, one owner. validatePins() registers them once, as a bus, and
+    // treats a repeat between two I2C owners as legal — several devices on one
+    // bus is the normal case and the whole point of the carrier's J8 header,
+    // exactly as two probes sharing one powerPin is not a conflict.
+    uint8_t i2cSdaPin;
+    uint8_t i2cSclPin;
+    uint32_t i2cHz;
+
+    // 0x44 on the carrier's part (SHT40-AD1B); the B and C suffixes answer one
+    // and two up. Configurable so a part swap is a config edit rather than a
+    // firmware build, which is the point of all of this.
+    uint8_t sht4xAddress;
+    String sht4xName;
     uint8_t soilMoisturePin[MOISTURE_MAX];
 
     // Optional pin that ENERGISES the probe, and the level that does it.
@@ -304,6 +338,31 @@ class ConfigFile
     int historyPeriodSec;
 
     ConfigFile();
+
+    // Is there ANY ambient temperature/humidity sensor on this board?
+    //
+    // One question with one answer, asked by the task enable, the /data.json
+    // Inputs block, the ThingSpeak field pair and et0Available(). Every one of
+    // those used to ask `dhtFitted`, and each is a place that could have been
+    // missed — the same argument that keeps relayStartAllowed() the only door
+    // to a pump.
+    //
+    // The two flags are mutually exclusive by construction: loadFile() clears
+    // dhtFitted when a document declares both. See the warning it logs.
+    bool ambientFitted() const { return sht4xFitted || dhtFitted; }
+
+    // The display label for that sensor, a PREFIX because one part produces two
+    // channels. Empty keeps the unsuffixed "Temperature" / "Air Humidity" keys
+    // that dashboards have read for years.
+    const String& ambientName() const { return sht4xFitted ? sht4xName : dhtName; }
+
+    // Which part is producing them, for the log, /data.json and the ThingsBoard
+    // client attribute. Empty when nothing is fitted — absent rather than
+    // "none", the same rule `state`, `fault` and `Channel` follow.
+    const char* ambientSensorName() const
+    {
+        return sht4xFitted ? "SHT40" : (dhtFitted ? "DHT11" : "");
+    }
 
     bool loadFile(unsigned deviceID);
 

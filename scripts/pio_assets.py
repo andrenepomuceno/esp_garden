@@ -30,7 +30,12 @@ from pathlib import Path
 FS_TARGETS = {"buildfs", "uploadfs", "uploadfsota"}
 
 # Keys under `io` whose VALUE is a GPIO number, wherever they appear.
-_PIN_KEYS = {"pin", "powerPin"}
+#
+# `sda` and `scl` are the I2C bus's two lines. Without them here the guard
+# simply does not see the bus, so a WROOM-32 document's SDA on GPIO 21 would
+# have passed an S3 template that declares 8 — the one class of mistake this
+# whole function exists to catch, arriving through the newest key.
+_PIN_KEYS = {"pin", "powerPin", "sda", "scl"}
 
 # `io` entries that ConfigFile also accepts as a bare pin number instead of an
 # object, or as an array of bare numbers. Every other integer under `io` is a

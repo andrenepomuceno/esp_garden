@@ -195,6 +195,32 @@ def document_pins_problem(doc: dict):
         if pin is not None and not is_adc1(pin):
             return f"io.soilMoisture on GPIO {pin} (not ADC1)"
 
+    # The I2C bus: two pins under one key rather than the {pin} shape the loop
+    # below handles, and checked whenever io.i2c is present rather than only
+    # when a device is on it. An I2C line is OPEN-DRAIN — every device on it
+    # talks by pulling it to ground — so the rule is "must be able to drive
+    # low", which is the output predicate and not the analog or pull-up one.
+    bus = io_cfg.get("i2c")
+    if isinstance(bus, dict):
+        # One pin cannot be both lines. validatePins()' sharing rule forgives
+        # two I2C owners on one GPIO on purpose — several devices on one bus is
+        # the normal case — so this is the one duplicate that must be refused
+        # before it gets there.
+        if "sda" in bus and "scl" in bus and bus["sda"] == bus["scl"]:
+            return (f"io.i2c.sda and io.i2c.scl are both GPIO {bus['sda']} "
+                    "(a bus needs two lines)")
+        for line in ("sda", "scl"):
+            if line not in bus:
+                continue
+            pin = bus[line]
+            if not isinstance(pin, int) or isinstance(pin, bool):
+                continue
+            if is_flash(pin):
+                return f"io.i2c.{line} on GPIO {pin} (SPI flash)"
+            if is_input_only(pin):
+                return (f"io.i2c.{line} on GPIO {pin} "
+                        "(cannot drive low; an I2C line is open-drain)")
+
     for key, analog in (("luminosity", True), ("waterLevel", True),
                         ("dht", False), ("flow", False), ("floatSwitch", False)):
         if key not in io_cfg:

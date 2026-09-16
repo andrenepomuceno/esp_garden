@@ -467,6 +467,90 @@ test_the_esp32s3_defaults_pass_the_esp32s3_rules(void)
     TEST_ASSERT_EQUAL_UINT8(default_pins::kNoPin, ds::dht);
 }
 
+// The I2C bus, per family.
+//
+// An I2C line is OPEN-DRAIN: every device on it, the master included, talks by
+// pulling it to ground. So the rule is "must be able to drive low", which is
+// the same predicate an output needs and NOT the analog or pull-up one. On a
+// WROOM-32 the natural-looking 34-39 have no output driver at all, and a bus
+// parked on one never starts — with nothing in Wire.begin() to say so.
+//
+// It is also the one default pair that is not driven by the board that carries
+// it: the bus comes up only when an I2C DEVICE is declared, so on all five
+// WROOM-32 envs these two numbers are a claim about where somebody could wire
+// one, and on the S3 they are the carrier's own I2C_SDA and I2C_SCL nets.
+static void
+test_both_families_default_the_i2c_bus_to_pins_that_can_drive_low(void)
+{
+    const uint8_t wroom[] = { dw::i2cSda, dw::i2cScl };
+    for (unsigned i = 0; i < 2; ++i) {
+        TEST_ASSERT_TRUE(w::isBonded(wroom[i]));
+        TEST_ASSERT_FALSE(w::isFlash(wroom[i]));
+        TEST_ASSERT_FALSE(w::isInputOnly(wroom[i]));
+        TEST_ASSERT_FALSE(w::isSerialConsole(wroom[i]));
+        // The bus pull-ups hold both lines high from the instant power
+        // arrives, which is exactly when a strapping pin is sampled.
+        TEST_ASSERT_FALSE(w::isStrapping(wroom[i]));
+    }
+
+    const uint8_t s3[] = { ds::i2cSda, ds::i2cScl };
+    for (unsigned i = 0; i < 2; ++i) {
+        TEST_ASSERT_TRUE(s::isBonded(s3[i]));
+        TEST_ASSERT_FALSE(s::isFlash(s3[i]));
+        TEST_ASSERT_FALSE(s::isInputOnly(s3[i]));
+        TEST_ASSERT_FALSE(s::isSerialConsole(s3[i]));
+        TEST_ASSERT_FALSE(s::isStrapping(s3[i]));
+    }
+
+    TEST_ASSERT_NOT_EQUAL(dw::i2cSda, dw::i2cScl);
+    TEST_ASSERT_NOT_EQUAL(ds::i2cSda, ds::i2cScl);
+}
+
+// GPIO 8 and 9 are the carrier's I2C_SDA and I2C_SCL — and on an S3 they are
+// also ADC1 channels 7 and 8, which is the collision worth pinning: the same
+// two numbers are legal for a soil probe. The carrier spends 1/2/4/5 on probes
+// and leaves 3 and 7 spare, so nothing overlaps today; if a fifth probe is ever
+// defaulted it must not be given one of these.
+static void
+test_the_s3_i2c_defaults_are_the_carriers_own_nets(void)
+{
+    TEST_ASSERT_EQUAL_UINT8(8, ds::i2cSda);
+    TEST_ASSERT_EQUAL_UINT8(9, ds::i2cScl);
+
+    for (unsigned i = 0; i < sizeof(ds::soilMoisture); ++i) {
+        TEST_ASSERT_NOT_EQUAL(ds::i2cSda, ds::soilMoisture[i]);
+        TEST_ASSERT_NOT_EQUAL(ds::i2cScl, ds::soilMoisture[i]);
+    }
+    TEST_ASSERT_NOT_EQUAL(ds::i2cSda, ds::luminosity);
+    TEST_ASSERT_NOT_EQUAL(ds::i2cScl, ds::luminosity);
+    TEST_ASSERT_NOT_EQUAL(ds::i2cSda, ds::waterLevel);
+    TEST_ASSERT_NOT_EQUAL(ds::i2cScl, ds::waterLevel);
+    for (unsigned i = 0; i < sizeof(ds::relay); ++i) {
+        TEST_ASSERT_NOT_EQUAL(ds::i2cSda, ds::relay[i]);
+        TEST_ASSERT_NOT_EQUAL(ds::i2cScl, ds::relay[i]);
+    }
+
+    // I2C_INT is GPIO 21 on the carrier and NOTHING here claims it. The SHT4x
+    // family is I2C-only with no interrupt output; that net is pre-wiring for a
+    // GPIO expander somebody may plug into J8. A default pointing at it would
+    // be inventing a signal the part does not have.
+    TEST_ASSERT_NOT_EQUAL(21, ds::i2cSda);
+    TEST_ASSERT_NOT_EQUAL(21, ds::i2cScl);
+}
+
+// The WROOM-32 pair is hazardous on an S3 for the same reason its flow and
+// float defaults are, and the per-family table is what stops it: GPIO 21 exists
+// on both parts but is the carrier's I2C_INT, and GPIO 22 does not exist on an
+// S3 at all (soc_caps.h clears 22-25). A single shared table would have put SDA
+// on an expander interrupt and SCL on a pin with no bond wire.
+static void
+test_the_wroom32_i2c_defaults_are_wrong_on_an_s3(void)
+{
+    TEST_ASSERT_FALSE(s::isBonded(dw::i2cScl)); // GPIO 22 is not bonded out
+    TEST_ASSERT_NOT_EQUAL(dw::i2cSda, ds::i2cSda);
+    TEST_ASSERT_NOT_EQUAL(dw::i2cScl, ds::i2cScl);
+}
+
 // MOISTURE_MAX is 4 and both tables used to be three long, so the fourth slot
 // fell through to the Arduino alias A0 — GPIO 36 on a WROOM-32 and GPIO 1 on
 // an S3, which is probe 0's own pin on both. validatePins() then reported a
@@ -568,4 +652,8 @@ run_pin_rules_tests(void)
     RUN_TEST(test_the_default_tables_cover_every_probe_slot);
     RUN_TEST(test_no_family_defaults_the_ldr_onto_a_probe_pin);
     RUN_TEST(test_the_wroom32_sensor_defaults_are_hazardous_on_an_s3);
+
+    RUN_TEST(test_both_families_default_the_i2c_bus_to_pins_that_can_drive_low);
+    RUN_TEST(test_the_s3_i2c_defaults_are_the_carriers_own_nets);
+    RUN_TEST(test_the_wroom32_i2c_defaults_are_wrong_on_an_s3);
 }

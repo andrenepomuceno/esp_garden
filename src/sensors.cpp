@@ -4,6 +4,7 @@
 #include "core/config.h"
 #include "core/logger.h"
 #include "core/moisture_model.h"
+#include "core/sht4x.h"
 #include "core/tasks.h"
 #include <new>
 #include <string.h>
@@ -18,10 +19,10 @@
 // so a file-scope instance permanently runs on the compiled default pin.
 alignas(DHT_Unified) static uint8_t g_dhtStorage[sizeof(DHT_Unified)];
 static DHT_Unified* g_dht = nullptr;
-AccumulatorV2 g_temperature(g_mqttTaskPeriod / g_dhtTaskPeriod);
-AccumulatorV2 g_airHumidity(g_mqttTaskPeriod / g_dhtTaskPeriod);
-unsigned g_dhtReadErrors = 0;
-unsigned g_dhtTotalReads = 0;
+AccumulatorV2 g_temperature(g_mqttTaskPeriod / g_ambientTaskPeriod);
+AccumulatorV2 g_airHumidity(g_mqttTaskPeriod / g_ambientTaskPeriod);
+unsigned g_ambientReadErrors = 0;
+unsigned g_ambientTotalReads = 0;
 
 AccumulatorV2 g_soilMoisture[MOISTURE_MAX];
 
@@ -200,7 +201,7 @@ sensorsSetup()
     // is correctly sized on the next boot without a second code path.
     const unsigned publishMs = mqttPublishPeriodMs();
     const unsigned ioWindow = publishMs / g_ioTaskPeriod;
-    const unsigned dhtWindow = publishMs / g_dhtTaskPeriod;
+    const unsigned ambientWindow = publishMs / g_ambientTaskPeriod;
 
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
         g_soilMoisture[i].setMaxLen(ioWindow);
@@ -208,8 +209,8 @@ sensorsSetup()
     g_luminosity.setMaxLen(ioWindow);
     g_waterLevel.setMaxLen(ioWindow);
     g_flowRate.setMaxLen(ioWindow);
-    g_temperature.setMaxLen(dhtWindow);
-    g_airHumidity.setMaxLen(dhtWindow);
+    g_temperature.setMaxLen(ambientWindow);
+    g_airHumidity.setMaxLen(ambientWindow);
 
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
         probeHealthReset(g_probeHealth[i]);
@@ -248,7 +249,9 @@ sensorsSetup()
 
     logger.info("Sensors: " + String(config.moistureCount) + " moisture" +
                 (config.luminosityFitted ? ", luminosity" : "") +
-                (config.dhtFitted ? ", DHT" : "") +
+                (config.ambientFitted() ? (String(", ") +
+                                           config.ambientSensorName())
+                                        : String("")) +
                 (config.waterLevelFitted ? ", water level" : "") +
                 (config.flowFitted ? ", flow" : "") +
                 (config.floatFitted ? ", float switch" : ""));
@@ -401,10 +404,33 @@ sensorsReadIo()
 }
 
 void
-sensorsSetupDht()
+sensorsSetupAmbient()
 {
+    // At most one of these is true: loadFile() clears dhtFitted when a document
+    // declares both, so the choice was made once, at load, where it could be
+    // logged with the pin it was giving up.
+    if (config.sht4xFitted) {
+        // The ONLY place the I2C bus is started, and only because a device on
+        // it is declared. A board with no I2C part never reaches this line and
+        // never touches SDA or SCL.
+        if (sht4xBegin(config.i2cSdaPin,
+                       config.i2cSclPin,
+                       config.i2cHz,
+                       config.sht4xAddress)) {
+            logger.info("SHT40 at 0x" + String(config.sht4xAddress, HEX) +
+                        " on I2C SDA " + String(config.i2cSdaPin) + " / SCL " +
+                        String(config.i2cSclPin) + " at " +
+                        String(config.i2cHz / 1000) + " kHz");
+        }
+        // sht4xBegin() has already logged an error if it failed, and
+        // sht4xRead() answers kNotReady from here on — so the task stays
+        // enabled and the error rate climbs, which is what says "fitted and
+        // broken" rather than "not fitted".
+        return;
+    }
+
     if (!config.dhtFitted) {
-        return; // leaves g_dht null, which sensorsReadDht() already handles
+        return; // leaves g_dht null, which sensorsReadAmbient() handles
     }
 
     g_dht = new (g_dhtStorage) DHT_Unified(config.dhtPin, DHT11);
@@ -444,8 +470,35 @@ static const float g_dhtMaxTempC = 50.0f;
 static const float g_dhtMinHumidityPct = 5.0f;
 static const float g_dhtMaxHumidityPct = 100.0f;
 
-void
-sensorsReadDht()
+// The SHT40's own plausibility gate is in core/sht4x_protocol.h, next to the
+// CRC and the conversions, because all three are arithmetic a host test can
+// reach. Its bounds are WIDER than the DHT's above and that is not laziness:
+// they are the part's full operating range, so they can only reject a code
+// pinned at a rail, while the CRC — two of them, per frame — does the work the
+// DHT's weak 8-bit sum could not.
+static void
+readSht4x()
+{
+    float celsius = 0.0f;
+    float humidity = 0.0f;
+    const sht4x::Status status = sht4xRead(celsius, humidity);
+
+    ++g_ambientTotalReads;
+    if (status != sht4x::kOk) {
+        ++g_ambientReadErrors;
+        // Logged at debug: a single failed frame on a bus is ordinary, and a
+        // persistent fault is what dhtErrorRate is for. Printing every one at
+        // error level would bury the boot lines in an 8 KB rolling buffer.
+        logger.debug(String("SHT40 read failed: ") + sht4x::statusName(status));
+        return;
+    }
+
+    g_temperature.add(celsius);
+    g_airHumidity.add(humidity);
+}
+
+static void
+readDht()
 {
     if (g_dht == nullptr) {
         return;
@@ -474,8 +527,21 @@ sensorsReadDht()
         g_airHumidity.add(event.relative_humidity);
     }
 
-    ++g_dhtTotalReads;
+    ++g_ambientTotalReads;
     if (error) {
-        ++g_dhtReadErrors;
+        ++g_ambientReadErrors;
     }
+}
+
+void
+sensorsReadAmbient()
+{
+    // Exactly one arm can be taken. The other flag was cleared at load, which
+    // is the whole reason no consumer of either sensor has to know the conflict
+    // case exists.
+    if (config.sht4xFitted) {
+        readSht4x();
+        return;
+    }
+    readDht();
 }

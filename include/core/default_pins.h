@@ -86,6 +86,15 @@ constexpr uint8_t waterLevel = 34;
 constexpr uint8_t flow = 27;
 constexpr uint8_t floatSwitch = 26;
 
+// The Arduino ESP32 core's own default I2C pair on this family, which is what
+// every WROOM-32 breakout silkscreens as SDA/SCL. No board here has an I2C part
+// fitted, so nothing drives these today: the bus is brought up only when an I2C
+// DEVICE is declared, and io.i2c carries the bus's parameters rather than its
+// presence. They are real, free, output-capable pins so that the day somebody
+// does declare one, the default is a pin they can actually solder to.
+constexpr uint8_t i2cSda = 21;
+constexpr uint8_t i2cScl = 22;
+
 } // namespace wroom32
 
 // ---------------------------------------------------------------------------
@@ -114,12 +123,23 @@ constexpr uint8_t relay[] = { 10, 11, 12, 13 };
 constexpr uint8_t soilMoisture[] = { 1, 2, 4, 5 };
 
 // There is NO DHT on this carrier: the DHT22 header was dropped in favour of
-// an SHT40 on I2C, which this firmware has no driver and no sensor KIND for.
-// So there is no honest default pin, and kNoPin says exactly that — a config
-// declaring `"dht"` with no pin gets an error naming the sensor. It used to
-// inherit the WROOM-32's GPIO 23, which this part does not bring out at all
-// (soc_caps.h clears 22-25), so the diagnosis was a pin number nobody chose.
+// an SHT40 on I2C. So there is no honest default pin, and kNoPin says exactly
+// that — a config declaring `"dht"` with no pin gets an error naming the
+// sensor. It used to inherit the WROOM-32's GPIO 23, which this part does not
+// bring out at all (soc_caps.h clears 22-25), so the diagnosis was a pin number
+// nobody chose.
 constexpr uint8_t dht = kNoPin;
+
+// I2C_SDA and I2C_SCL, the carrier's own nets on the `env` and `mcu` sheets,
+// where the bus's pull-ups are fitted and U3 — the SHT40 — sits at 0x44.
+//
+// I2C_INT on GPIO 21 is deliberately NOT here and nothing in this firmware
+// reads it. The SHT4x family is I2C-only and has no interrupt output at all;
+// the hardware repo's roadmap records that net as pre-wiring for an I2C GPIO
+// expander somebody may plug into J8 later. Wiring firmware to it on the
+// assumption that it belongs to the SHT40 would be inventing a signal.
+constexpr uint8_t i2cSda = 8;
+constexpr uint8_t i2cScl = 9;
 
 // LDR on GPIO 6, AUX_ADC on GPIO 7. The aux header is deliberately NOT
 // declared in the carrier's config — presence is the key, and pushing whatever

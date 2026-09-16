@@ -270,8 +270,13 @@ class Handler(BaseHTTPRequestHandler):
                 # than restating the limit, so the simulator has to carry it or
                 # the upload page silently falls back to its own literal.
                 "maxPathLength": 31,
-                "kinds": ["relays", "soilMoisture", "dht", "luminosity",
-                          "waterLevel", "flow", "floatSwitch"],
+                # `sht4x` is a kind this firmware has a driver for even though
+                # /devices.html cannot add or remove it: that page is
+                # pin-centric and an SHT40 has no pin of its own, only a shared
+                # bus. devices_model.js filters its own table by hasKind(), so
+                # a kind it does not know about is simply not rendered.
+                "kinds": ["relays", "soilMoisture", "dht", "sht4x",
+                          "luminosity", "waterLevel", "flow", "floatSwitch"],
                 "analogPins": [p for p in pins if is_adc1(p)],
                 "outputPins": [p for p in pins if not is_input_only(p)],
                 "digitalPins": [p for p in pins if not is_input_only(p)],

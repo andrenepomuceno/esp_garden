@@ -20,6 +20,23 @@ from sim_moisture import (moisture_models, moisture_state, probe_names,
                           resolve_scenario)
 
 
+def ambient_sensor_name() -> str:
+    """Which air temperature/humidity part is fitted, or "" for none.
+
+    Mirrors ConfigFile::ambientSensorName(), including the mutual exclusion:
+    loadFile() clears dhtFitted when a document declares both io.dht and
+    io.sht4x, so the SHT40 wins and the DHT is ignored. Presence is the key on
+    both, exactly as it is for every other sensor.
+    """
+    io_cfg = SIM_CONFIG.get("io", {})
+    if "sht4x" in io_cfg:
+        return "SHT40"
+    if "dht" in io_cfg:
+        return "DHT11"
+    return ""
+
+
+
 
 # A SECOND implementation of segment::fitCapacity() in
 # include/core/segment_index.h, and it is a second implementation on purpose:
@@ -140,8 +157,12 @@ class DeviceState:
         self.last_publish = 0  # epoch of the last accepted publish, 0 = never
         self.watering_cycles = 0
         self.connection_loss_count = 0
-        self.dht_total_reads = 0
-        self.dht_read_errors = 0
+        # Named for the ROLE and not for the part, mirroring
+        # g_ambientReadErrors / g_ambientTotalReads: a board reads at most one
+        # ambient sensor, a DHT11 or an SHT40, and the counters are the same
+        # ones either way.
+        self.ambient_total_reads = 0
+        self.ambient_read_errors = 0
         self.logs: deque[str] = deque(maxlen=self.LOG_CAPACITY)
 
         # Mirrors the on-device history in src/io_history.cpp. The device
@@ -376,10 +397,10 @@ class DeviceState:
             if self.mqtt_enabled and int(now - self.boot_time) % 30 == 0:
                 self.packages_sent += 1
                 self.last_publish = int(time.time())
-            # Random DHT reads
-            self.dht_total_reads += 1
+            # Random ambient-sensor reads
+            self.ambient_total_reads += 1
             if random.random() < 0.02:
-                self.dht_read_errors += 1
+                self.ambient_read_errors += 1
 
             if now >= self._history_next:
                 self._history_next = now + self.history_period_s
@@ -460,9 +481,16 @@ class DeviceState:
             # device computes it from its own extremes.
             if SIM_CONFIG.get("et0", {}).get("enabled"):
                 status["ET0"] = "4.21 mm/day (range 11.3 K)"
-            if self.dht_total_reads:
-                rate = self.dht_read_errors / self.dht_total_reads * 100
-                status["DHT Error Rate"] = f"{rate:.2f}"
+            # Which part produced Temperature and Air Humidity, and how often
+            # it failed. The LABEL is "Ambient ..." because an SHT40 board has
+            # no DHT; the ThingsBoard TELEMETRY key stays `dhtErrorRate`,
+            # which has stored history behind it.
+            ambient = ambient_sensor_name()
+            if ambient:
+                status["Ambient Sensor"] = ambient
+            if self.ambient_total_reads:
+                rate = self.ambient_read_errors / self.ambient_total_reads * 100
+                status["Ambient Error Rate"] = f"{rate:.2f}"
 
             # Only FITTED sensors, decided the way the device decides it: by
             # which keys exist in the config's io block. Without this the
@@ -478,7 +506,9 @@ class DeviceState:
             fitted = []
             if "luminosity" in io_cfg:
                 fitted.append("Luminosity")
-            if "dht" in io_cfg:
+            # One pair of rows for either part. loadFile() clears dhtFitted
+            # when a document declares both, so they are never both fitted.
+            if ambient_sensor_name():
                 fitted += ["Temperature", "Air Humidity"]
             if "waterLevel" in io_cfg:
                 fitted.append("Water Level")

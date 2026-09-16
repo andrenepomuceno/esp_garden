@@ -144,6 +144,54 @@ documentPinsAreUsable(JSONVar& document, String& problem)
         return false;
     }
 
+    // The I2C bus. Two pins under one key rather than the {pin} shape the table
+    // below handles, and checked whenever io.i2c is present rather than only
+    // when a device is — a value that cannot carry a bus is worth refusing on
+    // the day it is typed, not on the day somebody adds the sensor that needs
+    // it.
+    //
+    // Open-drain: the rule is "must be able to pull low", which is the same
+    // predicate an output needs. Not ADC1, and not a pull-up question — the
+    // pull-ups are on the board.
+    if (JSON.typeof(io["i2c"]) == "object") {
+        JSONVar bus = io["i2c"];
+
+        // One pin cannot be both lines. Refused at SAVE time because
+        // validatePins()' sharing rule deliberately forgives two I2C owners on
+        // one GPIO — several devices on one bus is the normal case — and this
+        // is the single duplicate that must not reach it.
+        if (bus.hasOwnProperty("sda") && bus.hasOwnProperty("scl") &&
+            (int)bus["sda"] == (int)bus["scl"]) {
+            problem = "io.i2c.sda and io.i2c.scl are both GPIO " +
+                      String((int)bus["sda"]) + " (a bus needs two lines)";
+            return false;
+        }
+
+        const char* const lines[] = { "sda", "scl" };
+        for (size_t i = 0; i < sizeof(lines) / sizeof(lines[0]); ++i) {
+            if (!bus.hasOwnProperty(lines[i])) {
+                continue;
+            }
+            pin = (int)bus[lines[i]];
+            if (!pinNumberIsPlausible(pin)) {
+                problem = String("io.i2c.") + lines[i] + " on GPIO " +
+                          String(pin) + " (no such pin on this chip)";
+                return false;
+            }
+            const uint8_t p = (uint8_t)pin;
+            if (pinIsFlash(p) || !pinIsBonded(p) || pinIsInputOnly(p)) {
+                problem =
+                  String("io.i2c.") + lines[i] + " on GPIO " + String(pin) +
+                  (pinIsFlash(p)
+                     ? " (SPI flash)"
+                     : (!pinIsBonded(p)
+                          ? " (not bonded out on this module)"
+                          : " (cannot drive low; an I2C line is open-drain)"));
+                return false;
+            }
+        }
+    }
+
     for (size_t i = 0; i < sizeof(checks) / sizeof(checks[0]); ++i) {
         if (!io.hasOwnProperty(checks[i].key)) {
             continue; // not fitted

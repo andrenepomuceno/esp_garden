@@ -58,9 +58,16 @@ DECLARE_TASK(mqtt, 1 * 60 * 1000);              // 1 min
 DECLARE_TASK(talkBack, 1 * 60 * 1000);          // 1 min
 #endif
 DECLARE_TASK(checkMoisture, 4 * 60 * 60 * 1000); // 4 h
-// At the DHT11's sampling floor: the Adafruit driver returns its cached
-// reading rather than an error when polled faster than once per second.
-DECLARE_TASK(dht, 1 * 1000); // 1 s
+// Air temperature and humidity, from whichever ambient part this board has —
+// a DHT11 on one wire or an SHT40 on I2C. ONE task for both: it reads at most
+// one of them, and a task per sensor KIND is exactly how a firmware walks into
+// the 16-slot cap that addTask() overruns silently.
+//
+// 1 s is the DHT11's sampling floor, below which the Adafruit driver returns
+// its cached reading rather than an error. The SHT40 would happily go faster
+// and gains nothing by it: air does not move that quickly, and each read costs
+// ~10 ms of a background tick the cloud model and the relay events share.
+DECLARE_TASK(ambient, 1 * 1000); // 1 s
 
 // Switching a pump off on time is the one deadline in this firmware that has a
 // physical cost when missed, so it does not share the cooperative pump with
@@ -395,9 +402,9 @@ ioTaskHandler()
 }
 
 static void
-dhtTaskHandler()
+ambientTaskHandler()
 {
-    sensorsReadDht();
+    sensorsReadAmbient();
 }
 
 void
@@ -778,7 +785,7 @@ tasksSetup()
     g_taskScheduler.addTask(&g_talkBackTask);
 #endif
     g_taskScheduler.addTask(&g_checkMoistureTask);
-    g_taskScheduler.addTask(&g_dhtTask);
+    g_taskScheduler.addTask(&g_ambientTask);
 
     // Before sensorsSetup(), which sizes every accumulator window from it.
     // g_mqttTaskPeriod is only the compiled fallback the task was constructed
@@ -855,11 +862,14 @@ tasksSetup()
 #endif
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
-    sensorsSetupDht();
+    sensorsSetupAmbient();
     // Only when one is declared. Ticking at 1 Hz into a handler that returns
     // at its null check wastes a scheduler slot, and the bucket caps at 16.
-    if (config.dhtFitted) {
-        g_dhtTask.enableDelayed(g_dhtTaskPeriod);
+    // ambientFitted() and not dhtFitted: one question, one answer, asked
+    // everywhere the old flag was — the enable that gets forgotten is the one
+    // that leaves a fitted sensor silently unread.
+    if (config.ambientFitted()) {
+        g_ambientTask.enableDelayed(g_ambientTaskPeriod);
     }
     // Arming the 24 h period here regardless of whether NTP answered is what
     // turned a few seconds of slow WiFi into a day without a clock: the FIRST

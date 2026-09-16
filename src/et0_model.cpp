@@ -15,7 +15,15 @@ static Et0Report g_report = { false, 0.0, 0.0f, 0.0f, 0.0f, 0, 0, 0, 0, 0 };
 static bool
 et0Active()
 {
-    return config.et0Enabled && config.dhtFitted;
+    // ambientFitted(), because the extremes this runs on come from whichever
+    // thermometer the board has. An SHT40 is a far better one -- and it does
+    // NOT on its own make this estimate usable. What was measured here was a
+    // SITING failure, not an accuracy one: the device's temperature tracked
+    // 0.346 of the outdoor swing while its dewpoint tracked 1.052, which
+    // diagnoses thermal mass around the sensor. A +-0.2 C part in the same box
+    // reports the same 0.35 slope more precisely. et0.enabled stays false until
+    // somebody runs scripts/et0_fit.py against THAT board's own archive.
+    return config.et0Enabled && config.ambientFitted();
 }
 
 void
@@ -30,8 +38,9 @@ et0ModelSetup()
     if (!config.et0Enabled) {
         return;
     }
-    if (!config.dhtFitted) {
-        logger.warning("ET0 enabled but no DHT declared; nothing to measure.");
+    if (!config.ambientFitted()) {
+        logger.warning("ET0 enabled but no ambient sensor declared; nothing to "
+                       "measure.");
         return;
     }
 

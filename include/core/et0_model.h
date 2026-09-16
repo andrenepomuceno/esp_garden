@@ -9,7 +9,13 @@
 // test_evapotranspiration can reach it - the same split as cloud_cover.cpp
 // against cloud_model.cpp.
 //
-// INERT UNLESS config.et0Enabled AND config.dhtFitted.
+// INERT UNLESS config.et0Enabled AND config.ambientFitted().
+//
+// A better thermometer does not on its own change that default. What was
+// measured here was a SITING failure, not an accuracy one — the device tracked
+// 0.346 of the outdoor temperature swing while its dewpoint tracked 1.052,
+// which diagnoses thermal mass around the sensor — and an SHT40 in the same
+// box reports the same 0.35 slope more precisely.
 //
 // DEFAULT OFF, and for a sharper reason than the cloud model's. That one ships
 // off because its fitted table describes one sensor at one mounting. This one

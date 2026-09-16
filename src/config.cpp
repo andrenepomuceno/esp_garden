@@ -2,6 +2,7 @@
 #include "core/config_io.h"
 #include "core/default_pins.h"
 #include "core/io_history.h"
+#include "core/sht4x_protocol.h"
 #include "core/tasks.h"
 #include "core/logger.h"
 #include <Arduino_JSON.h>
@@ -130,6 +131,7 @@ ConfigFile::ConfigFile()
     // not a relay is harmless while leaving one floating is not.
     moistureCount = 0;
     dhtFitted = false;
+    sht4xFitted = false;
     luminosityFitted = false;
     waterLevelFitted = false;
     flowFitted = false;
@@ -155,6 +157,20 @@ ConfigFile::ConfigFile()
     }
 
     dhtPin = defaults::dht;
+
+    // The bus, from the family table. Inert until an I2C device is declared:
+    // nothing calls Wire.begin() and neither pin is touched, which is why these
+    // being a real free pair on a board that has no I2C part costs nothing.
+    i2cSdaPin = defaults::i2cSda;
+    i2cSclPin = defaults::i2cScl;
+    // 100 kHz standard mode. The SHT4x reaches 1 MHz and the carrier's bus is
+    // two centimetres of trace, so the ceiling is not the constraint; what is,
+    // is that J8 brings this bus off the board to whatever somebody plugs in,
+    // and standard mode is the speed every I2C part ever made agrees on.
+    i2cHz = 100000;
+
+    sht4xAddress = sht4x::kDefaultAddress;
+    sht4xName = "";
 
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
         // Every slot, straight out of the table — the static_assert above is
@@ -261,8 +277,14 @@ ConfigFile::validateThingSpeakFields()
         { 3, true, "ping" },
         { 4, waterLevelFitted, "water level" },
         { 5, luminosityFitted, "luminosity" },
-        { 6, dhtFitted, "temperature" },
-        { 7, dhtFitted, "air humidity" },
+        // ambientFitted(), not dhtFitted: fields 6 and 7 are claimed by
+        // whichever ambient part is on the board, because the ThingSpeak
+        // publisher writes them from the same two accumulators either way.
+        // Left as dhtFitted, an SHT40 board would leave both fields unclaimed
+        // and let a colliding thingSpeak.moisture2Field overwrite the
+        // temperature history with a moisture reading.
+        { 6, ambientFitted(), "temperature" },
+        { 7, ambientFitted(), "air humidity" },
         { 8, true, "boot time" },
     };
 
@@ -482,6 +504,32 @@ ConfigFile::loadFile(unsigned deviceID)
     dhtFitted = io.hasOwnProperty("dht");
     if (dhtFitted) {
         loadSensor(io["dht"], dhtPin, dhtName);
+    }
+
+    loadI2c(*this, io);
+    loadSht4x(*this, io);
+
+    // BOTH ambient sensors declared. Not a refusal, and the reason matters:
+    // loadFile() returning false means compiled defaults, ssid "undefined" and
+    // a board that can neither associate nor be reached to fix. A config
+    // authoring mistake must not brick a garden.
+    //
+    // So one of them wins, deterministically and out loud, and the SHT40 is the
+    // one. A board can only be in this state because somebody wired a Sensirion
+    // part onto a board that already had a DHT — which is an upgrade, and
+    // picking the DHT would silently discard it. +-1.8 %RH and +-0.2 C against
+    // +-5 %RH and +-2 C is not a close call.
+    //
+    // It is enforced by CLEARING dhtFitted rather than by a check at each
+    // reader. Everything downstream — the ambient task, validatePins(),
+    // /data.json, et0Available(), the ThingSpeak field pair — then sees exactly
+    // one ambient sensor and none of them has to know this case exists. One
+    // veto at one place; the same rule relayStartAllowed() is held to.
+    if (sht4xFitted && dhtFitted) {
+        logger.warning("Config declares both io.dht and io.sht4x. Reading the "
+                       "SHT40 and ignoring the DHT on GPIO " + String(dhtPin) +
+                       "; remove io.dht to silence this.");
+        dhtFitted = false;
     }
 
     loadSoilMoisture(*this, io);

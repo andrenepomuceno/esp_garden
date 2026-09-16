@@ -25,9 +25,19 @@ handleCapabilitiesJson(AsyncWebServerRequest* request)
     // The kinds this build has drivers for. A web page cannot add a kind that
     // is not in this list: a DHT needs the DHT library linked in, which is the
     // one thing that stayed a compile-time decision.
+    //
+    // `sht4x` is here although /devices.html cannot yet add or remove it: that
+    // page is pin-centric — every row it renders is one GPIO picked from a
+    // capability list — and an SHT40 has no pin of its own, only a bus shared
+    // with whatever else is on it. Listing the kind is still the firmware's
+    // honest statement of what it has a driver for, which is what this array
+    // is; devices_model.js filters its own table by hasKind(), so a kind it
+    // does not know about is simply not rendered, and a save from that page
+    // carries io.sht4x and io.i2c through untouched because buildDocument()
+    // only deletes keys it renders. Editing it today means /config.html.
     const char* const kinds[] = { "relays",     "soilMoisture", "dht",
-                                  "luminosity", "waterLevel",   "flow",
-                                  "floatSwitch" };
+                                  "sht4x",      "luminosity",   "waterLevel",
+                                  "flow",       "floatSwitch" };
     for (unsigned i = 0; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
         doc["kinds"][i] = kinds[i];
     }

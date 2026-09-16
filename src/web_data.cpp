@@ -82,9 +82,24 @@ webUpdateDataCache()
                  uptime % 60);
         statusJson["Uptime"] = String(buffer);
     }
-    if (g_dhtTotalReads > 0) {
-        statusJson["DHT Error Rate"] =
-          String((float)g_dhtReadErrors / (float)g_dhtTotalReads * 100, 2);
+    // Which part produced Temperature and Air Humidity, stated where an
+    // operator looks rather than left to be inferred from a noise floor that
+    // moved. The two channels keep their names and their meaning across a
+    // sensor change; their ACCURACY does not, and this is the durable half of
+    // saying so — the boot log is an 8 KB rolling buffer this device overwrites
+    // within hours. The other half is the ThingsBoard `ambient_sensor` client
+    // attribute. Absent when nothing is fitted, the same rule `state`, `fault`
+    // and `Channel` follow.
+    if (config.ambientFitted()) {
+        statusJson["Ambient Sensor"] = config.ambientSensorName();
+    }
+    // Renamed from "DHT Error Rate": it is a Status LABEL, read by nothing but
+    // a human and rendered generically by index.js, so it costs nothing to make
+    // it true on a board with no DHT. The TELEMETRY key stays `dhtErrorRate`,
+    // which has stored history behind it — see telemetry.cpp.
+    if (g_ambientTotalReads > 0) {
+        statusJson["Ambient Error Rate"] =
+          String((float)g_ambientReadErrors / (float)g_ambientTotalReads * 100, 2);
     }
     statusJson["Internet"] = String((g_hasInternet) ? "online" : "offline");
     statusJson["Signal Strength"] = String(getSignalStrength()) + "%";
@@ -265,14 +280,16 @@ webUpdateDataCache()
         }
     }
 
-    // One pin, two channels: a name given to the DHT reads as a prefix so both
-    // channels stay distinguishable.
-    if (config.dhtFitted) {
-        const String prefix =
-          config.dhtName.length() > 0 ? (config.dhtName + " ") : String("");
+    // One part, two channels: a name given to the ambient sensor reads as a
+    // prefix so both channels stay distinguishable. Keyed off ambientFitted()
+    // and ambientName(), so an SHT40 lands on the SAME "Temperature" / "Air
+    // Humidity" rows a DHT does — same quantity, same units, better instrument.
+    if (config.ambientFitted()) {
+        const String& label = config.ambientName();
+        const String prefix = label.length() > 0 ? (label + " ") : String("");
         const String tempName = prefix + "Temperature";
         const String humName =
-          config.dhtName.length() > 0 ? (prefix + "Humidity") : String("Air Humidity");
+          label.length() > 0 ? (prefix + "Humidity") : String("Air Humidity");
         addAccumulator(inputsJson, tempName.c_str(), g_temperature);
         addAccumulator(inputsJson, humName.c_str(), g_airHumidity);
     }

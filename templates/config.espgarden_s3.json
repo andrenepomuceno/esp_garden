@@ -101,6 +101,15 @@
         "settleMs": 50
       }
     ],
+    "i2c": {
+      "sda": 8,
+      "scl": 9,
+      "hz": 100000
+    },
+    "sht4x": {
+      "name": "",
+      "address": 68
+    },
     "luminosity": {
       "pin": 6,
       "name": "Luminosidade"

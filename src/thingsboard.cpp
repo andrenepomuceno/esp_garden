@@ -628,6 +628,31 @@ tbOnConnect()
     attributes["current_fw_title"] = config.mqttFwTitle;
     attributes["current_fw_version"] = FW_VERSION;
     attributes["hostname"] = config.hostname;
+
+    // WHICH PART PRODUCED `temperature` AND `airHumidity`.
+    //
+    // Those two keys are shared between a DHT11 and an SHT40 on purpose: the
+    // same quantity in the same units, so no stored series changes meaning and
+    // every chart keeps working. What a swap DOES change is accuracy — +-5 %RH
+    // and +-2 C become +-1.8 and +-0.2 — and a reader who later wonders why the
+    // noise floor dropped has to be able to find out.
+    //
+    // A client ATTRIBUTE and not telemetry, for the reason `firmware` stopped
+    // being periodic telemetry: it changes at a reboot and at no other moment,
+    // so a copy in every payload restates a constant. Attributes are current
+    // state and overwrite, which is exactly right for "what is fitted".
+    //
+    // snake_case because that is the attribute namespace's convention here
+    // (fw_title, fw_version, current_fw_version), where telemetry keys are
+    // camelCase. Named for the QUESTION rather than for one answer: a key
+    // called `sht40` cannot express "a DHT11", and a key called
+    // `temperature_sensor` would have to be repeated for the humidity half of
+    // the same part. Absent when nothing is fitted, the same rule `state`,
+    // `fault` and `Channel` follow -- an attribute reading "none" is one more
+    // row that trains the eye to skip the row that matters.
+    if (config.ambientFitted()) {
+        attributes["ambient_sensor"] = config.ambientSensorName();
+    }
     tbQueue(TB_ATTRIBUTES, JSON.stringify(attributes));
 
     // A reboot as a TELEMETRY event, once per connection, so the cloud gets a
