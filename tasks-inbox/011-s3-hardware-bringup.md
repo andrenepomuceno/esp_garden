@@ -17,3 +17,18 @@ and worth checking in this order, because each one can hide the next:
    conversion are all datasheet, not measurement.
 
 **Do this with the relay board DISCONNECTED.** Every reset floats the GPIOs.
+
+---
+**Partly done, 2026-09-16** — bare module on USB, no carrier. Items 1, 2 (config
+half) and 4 are now measurements; see CLAUDE.md. The board runs at
+**192.168.1.77**, hostname `espgarden-s3`, onboarded through its own AP.
+
+**Still blocked on the carrier**, and these are the ones that need it:
+3. the relay safe state, which is read off `J200` and a datasheet and has never
+   met a scope through a boot;
+5. the SHT40 — no I²C transaction has happened on any pin;
+   plus every ADC reading and every relay switch.
+
+Its admin account was seeded with the SAME `ota.username`/`ota.password` pair as
+the garden board, because that is what `data/config.json` had to hand. Change it
+in `/config.html` if two boards should not share one credential.
