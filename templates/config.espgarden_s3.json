@@ -27,7 +27,7 @@
     "password": "",
     "server": "thingsboard.cloud",
     "port": 8883,
-    "cacert": "/thingspeak.pem",
+    "cacert": "/thingsboard.pem",
     "backend": "thingsboard",
     "useTLS": true,
     "rpc": true,
