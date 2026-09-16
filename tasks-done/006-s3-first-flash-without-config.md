@@ -13,3 +13,15 @@ ESP32-S3-DevKitC-1 to a working AP, without `data/config.json` and without
 weakening the guard.
 
 May be resolved in passing by 002 — check before doing it twice.
+
+---
+**Done** — the guard change is committed and verified both ways. The image
+builds at exactly the partition size carrying no `config.json`.
+
+Built from a throwaway worktree rather than by moving `data/config.json` aside:
+that file holds the live garden's only local copy of its credentials, and a
+build is not worth putting it at risk. The worktree has none because it is
+gitignored, which is also the exact scenario the change is for.
+
+**The flash itself is NOT done** — blocked by the permission classifier, which
+is correct behaviour for a write to hardware. The commands are in the session.
