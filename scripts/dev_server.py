@@ -41,7 +41,7 @@ from sim_auth import AUTH, AuthSim
 from sim_config import (SIM_CONFIG, SIM_USERS, config_apply, config_masked,
                         users_apply)
 from sim_moisture import moisture_scenario_names, moisture_snapshot
-from sim_state import STATE, _ticker
+from sim_state import HISTORY_TUNING, STATE, _ticker
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -374,7 +374,12 @@ class Handler(BaseHTTPRequestHandler):
             stride = 1
 
             with STATE.lock:
-                everything = list(STATE.history)
+                # Fault injection, off unless --history-rotate-every asked for
+                # it. See DeviceState.history_read_hook(): a rotation between
+                # two pages of a walk is the one failure an archiver cannot
+                # reach by waiting.
+                STATE.history_read_hook()
+                everything = STATE.history.all_records()
 
                 if window > 0:
                     # ?window=<seconds> selects by time and DECIMATES to fit,
@@ -423,7 +428,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 payload = {
                     "capacity": STATE.history_capacity,
-                    "stored": len(STATE.history),
+                    "stored": STATE.history.stored,
                     "returned": len(records),
                     "offset": skip,
                     "stride": stride,
@@ -720,6 +725,40 @@ def main() -> None:
              "arm1 = /config.json did not load; arm2 = it loaded but its "
              "credentials have never associated. This is the ONLY place that "
              "page can be rendered until a board exists")
+    # The history knobs. They exist because the behaviours an ARCHIVER has to
+    # survive — a segment rotation, a walk that needs several pages, a hole in
+    # the record — take hours at the device's 60 s period, and a mirror whose
+    # failure modes are only reachable overnight is a mirror nobody exercises.
+    # CLAUDE.md records the cost of that: the session-persistence entry had to
+    # be corrected because the mirror "could not reproduce the resurrection
+    # class of bug it exists to catch".
+    parser.add_argument(
+        "--history-period", type=float, metavar="SEC",
+        help="seconds per history record (default: config.history.periodSec). "
+             "Floored at 1: the ticker runs at 1 Hz and a record is stamped to "
+             "the second, so anything faster would collide timestamps the "
+             "device cannot collide")
+    parser.add_argument(
+        "--history-records", type=int, metavar="N",
+        help="history.records to simulate (default: config.history.records)")
+    parser.add_argument(
+        "--history-fill", type=float, metavar="F",
+        help="how full the buffer starts, 0.0-1.0 (default 1.0). Below 1 the "
+             "next appends rotate on a schedule a test can predict")
+    parser.add_argument(
+        "--history-gap", type=float, metavar="SEC",
+        help="punch a hole this long into the middle of the seeded history. "
+             "Not hypothetical: historyTaskHandler() writes nothing while the "
+             "clock is unsynced, which cost 6224 17.6 h on 2026-09-16")
+    parser.add_argument(
+        "--history-rotate-every", type=int, metavar="N",
+        help="FAULT INJECTION: recycle a segment after every Nth "
+             "/history.json read, shifting every logical index. Off by "
+             "default; 1 is harsher than any device can be")
+    parser.add_argument(
+        "--history-garden", action="store_true",
+        help="seed probes that answer their own pumps, so the collect -> "
+             "archive -> fit chain can be exercised on a garden that BEHAVES")
     args = parser.parse_args()
 
     global ONBOARDING_MODE, ONBOARDING_REASON
@@ -738,6 +777,14 @@ def main() -> None:
     # The flag lives in sim_moisture; `global` here would rebind a name in this
     # module instead, and resolve_scenario() would never see it.
     sim_moisture.MOISTURE_SCENARIO = args.moisture_scenario
+
+    # STATE is built at IMPORT time, so the buffer is rebuilt here rather than
+    # configured before construction.
+    STATE.reconfigure_history(
+        period=args.history_period, records=args.history_records,
+        fill=args.history_fill, gap=args.history_gap,
+        rotate_every=args.history_rotate_every,
+        garden=args.history_garden or None)
 
     if not DATA_DIR.is_dir():
         raise SystemExit(f"data/ not found at {DATA_DIR}")
@@ -772,6 +819,10 @@ def main() -> None:
           "  /control  /updateEnable  /update  /moisture.json")
     print("Moisture scenarios: " + ", ".join(moisture_scenario_names())
           + "  (?scenario=NAME on /moisture.json, or --moisture-scenario)")
+    print(f"History: {STATE.history.stored}/{STATE.history_capacity} records, "
+          f"{STATE.history.per_segment} per segment, "
+          f"{STATE.history_period_s:g} s period"
+          + (", garden seed" if HISTORY_TUNING["garden"] else ""))
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()

@@ -15,9 +15,40 @@ import time
 from collections import deque
 from datetime import datetime
 
+from history_archive import SegmentHistory
 from sim_config import SIM_CONFIG
 from sim_moisture import (moisture_models, moisture_state, probe_names,
                           resolve_scenario)
+
+# How the simulated buffer behaves, overridable from dev_server.py's command
+# line. The defaults are what the device's own config.json asks for; the knobs
+# exist because the interesting behaviours - a segment rotation, a walk that
+# needs paging, a hole in the record - take HOURS at a 60 s period, and a mirror
+# whose failure modes are only reachable overnight is a mirror nobody exercises.
+#
+# CLAUDE.md records the cost of getting this wrong: the session-persistence
+# entry had to be corrected because the mirror "could not reproduce the
+# resurrection class of bug it exists to catch".
+HISTORY_TUNING = {
+    "period": None,    # seconds per record; None = config.history.periodSec
+    "records": None,   # capacity; None = config.history.records
+    "fill": 1.0,       # how full the buffer starts, as a fraction of capacity
+    "gap": 0.0,        # seconds of missing record to punch into the seed
+    "garden": False,   # seed a garden whose probes answer their own pumps
+    "rotate_every": 0, # fault injection: recycle a segment every Nth read
+}
+
+# Records between waterings in the garden seed. FOUR HOURS at a 60 s period, and
+# the number is set by the FIRMWARE's own windows rather than by taste: 30 min
+# labelled wet plus 60 min labelled dry leaves 150 min of humid in a cycle this
+# long, and six cycles in a day clears g_moistureMinEvents exactly once per
+# buffer. A shorter cycle produces an EMPTY humid class and refuses on weight,
+# which is a true answer to a question the seed was not asking.
+GARDEN_CYCLE = 240
+
+# Bound once: the seed's rise is first-order and math.exp is the only thing it
+# needs from math that the sine-based seed did not already use.
+_EXP = math.exp
 
 
 def ambient_sensor_name() -> str:
@@ -165,27 +196,29 @@ class DeviceState:
         self.ambient_read_errors = 0
         self.logs: deque[str] = deque(maxlen=self.LOG_CAPACITY)
 
-        # Mirrors the on-device history in src/io_history.cpp. The device
-        # now drops a whole SEGMENT at a time rather than one record, so its
-        # retention swings between 7/8 and 8/8 of capacity; a deque with
-        # maxlen drops one at a time, which is close enough for a frontend
-        # mock and is noted here so nobody reads it as the device's rule.
-        # The simulator gets the same drop-oldest
-        # behaviour without the file. Capacity and period come from the same
-        # config block the device reads — hardcoding them let the simulator
-        # report a capacity the device would never return.
-        history_cfg = SIM_CONFIG.get("history", {})
-        self.history_requested = int(history_cfg.get("records", 1440))
-        self.history_capacity = _fit_history_capacity(
-            self.history_requested, self.FS_TOTAL_BYTES, self.FS_USED_BYTES,
-            self.FS_HISTORY_BYTES)
-        # records = 0 means disabled on the device, where /history.json answers
-        # 503. Coercing it to 1 here made that branch unreachable in the UI.
-        self.history_enabled = self.history_capacity > 0
-        self.history: deque[dict] = deque(
-            maxlen=self.history_capacity if self.history_enabled else 1)
-        self.history_period_s = int(history_cfg.get("periodSec", 60))
-        self._history_next = 0.0
+        # Mirrors the on-device history in src/io_history.cpp. Capacity and
+        # period come from the same config block the device reads — hardcoding
+        # them let the simulator report a capacity the device would never
+        # return.
+        #
+        # IT USED TO BE A DEQUE, and that was a real drift rather than a
+        # simplification. A deque with maxlen drops ONE record per append; the
+        # device recycles a whole SEGMENT at once, so its retention swings
+        # between 7/8 and 8/8 of capacity and every logical index — which is
+        # what `?offset=` addresses — moves down by 375 in one step. The old
+        # comment called that "close enough for a frontend mock", and it was,
+        # right up until something had to PAGE this endpoint: an archiver that
+        # trusts an offset across a rotation re-reads the newest records,
+        # believes it has met known data and silently loses the segment in
+        # between. A mock that cannot produce that shape cannot catch it.
+        #
+        # SegmentHistory lives in history_archive.py and is shared with
+        # scripts/history_export.py's own tests, which means the mirror and the
+        # archiver agree by construction — a wrong belief about the device's
+        # rule would be invisible in both. That is stated here rather than
+        # hidden: test_segment_index is what pins the FIRMWARE's arithmetic.
+        # Built at the END of __init__, because the seed writes
+        # `flow_total_litres` and the sensors it reads are set up below.
 
         # Mirrors config.io.relays. Index 0 is the watering relay, as in the
         # firmware — TalkBack and the legacy `watering` control target it.
@@ -210,8 +243,91 @@ class DeviceState:
         self.flow_total_litres = 0.0
         self.float_raised = True
 
-        self._seed_history()
+        self._build_history()
         self.log("info", "Simulator booted")
+
+    def _build_history(self) -> None:
+        """Builds the buffer from HISTORY_TUNING and reseeds it.
+
+        Separate from __init__ because STATE is constructed at IMPORT time and
+        dev_server.py's flags are parsed in main(), long afterwards.
+        reconfigure_history() below is the door those flags come through.
+        """
+        history_cfg = SIM_CONFIG.get("history", {})
+        self.history_requested = int(
+            HISTORY_TUNING["records"] if HISTORY_TUNING["records"] is not None
+            else history_cfg.get("records", 1440))
+        granted = _fit_history_capacity(
+            self.history_requested, self.FS_TOTAL_BYTES, self.FS_USED_BYTES,
+            self.FS_HISTORY_BYTES)
+        self.history = SegmentHistory(granted)
+        # IoHistory::capacity() is segmentRecords * kSegments with
+        # segmentRecords rounded UP, so a granted 1001 is reported as 1008.
+        self.history_capacity = self.history.capacity
+        # records = 0 means disabled on the device, where /history.json answers
+        # 503. Coercing it to 1 here made that branch unreachable in the UI.
+        self.history_enabled = self.history_capacity > 0
+        # Floored at 1 s, and the floor is not arbitrary. The ticker runs at
+        # 1 Hz so nothing below it can be delivered anyway, and a record is
+        # stamped `int(time.time())` — two appends inside one second would share
+        # a timestamp, which is the identity scripts/history_export.py keys on.
+        # The DEVICE cannot produce that: historyTaskHandler() reschedules from
+        # the end of its callback at `history.periodSec`, so a collision here
+        # would be a property of this mock's stamping and would have the
+        # archiver chasing a shape the firmware cannot make.
+        self.history_period_s = max(1.0, float(
+            HISTORY_TUNING["period"] if HISTORY_TUNING["period"] is not None
+            else history_cfg.get("periodSec", 60)))
+        self._seed_history()
+        # One period from now, not immediately. At 0.0 the first live tick
+        # appended on top of a seed that already ended at `now`, which on a full
+        # buffer is an instant rotation: the simulator started 180 records short
+        # of what it had just seeded, and a test asking for a full buffer got
+        # 7/8 of one for reasons nothing on screen explained.
+        self._history_next = time.time() + self.history_period_s
+        self._history_reads = 0
+
+    def history_read_hook(self) -> None:
+        """Fault injection: recycle a segment between two /history.json reads.
+
+        A rotation shifts every logical index down by a whole segment at once,
+        and a paging client that trusts an offset it computed before one loses
+        that segment WITHOUT NOTICING - it re-reads the newest records, meets
+        data it already has, and stops. It is the single failure this mirror
+        exists to reproduce for scripts/history_export.py.
+
+        It cannot be reached by waiting. A real rotation lands every
+        `recordsPerSegment` appends - 375 minutes on 6224 - while a walk takes
+        milliseconds, so the window is about one in twenty thousand and no test
+        that respects wall-clock time will ever hit it. So the mock is told to
+        rotate on demand, which is what a mock is for, and the knob is off
+        unless somebody asks for it.
+
+        `--history-rotate-every 1` rotates between EVERY pair of reads, which is
+        harsher than any device can be: the walk must give up and say so rather
+        than loop or lie.
+        """
+        every = int(HISTORY_TUNING.get("rotate_every") or 0)
+        if every <= 0:
+            return
+        self._history_reads += 1
+        if self._history_reads % every:
+            return
+        # Fill the newest segment and append once more: the same path an
+        # ordinary append takes when it finds the newest segment full.
+        newest = self.history.all_records()[-1]
+        room = self.history.per_segment - len(self.history._files[-1])
+        for step in range(room + 1):
+            self.history.append(
+                {**newest, "t": int(newest["t"]) + step + 1})
+
+    def reconfigure_history(self, **tuning) -> None:
+        """Applies command-line history knobs and rebuilds the buffer."""
+        for key, value in tuning.items():
+            if value is not None:
+                HISTORY_TUNING[key] = value
+        with self.lock:
+            self._build_history()
 
     def _history_status(self) -> str:
         """Status.History, mirroring the block in src/web_data.cpp.
@@ -225,7 +341,7 @@ class DeviceState:
         if not self.history_enabled:
             text = "disabled"
         else:
-            text = f"{len(self.history)} / {self.history_capacity} records"
+            text = f"{self.history.stored} / {self.history_capacity} records"
         if self.history_capacity < self.history_requested:
             # The same expression the grant was made with, not a second
             # subtraction that agrees with it by luck: src/web_data.cpp renders
@@ -241,48 +357,139 @@ class DeviceState:
     def _seed_history(self) -> None:
         """Backdated records so the charts are testable immediately.
 
-        Without this the deque starts empty and gains one record per period:
+        Without this the buffer starts empty and gains one record per period:
         every path the history page adds — gap breaking, the crosshair index
-        map, the relay run-length strip — is unreachable for hours.
+        map, the relay run-length strip — is unreachable for hours, and so is
+        every path an ARCHIVER adds, which needs more than 200 records before it
+        pages at all.
+
+        Three knobs, all off by default, all there because the behaviour they
+        reach cannot be waited for:
+
+          fill    a buffer that starts part-full, so the next appends ROTATE on
+                  a schedule a test can predict.
+          gap     a hole in the record, which is not hypothetical: the device
+                  wrote nothing for 17.6 h on 2026-09-16 because
+                  historyTaskHandler() refuses an unsynced clock.
+          garden  probes that answer their own pumps, so the whole chain —
+                  collect, archive, fit — can be exercised on a garden that
+                  BEHAVES. A tool that has only ever refused has not been shown
+                  able to accept.
         """
         if not self.history_enabled:
             return
         import math as _math
         now = time.time()
-        # Fill the whole buffer. 400 records is 6.7 h at the default period, so
-        # the 12 h / 1 d / 7 d / 30 d window buttons all collapsed onto the same
-        # data and decimation never engaged — the one behaviour the window
-        # selector exists to exercise.
-        count = self.history_capacity
+        fill = min(max(float(HISTORY_TUNING["fill"]), 0.0), 1.0)
+        count = int(self.history_capacity * fill)
+        gap_sec = float(HISTORY_TUNING["gap"])
+        # The hole is punched in the MIDDLE, so the seeded series has records on
+        # both sides of it. A gap at either end is indistinguishable from the
+        # buffer simply starting or ending there.
+        gap_at = count // 2 if gap_sec > 0 else -1
         # The live counter continues from where the seed left off. Restarting
         # it at zero made the cumulative total jump backwards at the seam, so
         # the "Water Delivered" chart showed a drop no meter can produce.
         seeded_total = 0.0
+        shift = 0.0
         for i in range(count, 0, -1):
-            t = now - i * self.history_period_s
+            if count - i == gap_at:
+                shift = gap_sec
+            t = now - i * self.history_period_s - (gap_sec - shift)
             phase = i / 30.0
-            self.history.append({
-                "t": int(t),
-                "relays": (1 if i % 37 == 0 else 0) | (8 if i % 211 == 0 else 0),
-                "moisture": [
+            # A pump every 37 records, held for two so the mask is STICKY across
+            # more than one — the rising-edge rule in collectEvents() has to
+            # count that once, and a one-record pulse never tests it.
+            #
+            # The garden seed uses a FOUR-HOUR cycle instead, because the
+            # firmware's own windows decide what a 37-minute one can produce:
+            # 30 min wet plus 60 min dry leaves no room at all for HUMID, so
+            # every probe fails the weight gate on an empty class and the
+            # ACCEPT path stays unreachable. GARDEN_CYCLE records give six
+            # cycles a day with 150 minutes of humid in each.
+            if HISTORY_TUNING["garden"]:
+                # TWO pumps, half a cycle apart, so relay 1 is not a spare bit
+                # that never rises — a probe whose own pump never runs is the
+                # case the live garden is already in, and the seed exists to
+                # show the OTHER one.
+                mask = (1 if (i % GARDEN_CYCLE) in (0, 1) else 0)
+                offset = (i + GARDEN_CYCLE // 2) % GARDEN_CYCLE
+                mask |= (2 if offset in (0, 1) else 0)
+                pumping = bool(mask)
+                moisture = self._garden_moisture(i)
+            else:
+                pumping = (i % 37 == 0) or ((i + 1) % 37 == 0)
+                mask = (1 if pumping else 0) | (8 if i % 211 == 0 else 0)
+                moisture = [
                     round(45 + 6 * _math.sin(phase), 2),
                     round(38 + 4 * _math.sin(phase + 1), 2),
                     round(52 + 5 * _math.sin(phase + 2), 2),
                     round(62 + 4 * _math.sin(phase + 3), 2),
-                ],
+                ]
+            self.history.append({
+                "t": int(t),
+                "relays": mask,
+                "moisture": moisture,
                 "lum": round(max(0.0, 55 + 40 * _math.sin(i / 60.0)), 2),
                 "temp": round(25 + 3 * _math.sin(phase / 2), 2),
                 "hum": round(70 + 8 * _math.sin(phase / 3), 2),
                 "water": round(6 + 1.5 * _math.sin(i / 90.0), 2),
                 # Flow only runs while a pump does, and the total only climbs —
                 # a flat line here would hide the one shape that matters.
-                "flow": 2.4 if i % 37 == 0 else 0.0,
+                "flow": 2.4 if pumping else 0.0,
                 "flowTotal": round(seeded_total, 3),
                 "float": 1,
             })
-            if i % 37 == 0:
-                seeded_total += 0.4
+            if pumping:
+                seeded_total += 0.2
         self.flow_total_litres = seeded_total
+
+    def _garden_moisture(self, countdown: int) -> list:
+        """A probe that actually answers its pump, for the ACCEPT path.
+
+        `countdown` runs from capacity down to 1, so a watering is at
+        `countdown % GARDEN_CYCLE == 0` and the records since the last one are
+        `GARDEN_CYCLE - 1 - (countdown % GARDEN_CYCLE)`. Probe 1 is the same
+        curve half a cycle out of phase, on relay 1. Probes 2 and 3 are left
+        FLAT, which is what an unresponsive probe looks like and is what the
+        separation gate must go on refusing even here.
+
+        THE RISE IS FIRST-ORDER, not a ramp, and that is the whole lesson of
+        building this fixture. A LINEAR rise filling the firmware's 30-minute
+        wet window puts the wet class at the MIDPOINT of the climb - measured
+        here at 62.9 against humid's 66.3, so humid did not lie between dry and
+        wet, J came out at 2.1 and moistureModelIsUsable() refused a garden that
+        was behaving perfectly. Stretch the ramp to 60 records and it gets
+        worse: wet 55.3 against humid 73.2.
+
+        That is not the seed being unlucky. labelFor() calls the whole 30
+        minutes after a pump "wet", and that is only true of soil that is NEAR
+        SATURATION for most of it - which is what m(t) = baseline + rise *
+        (1 - e^-t/tau) does and what a straight line cannot. It is the same
+        assumption moistureTimeConstant() exists to measure and
+        moistureAbsorptionConfidence() exists to discount, and on this device
+        tau is 0 for every probe, so the 5-minute linear stand-in is what runs.
+
+        tau = 8 records reaches 95 % of the rise in 24 minutes, inside the
+        window. The first records of each watering do exceed the rate
+        STEP_MIN_POINTS asserts soil cannot make - which is correct, a pump IS
+        an event - and they are excluded as steps EXPLAINED by this probe's own
+        pump, which is the mechanism that exists for exactly this.
+        """
+        tau = 8.0
+        span = 25.0
+        fall = GARDEN_CYCLE - 30
+
+        def curve(since):
+            if since < 30:
+                return 50.0 + span * (1.0 - _EXP(-(since + 1) / tau))
+            return 50.0 + span - span * min(1.0, (since - 30) / fall)
+
+        first = curve(GARDEN_CYCLE - 1 - (countdown % GARDEN_CYCLE))
+        second = curve(
+            GARDEN_CYCLE - 1
+            - ((countdown + GARDEN_CYCLE // 2) % GARDEN_CYCLE))
+        return [round(first, 2), round(second - 5.0, 2), 52.0, 62.0]
 
     # ----- logging -----
     def log(self, level: str, message: str) -> None:

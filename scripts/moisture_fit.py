@@ -74,12 +74,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import sqlite3
 import sys
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 # Plain sibling modules: this file is run as a script, so scripts/ is
@@ -87,12 +84,17 @@ from pathlib import Path
 # The split is statistics on one side and the device, the archive and the
 # report on the other, so the half with the arithmetic in it can be exercised
 # on its own.
+import history_archive as ha
+import history_store as store
+from device_http import Device
+from history_export import identity_seams, latest_identity
 from moisture_stats import (CLASSES, MAX_GAP_SEC, MIN_SEPARATION,
                             analyse_probe, build_proposal, local, self_test)
 from moisture_thermal_report import report_thermal, thermal_findings
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "backups" / "telemetry.sqlite"
+DEFAULT_HISTORY_DB = ROOT / "backups" / "history.sqlite"
 DEFAULT_DEVICE = "192.168.1.55"
 DEFAULT_CREDENTIALS = ROOT / "data" / "config.json"
 DEFAULT_TZ_HOURS = -3
@@ -102,40 +104,70 @@ DEFAULT_TZ_HOURS = -3
 # WHY /moisture_model.bin IS NOT WRITTEN FROM HERE
 # ---------------------------------------------------------------------------
 #
-# Either path was allowed. This one is declined, and these are the reasons
-# rather than a shrug:
+# REVISED 2026-09-16, after scripts/history_export.py made the device's own 60 s
+# record available and after reasons 2 and 3 - the two this comment called
+# STRUCTURAL - were checked against the firmware rather than against this
+# comment. One of them was wrong. The verdict did not move.
 #
-#   1. There is nothing to seed. Both probes fail the separation gate by two
-#      orders of magnitude, so the file would carry statistics the device would
-#      correctly refuse to use. Shipping a refused model buys nothing and costs
-#      a reboot.
-#   2. The variances are not on the same scale. The device fits from its own
-#      60 s history records; this fits from ThingsBoard's `moistureN`, which is
-#      the accumulator MEAN over one publish period - 300 s since firmware
-#      2.8.0. Averaging shrinks variance, and J = (mu_wet - mu_dry)^2 /
-#      (var_wet + var_dry) is a RATIO to it. A model fitted here would pass or
-#      fail the device's gate for the wrong reason, in the optimistic direction.
-#      Fixing it means fitting from GET /history.json instead, which IS the
-#      device's own 60 s record - the right shape for a seed, and the first
-#      thing to change when there is finally something to seed.
-#   3. `consumedUntil` has no correct value from another data source. It is the
-#      epoch of the newest watering event already folded in, and the device
-#      skips its own history at or before it. Zero makes the device
-#      double-count the day it already has; a current epoch throws that day
-#      away. Either is invisible until a gate flips.
-#   4. The struct layout would have to be verified byte-for-byte against a file
-#      the device wrote. `sizeof(MoistureModelState)` is checked on load, and
-#      the MOI2 magic exists precisely because two fields once fitted inside
-#      padding and the size check did not notice. That verification needs a read
-#      of /spiffs/moisture_model.bin, which this task's constraints exclude.
-#   5. A push has to be upload-then-reboot. The device loads the model at boot
-#      and saves its own at each training run, so an upload into a running
-#      device is overwritten by the in-RAM model at the next save. The reboot is
-#      the expensive half: every reset floats the GPIOs and these relays are
+#   1. STANDS, and it is the binding one. There is nothing to seed. Both probes
+#      have ZERO watering events on their own pump, so the six-event gate is
+#      failed before any statistic is computed, and the file would carry
+#      statistics the device would correctly refuse to use. The new source does
+#      not change this: `relayMask` in the history record says exactly what the
+#      archive's relay events say, because no pump has run.
+#
+#   2. WITHDRAWN AS WRITTEN. It said the archive's `moistureN` is "the
+#      accumulator MEAN over one publish period" while "the device fits from its
+#      own 60 s history records", so "averaging shrinks variance" and a J fitted
+#      here would pass the device's gate for the wrong reason.
+#
+#      Both series are the SAME statistic. src/tasks.cpp's historyTaskHandler()
+#      writes `record.moisture[i] = g_soilMoisture[i].getAverage()`, and
+#      src/telemetry.cpp's addContinuous() publishes `moistureN` from the same
+#      getAverage() on the same accumulator - whose window is sized ONCE, in
+#      sensorsSetup(), as mqttPublishPeriodMs() / g_ioTaskPeriod = 300 samples.
+#      So the device's own 60 s record is a 300-second trailing mean read out
+#      every 60 s, and the archive is that same mean read out every 300 s. The
+#      archive is a 5x DECIMATION of the history, not a smoothed version of it,
+#      and their marginal variances have the same expectation.
+#
+#      What really differs is the SAMPLE COUNT inside a class window, and it
+#      cuts the other way from the claim: the wet window is 30 minutes, which is
+#      30 samples at 60 s and 6 at 300 s. `weight` is a sum of per-sample
+#      confidences, so the archive under-counts it about fivefold against
+#      MIN_WEIGHT_PER_CLASS = 20 - the archive path is HARDER to pass, not
+#      easier - and each class variance is estimated from five times fewer
+#      points. The 60 s extra samples are also heavily autocorrelated, since
+#      consecutive records share 240 s of the same underlying window, so most of
+#      that extra weight is fictitious independence. That is fine and it is the
+#      point: it is the SAME fictitious independence the device's own trainer
+#      has, and matching the device's arithmetic is the whole reason to fit from
+#      its own record.
+#
+#   3. RESOLVED by the new source, exactly as this comment predicted.
+#      `consumedUntil` is MoistureModelState's "epoch of the newest watering
+#      event already folded in", and moistureModelTrain() sets it to
+#      scan->consumeUntil, the newest rising edge across every probe in the
+#      records it just scanned. From the device's own records that is
+#      computable - history_archive.consumed_until() computes it - and 0 is
+#      correct precisely when no edge exists, which is this garden today.
+#
+#   4. STANDS, unchanged. The struct layout has to be verified byte-for-byte
+#      against a file the device wrote. sizeof(MoistureModelState) is checked on
+#      load and the MOI2 magic exists because two fields once fitted inside
+#      padding and the size check did not notice. That needs a read of
+#      /spiffs/moisture_model.bin, which nothing here has done.
+#
+#   5. STANDS, unchanged. A push has to be upload-then-reboot: the device loads
+#      the model at boot and saves its own at each training run, so an upload
+#      into a running device is overwritten at the next save. The reboot is the
+#      expensive half - every reset floats the GPIOs and these relays are
 #      active-low, so it pulses every pump.
 #
-# Reasons 2 and 3 are structural and would survive the data getting better; 1
-# and 4 are circumstantial. None of them is a claim that the path cannot work.
+# So the score is 1, 4 and 5 standing, 3 resolved, 2 withdrawn as a
+# mis-statement of what the two series are. The gate is reason 1 and it is not a
+# tooling problem: it is a garden whose pumps have not run. What would change it
+# is six waterings on a probe's own relay, inside one collected window.
 MODEL_FILE_DECLINED = True
 
 
@@ -243,80 +275,6 @@ def probe_slot_seams(conn, slots):
 # ---------------------------------------------------------------------------
 
 
-class Device:
-    """Nonce + SHA-256 login, exactly as src/custom_login.cpp implements it.
-
-    ONE login and ONE request per run, and a logout at the end. The board serves
-    HTTP from a single async_tcp task and keeps four session slots, so a tool
-    that polls it competes with the browser and evicts whoever is using it.
-    """
-
-    def __init__(self, host, timeout=15.0):
-        self.base = f"http://{host}"
-        self.timeout = timeout
-        self.token = None
-
-    def _request(self, path, data=None):
-        request = urllib.request.Request(self.base + path, data=data)
-        if self.token:
-            request.add_header("Authorization-Token", self.token)
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            return response.read().decode("utf-8")
-
-    def login(self, username, password):
-        challenge = json.loads(
-            self._request("/nonce?username=" + urllib.parse.quote(username))
-        )
-        password_hash = hashlib.sha256(
-            f"{challenge['salt']}:{password}".encode()
-        ).hexdigest()
-        answer = hashlib.sha256(
-            f"{challenge['nonce']}:{password_hash}".encode()
-        ).hexdigest()
-        body = urllib.parse.urlencode(
-            {
-                "username": username,
-                "nonce": challenge["nonce"],
-                "response": answer,
-            }
-        ).encode()
-        session = json.loads(self._request("/login", body))
-        self.token = session["token"]
-        return session
-
-    def config(self):
-        return json.loads(self._request("/config.json"))
-
-    def post_config(self, document):
-        """UNEXERCISED. Only reachable under --push; see push_proposal().
-
-        The document goes in a FORM FIELD called `config`, not as a raw JSON
-        body: `handleConfigPost` reads `request->getParam("config", true)` and
-        answers 400 to anything else. `data/config.js`, `devices.js` and
-        `schedules.js` all post it the same way. Read out of src/web_config.cpp
-        rather than guessed, since nothing here has ever exercised it.
-        """
-        body = urllib.parse.urlencode(
-            {"config": json.dumps(document, separators=(",", ":"))}
-        ).encode()
-        request = urllib.request.Request(
-            self.base + "/config.json", data=body, method="POST"
-        )
-        request.add_header("Content-Type", "application/x-www-form-urlencoded")
-        request.add_header("Authorization-Token", self.token)
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            return response.read().decode("utf-8")
-
-    def logout(self):
-        if not self.token:
-            return
-        try:
-            self._request("/logout", b"")
-        except OSError:
-            pass
-        self.token = None
-
-
 def load_config(args):
     """The device's live config, or a saved document when --config is given."""
     if args.config:
@@ -404,6 +362,148 @@ def usable_from(identity, document, seams, slot_seams):
             ]
 
     return boundary, current_name, reasons
+
+
+# ---------------------------------------------------------------------------
+# The OTHER source: the device's own 60 s record
+# ---------------------------------------------------------------------------
+
+
+def history_document(conn, args):
+    """A config-shaped document from the archive's own identity stamp.
+
+    scripts/history_export.py records the (index -> name, pin, relay) binding
+    with every collection run, so an archive built by it is self-describing and
+    needs no device and no saved config to be read. --config still wins when it
+    is given, because an operator comparing a proposal against a document they
+    hold should get THAT document's probe list.
+    """
+    identity = latest_identity(conn)
+    if identity is None:
+        raise SystemExit(
+            f"{args.history_db} has no collection session in it; run "
+            "scripts/history_export.py against the device first"
+        )
+    return {
+        "id": identity.get("id"),
+        "io": {
+            "soilMoisture": [
+                {"pin": probe["pin"], "name": probe["name"]}
+                for probe in identity["probes"]
+            ],
+            "relays": [
+                {"pin": relay["pin"], "name": relay["name"]}
+                for relay in identity["relays"]
+            ],
+        },
+        "moisture": [
+            {"relay": probe["relay"], "invert": probe["invert"],
+             "kind": probe["kind"], "dry": probe["dry"], "wet": probe["wet"]}
+            for probe in identity["probes"]
+        ],
+    }
+
+
+def history_findings(conn, document, args):
+    """Per-probe findings from the 60 s record, and what the archive itself says.
+
+    The seam rule is the same one usable_from() applies and the evidence is
+    better. There, an edit to io.soilMoisture has to be INFERRED from a relay
+    index changing name or a `moistureN` series going quiet, and the docstring
+    calls that "deliberately blunt". Here every collection session carries the
+    binding it saw, so a seam is a STATED disagreement between two sessions,
+    dated to the run that noticed it. The rule stays blunt anyway - the most
+    recent seam of any kind bounds every probe - because the archive still
+    cannot say which SLOT moved, only that the io block was edited.
+    """
+    records = store.read_records(conn)
+    if not records:
+        raise SystemExit(f"{args.history_db} holds no records yet")
+
+    times = [record["t"] for record in records]
+    period = ha.observed_period(times) or 60.0
+    gaps = ha.coverage_gaps(times, period)
+
+    boundary = 0.0
+    reasons = []
+    for seam in identity_seams(conn):
+        if seam["at"] > boundary:
+            boundary = float(seam["at"])
+            reasons = [
+                f"session {seam['session']} saw a different binding: "
+                + "; ".join(seam["changed"])
+            ]
+    if args.since:
+        zone = dt.timezone(dt.timedelta(hours=args.tz))
+        floor = dt.datetime.strptime(args.since, "%Y-%m-%d").replace(
+            tzinfo=zone).timestamp()
+        boundary = max(boundary, floor)
+
+    usable = [record for record in records if record["t"] >= boundary]
+    temperature = ha.series_for_key(records, "temp")
+
+    findings = []
+    relays = document.get("io", {}).get("relays", [])
+    for index in range(len(document.get("io", {}).get("soilMoisture", []))):
+        identity = probe_identity(document, index)
+        relay_name = None
+        if 0 <= identity["relay"] < len(relays):
+            relay_name = relays[identity["relay"]].get("name")
+        samples = ha.samples_for_probe(usable, index)
+        events = ha.events_for_relay(usable, identity["relay"], period)
+        finding = analyse_probe(identity, samples, events, args.tz,
+                                temperature, period_sec=period)
+        finding["relayName"] = relay_name
+        finding["windowReasons"] = reasons
+        finding["samples_list"] = samples
+        finding["samples_before"] = [
+            sample for sample in ha.samples_for_probe(records, index)
+            if sample[0] < boundary
+        ]
+        finding["events"] = ha.events_for_relay(
+            records, identity["relay"], period)
+        findings.append(finding)
+
+    summary = {
+        "records": len(records),
+        "usable": len(usable),
+        "periodSec": period,
+        "from": times[0],
+        "to": times[-1],
+        "gaps": gaps,
+        "missing": sum(gap["missing"] for gap in gaps),
+        "consumedUntil": ha.consumed_until(
+            usable, [probe["relay"] for probe in document.get("moisture", [])]),
+    }
+    return findings, summary
+
+
+def report_history(summary, tz_hours, out):
+    def line(text=""):
+        print(text, file=out)
+
+    line("SOURCE - the device's own record, not the ThingsBoard publish")
+    line(f"  {summary['records']} records at {summary['periodSec']:.0f} s, "
+         f"{local(summary['from'], tz_hours)} .. "
+         f"{local(summary['to'], tz_hours)}")
+    line(f"  {summary['usable']} of them inside the identity window")
+    if summary["gaps"]:
+        line(f"  {len(summary['gaps'])} gaps, ~{summary['missing']} records "
+             "missing. A gap is EITHER records nobody collected OR records the "
+             "device never wrote")
+        for gap in summary["gaps"][-3:]:
+            line(f"    {local(gap['from'], tz_hours)} .. "
+                 f"{local(gap['to'], tz_hours)}  ~{gap['missing']} records")
+    else:
+        line("  no gaps: every record between those two stamps is here")
+    if summary["consumedUntil"]:
+        line(f"  consumedUntil would be {summary['consumedUntil']} "
+             f"({local(summary['consumedUntil'], tz_hours)}) - the newest "
+             "rising edge across every pump")
+    else:
+        line("  consumedUntil would be 0: no pump has run inside this window, "
+             "which is also why nothing can be seeded")
+    line()
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +637,89 @@ def push_proposal(device, document, calibration):
     return device.post_config(outgoing)
 
 
+def fit_from_history(args):
+    """The whole run, against the device's own record. No network at all.
+
+    Everything downstream of the source is shared with the ThingsBoard path -
+    the same analyse_probe, the same gates, the same thermal checks, the same
+    proposal shape - because the two differ in where the numbers come from and
+    in nothing else. A second fitting routine would be a second set of
+    thresholds to keep in step, and CLAUDE.md has a section about what happens
+    when two implementations of one contract drift.
+    """
+    conn = store.open_archive(
+        Path(args.history_db),
+        create=False) if Path(args.history_db).exists() else None
+    if conn is None:
+        raise SystemExit(
+            f"no archive at {args.history_db}; run "
+            "scripts/history_export.py first")
+
+    if args.config:
+        document = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    else:
+        document = history_document(conn, args)
+
+    findings, summary = history_findings(conn, document, args)
+    temperature = ha.series_for_key(store.read_records(conn), "temp")
+    thermal = thermal_findings(findings, temperature, args.tz)
+
+    report_history(summary, args.tz, sys.stderr)
+    report(document, findings, [], [], args.tz, sys.stderr)
+    report_thermal(thermal, sys.stderr)
+
+    calibration = build_proposal(document, findings)
+    payload = {
+        "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(
+            timespec="seconds"),
+        "device": document.get("id"),
+        "archive": args.history_db,
+        "source": {
+            "kind": "history",
+            "periodSec": summary["periodSec"],
+            "records": summary["records"],
+            "gaps": len(summary["gaps"]),
+            "missingRecords": summary["missing"],
+        },
+        "modelFile": {
+            "proposed": not MODEL_FILE_DECLINED,
+            # The value the device would need, computed rather than guessed.
+            # It is reason 3 in MODEL_FILE_DECLINED, and it is the one this
+            # source resolves - reported even while the file is declined,
+            # because a resolved blocker that nothing prints is a blocker
+            # somebody re-derives next year.
+            "consumedUntil": summary["consumedUntil"],
+            "reason": "see MODEL_FILE_DECLINED in scripts/moisture_fit.py",
+        },
+        "probes": [
+            {
+                "index": finding["identity"]["index"],
+                "name": finding["identity"]["name"],
+                "pin": finding["identity"]["pin"],
+                "relay": finding["identity"]["relay"],
+                "relayName": finding.get("relayName"),
+                "samples": finding["samples"],
+                "twoPoint": finding["twoPoint"],
+                "model": finding["model"],
+            }
+            for finding in findings
+        ],
+        "proposal": {"moisture": calibration} if calibration else None,
+    }
+    text = json.dumps(payload, indent=2, default=float)
+    print(text)
+    if args.out:
+        Path(args.out).write_text(text + "\n", encoding="utf-8")
+    if args.push:
+        raise SystemExit(
+            "--push needs the live device's own document, which --history-db "
+            "does not read. Run the ThingsBoard path, or pass --config with "
+            "the document you intend to write back."
+        )
+    conn.close()
+    return 0
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -558,11 +741,20 @@ def main():
         action="store_true",
         help="POST the proposal to the device. OFF by default and never yet run",
     )
+    parser.add_argument(
+        "--history-db", nargs="?", const=str(DEFAULT_HISTORY_DB),
+        help="fit from the device's OWN 60 s record, collected by "
+             "scripts/history_export.py, instead of the 300 s ThingsBoard "
+             "archive. Needs no device: the archive carries its own identity",
+    )
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
     if args.self_test:
         return self_test()
+
+    if args.history_db:
+        return fit_from_history(args)
 
     document, device = load_config(args)
     try:

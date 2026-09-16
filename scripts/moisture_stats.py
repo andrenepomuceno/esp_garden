@@ -26,6 +26,13 @@ import statistics
 # worth of findings. It never corrects a reading - see its header for why.
 import moisture_thermal
 
+# What GET /history.json means, and the archive scripts/history_export.py builds
+# from it. Imported here rather than in moisture_fit.py because the self-test
+# lives on this side of the split and the adapter it exercises is arithmetic
+# over plain dicts, exactly like everything else in this file.
+import history_archive
+import history_store
+
 # ---------------------------------------------------------------------------
 # The firmware's own constants. Changing one here without changing it in
 # src/moisture_model.cpp makes this tool answer a question the device is not
@@ -74,7 +81,23 @@ MAX_GAP_SEC = 1800
 # A jump this large between consecutive published points is a physical event, not
 # soil. Soil moved 0.02-0.05 points between consecutive publishes here all night;
 # re-seating a probe moved it 17.5.
+#
+# IT IS A DELTA PER SAMPLE, AND THAT IS ONLY MEANINGFUL WITH A SAMPLE RATE. The
+# physical claim underneath is a RATE - soil cannot change this fast - and until
+# scripts/history_export.py there was one rate in the world, so the two were the
+# same number. They are not: 5 points per 300 s publish is 1 point per 60 s
+# history record, and reading the archive's threshold against the device's own
+# record would make every watering a "step" and every hand watering a
+# discontinuity that refuses an anchor for the wrong reason.
+#
+# So find_steps() takes the observed period and scales. The floor is there
+# because scaling has no lower limit and the noise does: 1.0 point is still two
+# orders of magnitude above the 0.02-0.05 soil moved between publishes. Nothing
+# here is fitted to 60 s data, because there is none yet - this is arithmetic on
+# the rate the 300 s number already asserted.
 STEP_MIN_POINTS = 5.0
+STEP_REFERENCE_PERIOD_SEC = 300.0
+STEP_MIN_FLOOR = 1.0
 
 # A settled plateau has to last this long to anchor anything. Shorter than one
 # absorption window would let a probe still taking up water pose as settled.
@@ -190,6 +213,14 @@ def find_drift_segments(
         )
         index = end + 1
     return segments
+
+
+def step_threshold(period_sec):
+    """STEP_MIN_POINTS carried onto another sample rate. See its comment."""
+    if not period_sec or period_sec <= 0:
+        return STEP_MIN_POINTS
+    scaled = STEP_MIN_POINTS * period_sec / STEP_REFERENCE_PERIOD_SEC
+    return max(STEP_MIN_FLOOR, scaled)
 
 
 def find_steps(samples, min_step=STEP_MIN_POINTS):
@@ -372,7 +403,8 @@ def gate_refusal(stats, events):
 # ---------------------------------------------------------------------------
 
 
-def analyse_probe(identity, samples, events, tz_hours, temperature=None):
+def analyse_probe(identity, samples, events, tz_hours, temperature=None,
+                  period_sec=None):
     """Everything the report and the proposal need for one probe.
 
     `temperature` is the archive's own `temperature` series, or None. When it is
@@ -380,6 +412,11 @@ def analyse_probe(identity, samples, events, tz_hours, temperature=None):
     have to have been measured in ONE thermal regime. They can only ever refuse
     more; nothing here rescales a reading, because the coefficient that would
     take is one this archive has been asked for and has declined to supply.
+
+    `period_sec` is the OBSERVED sample spacing. It reaches exactly one
+    threshold - the step detector's, which is a per-sample delta standing in for
+    a rate; see STEP_MIN_POINTS. None keeps the 300 s archive's number, so the
+    ThingsBoard path answers today what it answered yesterday.
     """
     result = {
         "identity": identity,
@@ -397,9 +434,11 @@ def analyse_probe(identity, samples, events, tz_hours, temperature=None):
 
     drifts = find_drift_segments(samples)
     plateaus = settled_plateaus(samples, drifts)
-    steps = find_steps(samples)
+    steps = find_steps(samples, step_threshold(period_sec)
+                       if period_sec else STEP_MIN_POINTS)
     result["drifts"] = drifts
     result["plateaus"] = plateaus
+    result["periodSec"] = period_sec
 
     # A step is explained when this probe's own pump ran inside the wet window
     # before it. Anything else means the probe or the pot changed - including a
@@ -789,7 +828,76 @@ def self_test():
         str(biased["model"]["blockedBy"]),
     )
 
+    # The step threshold carried onto the device's own 60 s record. The
+    # archive's 5.0 is a delta per 300 s publish; the same physical rate is 1.0
+    # per 60 s record, and reading the archive's number against the history
+    # would call a watering a discontinuity.
+    check("the 300 s step threshold is unchanged",
+          step_threshold(300.0) == STEP_MIN_POINTS)
+    check("...and scales to 1.0 point on the device's own 60 s record",
+          abs(step_threshold(60.0) - 1.0) < 1e-9, str(step_threshold(60.0)))
+    check("...with a floor, so a fast capture does not chase noise",
+          step_threshold(5.0) == STEP_MIN_FLOOR)
+    # WHAT THE SCALING BUYS IS AGREEMENT, not leniency, and the distinction is
+    # worth a test. One physical event - a probe re-seated, moving 17.5 points
+    # over five minutes - has to get the same verdict whichever rate observed
+    # it. Read against the archive's unscaled 5.0 the 60 s record MISSES it,
+    # because the same rise arrives in five pieces of 3.5 instead of one of 17.5:
+    # a threshold expressed per sample silently becomes five times laxer when
+    # the sampling gets five times finer.
+    slow_seat = [(i * 300.0, 73.0) for i in range(6)]
+    slow_seat += [(6 * 300.0 + i * 300.0, 90.5) for i in range(6)]
+    fast_seat = [(i * 60.0, 73.0) for i in range(30)]
+    fast_seat += [(30 * 60.0 + i * 60.0, 73.0 + 3.5 * min(i + 1, 5))
+                  for i in range(30)]
+    check("a re-seated probe sampled at 300 s is one step",
+          len(find_steps(slow_seat, step_threshold(300.0))) == 1,
+          str(len(find_steps(slow_seat, step_threshold(300.0)))))
+    check("...and the SAME move sampled at 60 s is MISSED by the 300 s number",
+          len(find_steps(fast_seat, STEP_MIN_POINTS)) == 0,
+          str(len(find_steps(fast_seat, STEP_MIN_POINTS))))
+    check("...and is found once the threshold follows the rate",
+          len(find_steps(fast_seat, step_threshold(60.0))) == 5,
+          str(len(find_steps(fast_seat, step_threshold(60.0)))))
+    check("...while a 17-point jump between two samples is a step at either rate",
+          len(find_steps(stepped, step_threshold(60.0))) == 1
+          and len(find_steps(stepped, STEP_MIN_POINTS)) == 1)
+
+    # The whole 60 s path: the device's own record shape, through the adapter,
+    # into the same analyse_probe the archive uses. Built by replaying the
+    # synthetic garden as IoRecords so nothing about the fit is special-cased
+    # for the source it came from.
+    garden_records = []
+    for stamp, value in samples:
+        pumping = any(0.0 <= stamp - event < 120.0 for event in events)
+        garden_records.append({
+            "t": int(stamp), "relays": 1 if pumping else 0,
+            "moisture": [round(value, 2), None, None, None],
+            "lum": 50.0, "temp": 25.0, "hum": 60.0,
+            "water": None, "flow": None, "flowTotal": None, "float": None,
+        })
+    replay_samples = history_archive.samples_for_probe(garden_records, 0)
+    replay_events = history_archive.events_for_relay(garden_records, 0, 60.0)
+    check("the history adapter recovers every sample of the garden",
+          len(replay_samples) == len(samples), str(len(replay_samples)))
+    # Every watering, recovered from the relay MASK rather than from a
+    # `relayNEvent` key: the history record has no event keys at all. Each
+    # watering sets the bit in two consecutive records here, which is the sticky
+    # case collectEvents() has to count once.
+    check("...and every watering, from the relay MASK rather than an event key",
+          len(replay_events) == len(events),
+          f"{len(replay_events)} of {len(events)}")
+    replayed = analyse_probe(identity, replay_samples, replay_events, 0,
+                             period_sec=60.0)
+    check("...and a garden that passes from the archive passes from the history",
+          replayed["model"]["blockedBy"] is None
+          and replayed["twoPoint"]["proposed"] is not None,
+          f"{replayed['model']['blockedBy']} / "
+          f"{replayed['twoPoint']['blockedBy']}")
+
     checks.extend(moisture_thermal.checks())
+    checks.extend(history_archive.checks())
+    checks.extend(history_store.checks())
 
     failures = [entry for entry in checks if not entry[1]]
     for name, ok, detail in checks:
