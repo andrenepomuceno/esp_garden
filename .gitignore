@@ -10,9 +10,6 @@ backups/
 # dev_server.py imports its sim_* siblings now, so Python caches them here.
 __pycache__/
 
-# deploy/.env holds the real VPS credentials; deploy/.env.example is the tracked template.
-deploy/.env
-
 # ThingsBoard read credential. These patterns are belt-and-braces, not the
 # protection: a .gitignore only stops `git add .`, which CLAUDE.md already
 # bans, and does nothing against an explicit `git add <path>` or `-f`. The
