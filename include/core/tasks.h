@@ -37,6 +37,15 @@ tasksLoop();
 void
 mqttEnable(bool enable);
 
+// Arms the checkMoisture task, four hours out, when a zone's pump starts.
+//
+// Implemented in tasks.cpp and called from src/task_events.cpp, which owns the
+// watering bookkeeping but deliberately owns no task object: every TSTask in
+// this firmware is static to tasks.cpp, so the file that holds the registration
+// order is the only file that can arm, park or re-period one.
+void
+armMoistureCheck();
+
 // Schedules a reboot from loop(). A request handler must not call
 // ESP.restart() itself: request->send() only queues the response, and the
 // async_tcp task that would flush it is the same one the handler runs on — so
