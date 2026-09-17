@@ -34,7 +34,7 @@ class Device:
     """One session against one device. Read-only unless a caller POSTs."""
 
     # NO PROXY, ever. urllib reads the system proxy settings, and a garden on
-    # 192.168.1.55 or a simulator on 127.0.0.1 has no business going through
+    # the LAN or a simulator on 127.0.0.1 has no business going through
     # one: found here when a Windows proxy answered `GET /nonce` with a 302 to
     # `/`, which arrives as "Expecting value: line 1 column 1" from json.loads
     # and reads exactly like a device that stopped speaking JSON.

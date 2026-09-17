@@ -62,7 +62,17 @@ from device_http import Device
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "backups" / "history.sqlite"
-DEFAULT_DEVICE = "192.168.1.55"
+# The mDNS NAME, not an address, and the reason is a measurement. This constant
+# and every mention of the garden in CLAUDE.md said 192.168.1.55 until
+# 2026-09-17, when the FIRST live run of this tool timed out at TCP connect
+# against it: the DHCP lease had moved the board to 192.168.1.242 and nothing
+# anywhere would have said so - the address was written down once and
+# re-derived by nobody. The name is published by the device itself, since
+# webSetup() registers mDNS as <hostname>.local, so it tracks the lease.
+# Verified through Python's own resolver rather than assumed:
+# socket.getaddrinfo("espgarden1.local", 80) answered 192.168.1.242 in 0.148 s.
+# Pass --host with a literal address on a host with no mDNS responder.
+DEFAULT_DEVICE = "espgarden1.local"
 DEFAULT_CREDENTIALS = ROOT / "data" / "config.json"
 
 # How many consecutive failed runs the recommended cadence tolerates. Six is a
