@@ -42,7 +42,7 @@ ESP32 firmware for an automatic garden: soil moisture + luminosity + DHT11 + opt
 | Filesystem image | `scripts/build_assets.py` → `.pio/assets/` | Bundles each page's scripts into one file and gzips everything the web server serves. `data_dir` points the image here, so `-t buildfs` cannot pack the unbundled sources |
 | Partitions | `partitions/esp_garden_4mb.csv` | 1.69 MB per OTA slot, 512 KB LittleFS. **Cannot be changed over OTA** |
 | Filesystem | `include/core/filesystem.h` | The one line naming the driver. Everything else says `FILESYSTEM`, never `LittleFS` |
-| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` / `sim_moisture.py` / `sim_config.py` / `sim_auth.py` (host simulator of the device HTTP API) · `provision_config.py` (turns a board template into that device's own `data/config.json`, reading the `ID:` boot line off the serial port and **refusing every document that would brick the board**, naming the check that refused) · `check_lines.py` (the file-size gate) · `moisture_calibration.py` · `moisture_fit.py` + `moisture_stats.py` + `moisture_thermal.py` + `moisture_thermal_report.py` (PC-side moisture fit; **refuses to emit a parameter the data cannot support**, naming the check that refused. The `thermal` pair asks whether ambient temperature biases a resistive probe and answers that this archive cannot say — it ships two admission GATES and no correction; see [Temperature IS a plausible confound](#temperature-is-a-plausible-confound-this-archive-cannot-measure-it-and-the-reason-is-the-design)) · `drying_fit.py` + `drying_models.py` + `drying_evidence.py` (the same shape aimed at the FALL: isolates genuine drying segments, fits linear / exponential / double-exponential / exponential-plus-linear against each other and **refuses an asymptote the data does not constrain** — it ran on the whole archive and refused every segment. `drying_models.py` is the four models and the fit; `drying_evidence.py` is the model comparison, the profile likelihood, the bootstrap and the trim check — split when the pair crossed the 1000-line gate) · `cloud_fit.py` (fits the clear-sky reference, writes the generated header) · `et0_fit.py` (geocodes `postalCode`, scores the device's ET0 against a public station — allowed to answer "do not enable this", and did) · `feeds_plot.py` · `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`) · `history_export.py` + `history_archive.py` + `history_store.py` (the same shape aimed at the DEVICE's own 60 s record: pages `GET /history.json` into `backups/history.sqlite` without duplicating or dropping a record across a segment rotation, and reports every gap rather than stitching it. `history_archive.py` is the walk, the buffer rule and the fit adapter; `history_store.py` is the SQLite half; split when the pair crossed the 1000-line gate. See [The 60 s record](#the-60-s-record-what-it-unblocked-and-what-it-did-not)) · `device_http.py` (the nonce + SHA-256 client, shared by `moisture_fit.py` and `history_export.py` instead of copied) · `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090**) |
+| Tooling | `scripts/` | `dev_server.py` + `sim_state.py` / `sim_moisture.py` / `sim_config.py` / `sim_auth.py` (host simulator of the device HTTP API) · `provision_config.py` (turns a board template into that device's own `data/config.json`, reading the `ID:` boot line off the serial port and **refusing every document that would brick the board**, naming the check that refused) · `check_lines.py` (the file-size gate) · `moisture_calibration.py` · `moisture_fit.py` + `moisture_stats.py` + `moisture_thermal.py` + `moisture_thermal_report.py` (PC-side moisture fit; **refuses to emit a parameter the data cannot support**, naming the check that refused. The `thermal` pair asks whether ambient temperature biases a resistive probe and answers that this archive cannot say — it ships two admission GATES and no correction; see [Temperature IS a plausible confound](#temperature-is-a-plausible-confound-this-archive-cannot-measure-it-and-the-reason-is-the-design)) · `drying_fit.py` + `drying_models.py` + `drying_evidence.py` (the same shape aimed at the FALL: isolates genuine drying segments, fits linear / exponential / double-exponential / exponential-plus-linear against each other and **refuses an asymptote the data does not constrain** — it ran on the whole archive and refused every segment. `drying_models.py` is the four models and the fit; `drying_evidence.py` is the model comparison, the profile likelihood, the bootstrap and the trim check — split when the pair crossed the 1000-line gate) · `cloud_fit.py` (fits the clear-sky reference, writes the generated header) · `et0_fit.py` (geocodes `postalCode`, scores the device's ET0 against a public station — allowed to answer "do not enable this", and did) · `feeds_plot.py` · `tb_export.py` (incremental ThingsBoard → SQLite archive in `backups/`) · `tb_import.py` + `tb_client.py` (the WRITER, pointing the other way: that archive into a ThingsBoard instance, for the 2026-09-17 move off the Cloud tenant. Backdates through `POST .../timeseries/ANY`, **refuses to write at or after the archive's own newest point**, verifies by COUNTING both sides per key rather than by an HTTP status, and **reports the seam per key without stitching it**. `tb_client.py` is the session and the request body; split when the pair crossed the 1000-line gate. See [The migration off ThingsBoard Cloud](#the-migration-off-thingsboard-cloud)) · `history_export.py` + `history_archive.py` + `history_store.py` (the same shape aimed at the DEVICE's own 60 s record: pages `GET /history.json` into `backups/history.sqlite` without duplicating or dropping a record across a segment rotation, and reports every gap rather than stitching it. `history_archive.py` is the walk, the buffer rule and the fit adapter; `history_store.py` is the SQLite half; split when the pair crossed the 1000-line gate. See [The 60 s record](#the-60-s-record-what-it-unblocked-and-what-it-did-not)) · `device_http.py` (the nonce + SHA-256 client, shared by `moisture_fit.py` and `history_export.py` instead of copied) · `telemetry_ui.py` + `telemetry_page.py` (local read-only browser for that archive on **:8090**) |
 
 **No source file exceeds 1000 lines, and `python scripts/check_lines.py` is what says so.** The rule sat here unenforced long enough that two files crossed it unnoticed — the gate exists because the honour system had already failed. It prints the largest files on success too: a failure arrives when the split is expensive, and the useful signal is the file three commits away from crossing. `tasks.cpp` (1123), `web.cpp` (1004), `config.cpp` (1125) and `devices.js` (1155) were all split at that threshold. `tasks.cpp` kept every `DECLARE_TASK` and every handler and `web.cpp` kept `webSetup()`, in both cases because the ordering *inside* those functions is load-bearing.
 
@@ -154,6 +154,20 @@ This exists because this document has been wrong: it claimed no page loaded a CD
 
   **And one anomaly, recorded rather than dismissed.** At some point in this session `/config.json` on this board changed **`cloud.enabled` from `false` to `true`**, and nothing ever sent `true`. What is established: the file held `false` at 17:02:48 and `true` at 17:10:03; every document this session's tooling sent is on disk and every one carries `false`; only `POST /config.json` and the onboarding handler call `saveFile()`, and the portal's routes are not registered on a board in normal mode; and the device log proves no save happened between 17:08:43 and 17:10:13, so the write was one of the three POSTs at 17:03–17:05. **It did not reproduce**: 20 byte-identical round trips plus 12 replays of the exact three candidate documents, 32 in all, flipped nothing. The `Saved /config.json (N bytes)` line that would name the guilty write is gone — the 8 KB RAM buffer rolled, and `/log0..3.txt` hold only boot-time lines because `Logger::backup()` is hourly and this board never stayed up an hour. **A browser on this workstation saving `/config.html` in that window cannot be excluded**, because every session in the log comes from this machine's IP. The consequence was visible and is worth knowing: with the flag true, `/data.json` served `Luminosidade.state: "partly cloudy"` from the compiled clear-sky table — which describes ONE WROOM-32 board's sensor at ONE mounting in one season and means nothing on this LDR. It was set back to `false` and the badge is absent again.
 
+- **The ThingsBoard Cloud archive was migrated into the self-hosted instance, and counted on both sides** (2026-09-17, `scripts/tb_import.py` + `tb_client.py`, ThingsBoard CE **4.3.1.4** at `2.25.232.134.sslip.io`). **No C++ changed, nothing was flashed, and neither board was touched.** Every number below is an HTTP response.
+
+  - **Which device the archive holds, established rather than assumed.** `backups/telemetry.sqlite` has **no device column** — one file is one device by construction — and its `meta` table names `espgarden1`, cloud uuid `cc42e320-9f7d-11f1-bc5c-91593e9e4b18`, with a `CLIENT_SCOPE` attribute `deviceId 6224`. The target's `espgarden1` reports the same `deviceId 6224`, so the archive and the destination are the same WROOM-32 board. **There is no `espgarden2` data and there could not be**: the schema cannot express a second device, and a second device would have been a second file. Nothing was written to `espgarden-s3` (`b580`), whose series starts at the cutover and has no archive behind it.
+  - **The archive:** 404 142 datapoints, **60 keys**, 23 792 distinct timestamps, **2026-08-24 04:00:28 .. 2026-09-17 17:19:40** local. 44 of those keys are also live on the new server; **16 are retired** (`moisture3`, `relay4*`, `waterLevel`, `flowRate`, `flowTotalLitres`, `reservoir*`, `et0*`, `relay`, `relay1Event`, `relay3Event`) and end where the hardware or the firmware changed.
+  - **The limits were measured against the instance, on a device the tool creates and deletes** (`--probe`), because a limit read off a blog post is not a measurement. **A backdated write is accepted and read back** — 2026-08-24 04:00:28 went in and came out. **A re-write of the same `(entity, key, ts)` is an OVERWRITE**: the same point written three times with two different values left exactly one point holding the last one. **The batch ceiling is far above what this needs** — 200 000 points in one **10.5 MB** body answered 200, and 50 000 points took **2.6-2.9 s**. On the READ side this instance has **no 50 000 threshold** (ThingsBoard Cloud does, and `tb_export.py` records what trusting one costs): `limit=60000` returned 60 000 of 60 000. And **`endTs` is EXCLUSIVE**, printed as a check on every `--census`.
+  - **The bulk run: 404 142 datapoints in 21 POSTs (24 requests including the login), 32.3 s, 10.0 MB sent.** Batches of up to 20 000 datapoints, whole timestamps only.
+  - **Verified by COUNTING, per key, on both sides — all 60 agree.** 404 142 rows in SQLite inside the migrated window against **404 142** points the server returns for the same window, with **0** points pre-existing there. Plus **240 sampled values fetched back and compared to the archive text character by character** (first, last, middle and the longest literal per key): every one identical. `--verify` exits non-zero on any disagreement and exited 0.
+  - **The idempotency claim was tested on the real payload, not only on a probe.** The whole archive was written a second time, all 21 batches, and the counts did not move: still 404 142, still every key equal. The ledger's skip path was exercised too — a third run wrote **0 bytes in 3 requests**.
+  - **The seam is measured and empty.** Device level: last archived point **2026-09-17 17:19:40.449**, first self-hosted point **17:21:40.011**, **119.562 s**. Per key it is larger and for a structural reason worth knowing: the 12 continuous keys resume at **17:26:39 (7.0 min)**, because the first periodic payload lands 300 s after boot; the step keys resume at **17:21:40 (15.6 min)** on the boot event; and event keys wait for an event — `relay2Event`, `relayName`, `wateringMs` and `durationMs` gap by **33.8 h to 2.05 days**. **Zero points were written into the seam**, confirmed by counting the window `(last archived, first self-hosted)` for all 44 keys after the import. Nothing was interpolated.
+  - **The value TEXT is re-emitted as a raw JSON literal, and that is what keeps the types right.** ThingsBoard types a datapoint from the literal the publisher sent: `0` is a long, `66.62857055664062` a double, and **`0.47609522938728333` — seventeen significant digits — is a STRING**. **74 702 of the 404 142 rows are in that third class**, and the live post-cutover series holds them as strings too, because the same firmware published both. Since the archive stores the server's own stringification, feeding it back verbatim reproduces the original decision without modelling it — whereas `float(text)` then `repr()` shortens 17 digits to 16 and silently turns a string series into a double one. Confirmed on the instance for all six shapes with `useStrictDataTypes=true`, and again by the character-identical read-back above, which is the check that catches it: a 17-digit literal stored as a double would come back 16 digits long.
+  - **A ThingsBoard type is a property of the POINT, not of the key**, which is why the verification does not compare types against the live series. 18 of the 60 keys hold both integer and decimal texts in the archive — `luminosity` is a long at one instant and a double at the next — and the live series does the same. Two sampled keys duly disagreed with their live twin's type (`cloudTransientPeak`, `temperatureSd`) and both are the platform reproducing itself faithfully, not a defect.
+  - **Attributes: 10 refused, 2 carried.** All five CLIENT_SCOPE keys (`ambient_sensor`, `current_fw_title`, `current_fw_version`, `deviceId`, `hostname`) were **already on the target with identical values**, republished by the device on its first connect — an attribute is current state that overwrites, so backdating one is at best a no-op and after an OTA would put `2.17.0` back over the version that just flashed. The five SERVER_SCOPE platform keys (`active`, `lastActivityTime`, `lastConnectTime`, `lastDisconnectTime`, `inactivityAlarmTime`) are written by ThingsBoard's own device-state rule node; forging them is lying about connectivity. **`wateringMs` (10000) and `wateringTime` (10) were absent on the new server, are operator settings nothing else holds, and were written to SERVER_SCOPE and read back.**
+  - **Gates:** `tb_import.py --self-test` **51 checks, 0 failed**, offline and with no credential; `check_lines.py` green at 838 + 332 lines after the pair was split at the 1000-line gate (it reached 1132 as one file). `pio test -e native` is untouched by this change and nothing in `src/` moved, so `FW_VERSION` was deliberately not bumped.
+
 - **`GET /device.json`, the config round trip and `POST /spiffs/upload`, on the S3** (2026-09-16, firmware 2.16.0). `/device.json` answers `{"hostname":"espgarden-s3"}` unauthenticated, and `/login.html` and `/login.js` were replaced **one file at a time** through `/spiffs/upload` — 774 B and 2 040 B, MD5 verified by the device, `{"ok":true,...,"free":2248704}` — so the login page names its board without the filesystem deploy that would have wiped `/config.json` again. The documented `GET /config.json?secrets=1` → edit → `POST` round trip also ran here for the first time on this family (1 609 chars, `{"saved":true,"restartRequired":true,"reauth":false}`), and the `ota.password` push into `UserStore` was confirmed by logging in with the new credential immediately, before any reboot. **`POST /config.json` takes the document in a form parameter named `config`, not as a JSON body** — a raw body answers `400 missing 'config' parameter`, which is worth knowing before writing a client.
 
 - **The onboarding portal, end to end on the S3, driven from this session** (2026-09-16, device `b580`, firmware 2.15.0). The workstation joined the board's own AP over its Wi-Fi adapter and ran the whole flow; **every step below is an HTTP response or a serial line, not an argument.**
@@ -169,6 +183,16 @@ This exists because this document has been wrong: it claimed no page loaded a CD
   **A 501 that was not a bug, and is worth recording because it will happen again.** With the app flashed and **no filesystem**, every page answered `501 Handler did not handle the request` and MQTT failed at `rc=-1` on `open(): /littlefs/thingsboard.pem does not exist`. `servePublicFile()` cannot build a response from a file that is not there, and ESPAsyncWebServer's `_send()` reports exactly that. It reads like a routing fault and it is an empty partition. **After `-t uploadfs` the same board answered every route, and `MQTT Link` moved `rc=-1` → `rc=5`** — the TLS handshake now completes against the pinned CA and the broker refuses the credentials, because all three templates ship `mqtt.username` EMPTY on purpose. **Still unexercised: a ThingsBoard session from this board**, which needs a device token pasted into `/config.html`.
 
 **Unverified — written, compiles, never run on hardware:**
+
+- **What the migration tool did NOT exercise** (`scripts/tb_import.py` + `tb_client.py`, 2026-09-17). The bulk run, the verification, the idempotency test and the seam are measurements and sit in the verified list above. These are not:
+
+  - **That the imported points SURVIVE.** Nothing here can see a nightly cleanup. The tenant profile is SYS_ADMIN-only on this instance, `/api/usage` reports every tenant limit at 0, and what was measured is a write and a read-back inside one session. ThingsBoard CE's timeseries TTL job runs on its own schedule, so **the only honest statement is that the rows were there minutes after they were written**. Re-running `--verify` in a week is the check, and it costs nothing.
+  - **The guard that refuses to write underneath live data.** `upper_bound_refusal()` cannot fire against this migration: the seam is positive, so the branch that stops an older value landing on a newer one is dead code here. It was pulled out as a pure function and every branch is covered by `--self-test` for exactly that reason — the `--upper` past the archive's newest point IS exercised live (it refused, exit 1), the live-data branch is not.
+  - **The retry and re-authentication paths.** Zero 429s, zero 5xx and zero 401s across every run; the longest write took 33 s, well inside a JWT's life. So the backoff, the `Retry-After` handling and the one-shot re-login are written and unreached. A run against a rate-limited tenant, or one long enough to outlive a token, is what would reach them.
+  - **`tb_export.py` has never been pointed at the self-hosted instance**, so the round trip archive → self-hosted → archive has not been closed as a whole tool. It still reads `thingsboard.cloud` and its credential is a Cloud API key, where this writer logs in with an email and password: the two speak to different servers with different auth and nothing tests them against each other.
+  - **No browser has drawn the imported series.** No ThingsBoard dashboard, widget or chart was opened; the evidence is REST counts and REST values. That the history and the live series join into one line on a chart is a structural argument from matching types, not a picture anybody looked at.
+  - **`--attributes --write` has only ever written the two operator keys.** The `device` and `platform` classifications refuse by table, and those branches have refused — but nothing has tested what happens if a classified-`operator` attribute is ALSO present on the target, because both were absent.
+  - **Nothing was written to `espgarden-s3`.** The archive holds no rows for it and the tool was never pointed at it; its series still begins at the cutover, with nothing behind it and nothing that could be.
 
 - **The two 2.15.0 changes were measured SEPARATELY and shipped TOGETHER.** The SHT40's +25 636 B and the onboarding portal's +27 156 B are each a clean A/B against `bac7ad4`, and neither describes the image anybody will flash. Measured on the merged tree, six envs green: `espgarden2` links at **1 310 213 B flash (74.0 % of the 1.69 MB slot) and 67 392 B static RAM**, `espgarden_s3` at **1 260 833 B (43.7 % of 2.75 MB) and 66 240 B**. The app slot went 71.1 % → 74.0 % in one merge, which is the number to watch rather than either half.
 
@@ -1223,6 +1247,103 @@ Guards that are not in fullbot's version and should not be removed:
 - **Both OTA paths share one `Update` object.** `/updateEnable` answers `409` while `tbFotaInProgress()`, and the cloud path waits on `Update.isRunning()`. Letting both run corrupts whichever finishes second, and `Update` reports success for it — the damage only shows at the next boot.
 - **A stalled download aborts after 5 retries**, releasing `Update`. Otherwise an abandoned cloud FOTA locks out the browser OTA that exists to recover from a bad cloud FOTA.
 - **`fwVersionDiffers()` accepts a downgrade.** Rolling back is an operator decision made in ThingsBoard, and the only recovery that does not need USB. `test/test_fw_version/` covers the comparison, including the lexicographic trap (`2.10.0` vs `2.9.0`). The filesystem image cannot be delivered this way: `handleUpdateUpload` picks `U_SPIFFS` from the uploaded *filename*, and the FOTA path always writes `U_FLASH`. `littlefs.bin` still goes through `/update.html`. `mqttLoop()` backs off exponentially (1 s → 60 s) instead of retrying every `loop()` iteration, which used to bury the reason for a refused connection in hundreds of identical log lines a minute.
+
+## The migration off ThingsBoard Cloud
+
+On **2026-09-17 at 17:19:40 local** both boards stopped publishing to
+`thingsboard.cloud` and from **17:21:40** they publish to a self-hosted
+ThingsBoard **CE 4.3.1.4**. Everything before that instant existed only in
+`backups/telemetry.sqlite`, the archive `scripts/tb_export.py` has been filling
+since 2026-08-24. `scripts/tb_import.py` is the writer that put it back, and it
+ran — see [What has actually run](#what-has-actually-run) for the numbers.
+
+**The archive is one device by construction, and that is how "which device" was
+settled.** There is no device column anywhere in that schema; `meta` names
+`espgarden1` and the cloud uuid, and the `deviceId` client attribute reads
+`6224`, which is the WROOM-32 the target's `espgarden1` also reports. So a
+second device would have been a second file, and the `espgarden2` that existed
+on the Cloud tenant with no telemetry contributes nothing to migrate. Nothing
+was written to `espgarden-s3`.
+
+### The typing rule is the whole of the difficulty
+
+`POST /api/plugins/telemetry/DEVICE/{id}/timeseries/ANY` takes
+`[{"ts": ms, "values": {...}}]` and will happily backdate. What it does NOT do
+is take a type: **ThingsBoard decides a datapoint's type from the JSON literal
+the publisher sent.** `0` is a long. `66.62857055664062` is a double.
+`0.47609522938728333` — seventeen significant digits — is a **string**, and
+**74 702 of the archive's 404 142 rows are in that class**, because
+`addContinuous()` publishes a `double` and Arduino_JSON prints as many digits as
+it takes to round-trip a float widened to one.
+
+So the type is a property of the POINT, not of the key. 18 of the 60 keys hold
+both integer and decimal texts, which means `luminosity` is genuinely a long at
+one instant and a double at the next, in the Cloud archive and in the live
+self-hosted series alike.
+
+**The writer therefore re-emits the archived TEXT verbatim as a JSON literal**
+and lets the server make the same decision it made the first time. That is why
+`build_body()` is hand-assembled rather than `json.dumps`-ed: parsing to a
+Python float and formatting it back is shortest-round-trip, so a 17-digit
+literal comes out at 16 and a string series silently becomes a double one,
+part-way through, with nothing in the data to say where — the same defect class
+as renumbering a relay index.
+
+**And it is what makes the verification possible.** A non-strict REST read
+returns the server's own stringification, so a value that comes back
+character-identical to the archive is a value the server typed the same way: a
+17-digit literal stored as a double would read back 16 digits long, and `0`
+stored as a double would read back `0.0`. Comparing types against the LIVE
+series would be the wrong check and would report two false failures, because a
+key's type moves point to point.
+
+### Counting is the verdict, not the HTTP status
+
+Every key is counted on both sides in the same window and the pairs are printed,
+because this repository already knows what a success report over a silent
+failure looks like. A count alone is not enough — it can match while every value
+is the wrong type — so four values per key are fetched back and compared
+character by character, including the LONGEST literal that key ever held, which
+is the one whose typing hangs on a digit.
+
+### Resume, and the one measurement it rests on
+
+**A re-write of the same `(entity, key, ts)` is an overwrite, not a duplicate.**
+That was measured against the instance before anything bulk was written, and it
+is what lets a dead run simply be re-run. The ledger under `.pio/` is an
+optimisation on top of it, fingerprinted by device, server, upper bound and row
+count so it can never be a ledger of a different plan.
+
+**The census survives a ledger discard, and that is not tidiness.** "What was
+the first self-hosted timestamp for this key" is answerable exactly once, before
+the first imported point lands. The batch list is cheap to rebuild; the seam
+evidence is not rebuildable at all.
+
+### The seam is reported and never closed
+
+The device-level gap is **119.562 s**. Per key it is larger, for a structural
+reason: continuous keys resume **7.0 min** later because the first periodic
+payload lands 300 s after boot, step keys resume on the boot event at
+**15.6 min**, and event keys wait for an event — up to **2.05 days**. Sixteen
+keys are retired and have no successor at all. Nothing is interpolated into any
+of it, and `--verify` counts the seam window to prove nothing was.
+
+### What the tool refuses
+
+- **A timestamp at or after the archive's own newest point.** Both boards are
+  publishing right now; an older value landing on a newer one corrupts the
+  series this exists to preserve.
+- **An `--upper` past the archive's newest point**, and an `--upper` that
+  reaches the target's oldest live point. The second cannot fire against this
+  data, which is exactly why it is a pure function with its own tests.
+- **Attributes, by default.** An attribute is current state that overwrites, not
+  a series. The five the device republishes on connect are already right on the
+  target and a backdated copy could only ever be staler — after an OTA it would
+  put `2.17.0` back over the version that just flashed. The five ThingsBoard
+  writes itself are connectivity facts, and forging one can raise or clear an
+  inactivity alarm on evidence nobody observed. Only `wateringMs` and
+  `wateringTime` — operator settings the new server lacked — are carried, and
+  only with `--write`.
 
 ## Porting from fullbot-firmware
 
