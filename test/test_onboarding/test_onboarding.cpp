@@ -325,6 +325,28 @@ templatePinProblem(const std::string& json, const Rules& r)
         }
     }
 
+    // The bus, which is not a peripheral and so is not in either list above.
+    // Both lines are open-drain: every device on an I2C bus talks by pulling
+    // the line to ground, so the predicate is the OUTPUT one — a line that
+    // cannot be driven low cannot talk, and Wire.begin() says nothing when it
+    // is handed one. Every key of `io.i2c` is optional and falls back to the
+    // per-family compiled default, so an absent line is not a problem.
+    if (valueSpan(io, "i2c", begin, end)) {
+        const std::string bus = io.substr(begin, end - begin);
+        static const char* const kLines[] = { "sda", "scl" };
+        for (size_t i = 0; i < 2; ++i) {
+            const std::vector<int> line = collectPins(bus, kLines[i]);
+            if (line.empty()) {
+                continue;
+            }
+            const uint8_t p = (uint8_t)line[0];
+            if (r.isFlash(p) || !r.isBonded(p) || r.isInputOnly(p)) {
+                return std::string("i2c ") + kLines[i] + " on GPIO " +
+                       std::to_string(line[0]);
+            }
+        }
+    }
+
     return std::string();
 }
 
@@ -441,6 +463,60 @@ test_the_scanner_reports_a_pin_it_should_refuse(void)
     TEST_ASSERT_EQUAL_STRING("", templatePinProblem(good, kWroom).c_str());
 }
 
+// The carrier has an SHT40 soldered to it, and from 2.15.0 to 2.17.0 this
+// template did not say so — it was written while the firmware had no I2C
+// driver and was not revisited when 2.14.0 added one. Board b580 was onboarded
+// through the portal and came up with four probes and NO ambient sensor at
+// all: no Temperature, no Air Humidity, no `Ambient Sensor` row. The part
+// answered at 0x44 within seconds of the two blocks being added by hand
+// (2026-09-17). Nothing but this string decides what a freshly onboarded
+// carrier reads, so this is where that regression is caught.
+static void
+test_the_s3_carrier_template_declares_the_sht40_and_its_bus(void)
+{
+    bool seen = false;
+    for (unsigned i = 0; i < tpl::esp32s3::kCount; ++i) {
+        if (std::string(tpl::esp32s3::kTemplates[i].id) != "s3-carrier") {
+            continue;
+        }
+        seen = true;
+        const std::string json(tpl::esp32s3::kTemplates[i].json);
+
+        // Presence IS the key: config.sht4xFitted is io.hasOwnProperty("sht4x")
+        // and nothing else turns the ambient task on.
+        TEST_ASSERT_TRUE(json.find("\"sht4x\":") != std::string::npos);
+
+        size_t begin = 0, end = 0;
+        TEST_ASSERT_TRUE(valueSpan(json, "i2c", begin, end));
+        const std::string bus = json.substr(begin, end - begin);
+        const std::vector<int> sda = collectPins(bus, "sda");
+        const std::vector<int> scl = collectPins(bus, "scl");
+        TEST_ASSERT_EQUAL_INT(1, (int)sda.size());
+        TEST_ASSERT_EQUAL_INT(1, (int)scl.size());
+
+        // The carrier's own nets. Neither may be GPIO 21: I2C_INT is wired by
+        // the board and read by nothing here on purpose — the SHT4x family is
+        // I2C-only with no interrupt output, and that net is pre-wiring for a
+        // GPIO expander somebody may later plug into J8.
+        TEST_ASSERT_EQUAL_INT(8, sda[0]);
+        TEST_ASSERT_EQUAL_INT(9, scl[0]);
+    }
+    TEST_ASSERT_TRUE(seen);
+}
+
+// ...and the WROOM-32 templates must NOT declare one, because no such board
+// here carries the part. Declaring it would clear dhtFitted through
+// loadFile()'s mutual exclusion — fired at the wrong end, on a board whose
+// only ambient sensor is the DHT11 it just switched off.
+static void
+test_the_wroom32_templates_declare_no_i2c_device(void)
+{
+    for (unsigned i = 0; i < tpl::wroom32::kCount; ++i) {
+        const std::string json(tpl::wroom32::kTemplates[i].json);
+        TEST_ASSERT_TRUE(json.find("\"sht4x\":") == std::string::npos);
+    }
+}
+
 void
 run_onboarding_tests(void)
 {
@@ -456,4 +532,6 @@ run_onboarding_tests(void)
     RUN_TEST(test_every_s3_template_is_usable_on_an_s3);
     RUN_TEST(test_a_template_from_the_other_family_would_be_refused);
     RUN_TEST(test_the_scanner_reports_a_pin_it_should_refuse);
+    RUN_TEST(test_the_s3_carrier_template_declares_the_sht40_and_its_bus);
+    RUN_TEST(test_the_wroom32_templates_declare_no_i2c_device);
 }

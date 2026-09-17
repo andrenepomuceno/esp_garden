@@ -156,10 +156,18 @@ static const unsigned kCount = sizeof(kTemplates) / sizeof(kTemplates[0]);
 //
 // The same pin map as templates/config.espgarden_s3.json, which is the
 // machine-readable copy of that repo's cross-repo contract. No `dht`: the DHT22
-// header was replaced by an SHT40 this firmware has no driver for, so there is
-// no honest default. No `waterLevel`: the carrier brings AUX_ADC out but
-// declaring it pushes whatever sits on a spare header through the water-level
-// curve and reports it as a level.
+// header was replaced by an SHT40, which this firmware HAS had a driver for
+// since 2.14.0 — `io.i2c` and `io.sht4x` below are that part. No `waterLevel`:
+// the carrier brings AUX_ADC out but declaring it pushes whatever sits on a
+// spare header through the water-level curve and reports it as a level.
+//
+// This template shipped WITHOUT the two I2C blocks from 2.15.0 to 2.17.0,
+// because it was written while the sentence above still ended "no driver for".
+// A carrier onboarded through the portal in that window came up with four
+// probes and no thermometer at all, which is how board b580 was found on
+// 2026-09-17: /data.json carried no Temperature and no Air Humidity, and
+// adding the two blocks by hand through POST /config.json is what made the
+// SHT40 answer. Nothing but this string decides that, so it is the fix.
 // ---------------------------------------------------------------------------
 namespace esp32s3 {
 
@@ -191,6 +199,8 @@ static const char* const kJsonCarrier =
   "\"settleMs\":50},"
   "{\"pin\":5,\"name\":\"Umidade Zona 4\",\"powerPin\":14,\"powerOn\":1,"
   "\"settleMs\":50}],"
+  "\"i2c\":{\"sda\":8,\"scl\":9,\"hz\":100000},"
+  "\"sht4x\":{\"name\":\"\",\"address\":68},"
   "\"luminosity\":{\"pin\":6,\"name\":\"Luminosidade\"},"
   "\"flow\":{\"pin\":15,\"name\":\"Fluxo\",\"pulsesPerLitre\":450},"
   "\"floatSwitch\":{\"pin\":16,\"name\":\"Boia\",\"activeLevel\":0,"
@@ -206,8 +216,8 @@ static const char* const kJsonCarrier =
 static const Template kTemplates[] = {
     { "s3-carrier",
       "ESP32-S3 - esp-garden-hardware carrier",
-      "4 relays 10-13, 4 probes 1/2/4/5 on one power bank 14, LDR 6, flow 15, "
-      "float 16",
+      "4 relays 10-13, 4 probes 1/2/4/5 on one power bank 14, LDR 6, "
+      "SHT40 at 0x44 on I2C 8/9, flow 15, float 16",
       kJsonCarrier },
 };
 
