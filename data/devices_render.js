@@ -161,6 +161,28 @@
   return options;
   }
 
+  // io.soilMoisture[i].powerAlways: hold the bank up instead of pulsing it.
+  //
+  // The cost is spelled out only on the rows that ASKED for it, the same rule
+  // /data.json's `fault` follows — a caution repeated under four healthy
+  // probes is a caution the eye learns to skip. What it costs in general is
+  // one paragraph in devices.html, where somebody reads it before ticking.
+  function powerAlwaysHtml(i, p) {
+    var note = p.powerAlways
+      ? '<div class="form-text hint text-danger">Electrolysis: a resistive ' +
+        'probe powered in wet soil dissolves its electrode in weeks. ' +
+        'Measured here it also pinned the reading to 0.00 &mdash; the ADC ' +
+        'rail &mdash; and 44.1 came back the moment the pin was switched.' +
+        '</div>'
+      : '';
+    return '<div class="form-check form-check-sm mt-1">' +
+      '<input class="form-check-input ms-power-always" type="checkbox"' +
+      ' data-row="' + i + '" id="ms-power-always-' + i + '"' +
+      (p.powerAlways ? ' checked' : '') + '>' +
+      '<label class="form-check-label hint" for="ms-power-always-' + i + '">' +
+      'always on &mdash; damages the probe</label></div>' + note;
+  }
+
   function renderProbes() {
     var caps = ctx.caps();
     var model = ctx.model();
@@ -211,6 +233,7 @@
             ' class="form-control form-control-sm ms-settle mt-1"' +
             ' data-row="' + i + '" value="' + esc(p.settleMs || '10') + '"' +
             ' title="milliseconds to wait after energising, before reading">' +
+            powerAlwaysHtml(i, p) +
             '</td>' +
           '<td><select class="form-select form-select-sm ms-relay"' +
             ' data-row="' + i + '">' + relayPickerOptions(

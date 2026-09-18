@@ -10,32 +10,49 @@
   // One entry per single-instance sensor. `role` picks which capability list
   // the pin comes from: an analog sensor must land on ADC1, and everything with
   // a pull-up must not land on an input-only pin.
+  // `owns` is the list of keys this page RENDERS for that entry, and so the
+  // only keys it is entitled to write, delete or leave out. Everything else
+  // the device served is carried across untouched — see carryUnrendered().
   var SENSORS = [
     {
       key: 'dht', title: 'DHT11', role: 'digital',
       sub: 'Temperature and air humidity on one pin',
       defaultPin: 23, defaultName: '', namePlaceholder: '(no prefix)',
       nameNote: 'A name here is a PREFIX: one pin produces two channels.',
+      owns: ['pin', 'name'],
     },
     {
       key: 'luminosity', title: 'Luminosity', role: 'analog',
       sub: 'LDR, analog', defaultPin: 39, defaultName: 'Luminosity',
+      owns: ['pin', 'name'],
     },
     {
       key: 'waterLevel', title: 'Water level', role: 'analog',
       sub: 'Analog', defaultPin: 34, defaultName: 'Water Level',
+      owns: ['pin', 'name'],
     },
     {
       key: 'flow', title: 'Flow meter', role: 'digital',
       sub: 'Pulse counter, needs an internal pull-up',
       defaultPin: 27, defaultName: 'Flow',
+      owns: ['pin', 'name', 'pulsesPerLitre'],
     },
     {
       key: 'floatSwitch', title: 'Float switch', role: 'digital',
       sub: 'Reservoir level, needs an internal pull-up',
       defaultPin: 26, defaultName: 'Float Switch',
+      owns: ['pin', 'name', 'activeLevel', 'interlock', 'fillRelay'],
     },
   ];
+
+  // The same statement for the two entries that have no spec table: one
+  // io.soilMoisture entry, its parallel moisture[] entry, and one io.relays
+  // entry. Kept beside SENSORS so "what does this page own" is one list to
+  // extend when a row grows a control.
+  var RELAY_KEYS = ['pin', 'on', 'name'];
+  var PROBE_KEYS = ['pin', 'name', 'powerPin', 'powerOn', 'powerAlways',
+                    'settleMs'];
+  var CALIBRATION_KEYS = ['dry', 'wet', 'relay', 'invert', 'kind'];
 
   // ---------- small helpers ----------
 
@@ -185,6 +202,14 @@
         // powered", which is what every board did before this existed.
         powerPin: num(node.powerPin, null),
         powerOn: (num(node.powerOn, 1) === 0) ? 0 : 1,
+        // Read exactly as loadProbePower() reads it, both spellings included:
+        // a plain boolean cast is true only for the JSON literal `true`, so a
+        // hand-edited "powerAlways": 1 is a yes on the device and has to be a
+        // ticked box here. Anything else is the firmware's own default, false,
+        // because that is what the device keeps after warning about it.
+        powerAlways: (node.powerAlways === true ||
+                      (typeof node.powerAlways === 'number' &&
+                       node.powerAlways !== 0)),
         settleMs: String(num(node.settleMs, 10)),
       };
     }
@@ -200,6 +225,12 @@
     // and Now columns keep pointing at the running peripheral even after rows
     // above them are deleted. A row added here has neither: nothing is running
     // for it until the device restarts.
+    //
+    // `sourceIndex` is the same idea aimed at the DOCUMENT rather than at the
+    // device: which entry of the served config.json this row was read from, so
+    // buildDocument() can carry that entry's unrendered keys forward. It is
+    // kept separate from liveIndex deliberately — the two happen to be equal
+    // today, and they answer different questions.
     if (isArray(io.relays)) {
       $.each(io.relays, function (i, entry) {
         var node = readNode(entry) || { pin: null, name: '' };
@@ -208,16 +239,19 @@
           pin: node.pin,
           on: (isPlainObject(entry) && num(entry.on, 0) === 1) ? 1 : 0,
           liveIndex: i,
+          sourceIndex: i,
         });
       });
     } else if (typeof io.watering === 'number') {
       // Pre-2.0 spelling: one relay as io.watering + io.wateringOn, with
-      // nowhere to keep a name. Saving migrates it to the array form.
+      // nowhere to keep a name. Saving migrates it to the array form, and
+      // there is no io.relays entry behind it to carry anything from.
       m.relays.push({
         name: '',
         pin: io.watering,
         on: (num(io.wateringOn, 0) === 1) ? 1 : 0,
         liveIndex: 0,
+        sourceIndex: null,
       });
     }
 
@@ -251,8 +285,12 @@
         powerPin: (typeof node.powerPin === 'number' && node.powerPin >= 0)
           ? node.powerPin : null,
         powerOn: (node.powerOn === 0) ? 0 : 1,
+        // Holds the bank energised between reads. Off on every board that does
+        // not say otherwise, which is what the firmware's own default is.
+        powerAlways: (node.powerAlways === true),
         settleMs: (typeof node.settleMs === 'string') ? node.settleMs : '10',
         liveKey: probeLiveKey(node.name, i, stored.length),
+        sourceIndex: i,
       });
     });
 
@@ -325,6 +363,36 @@
 
   // ---------- model -> config.json ----------
 
+  // The entry a row was read from, addressed by the index it had at LOAD time
+  // rather than by its index now: deleting a row moves every row below it up,
+  // and a row's settings move with the row.
+  function sourceEntry(list, index) {
+    if (typeof index !== 'number' || index < 0) return null;
+    // io.soilMoisture is also legal as a bare scalar — one probe, pre-array —
+    // in which case the only row there is reads its keys off the node itself.
+    var entry = isArray(list) ? list[index] : ((index === 0) ? list : null);
+    return isPlainObject(entry) ? entry : null;
+  }
+
+  // Merges into a rebuilt entry every key of the served one that this page
+  // does not render.
+  //
+  // Without it a rebuilt entry is a silent DELETE of everything the model does
+  // not hold, and that has cost a live setting: renaming two probes here
+  // dropped io.soilMoisture[0].powerAlways, which was holding a probe's power
+  // bank energised, because the page had no control for it. A key this page
+  // cannot render is a key it must not decide about — including one belonging
+  // to a firmware newer than this asset, which is the case that repeats.
+  function carryUnrendered(entry, source, owned) {
+    if (source === null) return entry;
+    $.each(source, function (key, value) {
+      if (!has(source, key)) return;
+      if ($.inArray(key, owned) !== -1) return;
+      entry[key] = value;
+    });
+    return entry;
+  }
+
   // Starts from the document the device served, so every key this page does not
   // render — including the ******** secrets, which POST /config.json restores
   // from disk — is posted back exactly as it arrived.
@@ -335,10 +403,22 @@
     if (!isPlainObject(out.io)) out.io = {};
     var io = out.io;
 
+    // Taken off the deep COPY, and before the assignments that replace them:
+    // carried values are then this page's own objects and are never aliased
+    // into the document it returns.
+    var priorRelays = io.relays;
+    var priorProbes = io.soilMoisture;
+    var priorCalibration = out.moisture;
+
     if (hasKind('relays')) {
       var relays = [];
       $.each(model.relays, function (_, r) {
-        var entry = { pin: r.pin, on: r.on };
+        var entry = carryUnrendered({ pin: r.pin, on: r.on },
+                                    sourceEntry(priorRelays, r.sourceIndex),
+                                    RELAY_KEYS);
+        // Non-empty only, exactly as loadRelays() reads it: a name cleared
+        // here has to fall back to the compiled default rather than blank the
+        // label /data.json keys Outputs by.
         if (r.name) entry.name = r.name;
         relays.push(entry);
       });
@@ -353,23 +433,31 @@
       var probes = [];
       var calibration = [];
       $.each(model.probes, function (_, p) {
-        var entry = { pin: p.pin };
+        var entry = carryUnrendered({ pin: p.pin },
+                                    sourceEntry(priorProbes, p.sourceIndex),
+                                    PROBE_KEYS);
         if (p.name) entry.name = p.name;
         if (typeof p.powerPin === 'number' && p.powerPin >= 0) {
           entry.powerPin = p.powerPin;
           entry.powerOn = (p.powerOn === 0) ? 0 : 1;
           var settle = numeric(p.settleMs);
           entry.settleMs = (settle === null) ? 10 : settle;
+          // Written only when true, so a board that never asked for it keeps
+          // the document it had, and only beside a power pin, because
+          // probe_power::pinIsAlwaysOn() answers false without one. A real
+          // boolean: loadProbePower() takes 1 as well, and warns about
+          // everything else.
+          if (p.powerAlways) entry.powerAlways = true;
         }
         probes.push(entry);
         // An empty field is 0, which is the value the firmware ships as
         // "uncalibrated" — dry == wet means "do not classify".
-        var cal = {
+        var cal = carryUnrendered({
           dry: numeric(p.dry) === null ? 0 : numeric(p.dry),
           wet: numeric(p.wet) === null ? 0 : numeric(p.wet),
           relay: (typeof p.relay === 'number') ? p.relay : -1,
           invert: (p.invert === false) ? false : true,
-        };
+        }, sourceEntry(priorCalibration, p.sourceIndex), CALIBRATION_KEYS);
         // Only when set: an empty label should not become part of the model's
         // identity and start discarding models on every save.
         if (p.kind) cal.kind = p.kind;
@@ -386,13 +474,17 @@
 
     $.each(sensorSpecs(), function (_, spec) {
       var s = model.sensors[spec.key];
+      // Read before the assignment at the foot of this block replaces it.
+      var prior = isPlainObject(io[spec.key]) ? io[spec.key] : null;
       if (!s.fitted) {
         // A sensor is fitted if and only if its key exists. Deleting it is
-        // exactly removing the key — there is no enabled flag to drift.
+        // exactly removing the key — there is no enabled flag to drift — and
+        // that takes the whole entry, unrendered keys included. Unticking the
+        // box is the operator saying the part is gone.
         delete io[spec.key];
         return;
       }
-      var entry = { pin: s.pin };
+      var entry = carryUnrendered({ pin: s.pin }, prior, spec.owns);
       if (s.name) entry.name = s.name;
       if (spec.key === 'flow') entry.pulsesPerLitre = numeric(s.pulsesPerLitre);
       if (spec.key === 'floatSwitch') {
@@ -424,6 +516,34 @@
                       'moisture model cannot be trained for it. It falls back ' +
                       'to the two-point calibration.');
       }
+    });
+  }
+
+  // "Always on" is the one control on this page that damages the hardware it
+  // configures, so it is said at save time and not only in the row's own hint.
+  // Both halves are measurements this repo owns: the electrolysis cell is the
+  // reason the bank is switched at all, and the 0.00 is what this firmware
+  // read on 2026-09-18 with the flag set.
+  function warnProbePower(model, warnings) {
+    $.each(model.probes, function (i, probe) {
+      if (!probe.powerAlways) return;
+      if (typeof probe.powerPin !== 'number') {
+        // The firmware answers pinIsAlwaysOn() false without a power pin, so
+        // the flag would be written into a document that cannot act on it.
+        // It is dropped on save instead, and that has to be said before the
+        // box comes back unticked on the next load.
+        warnings.push('Probe ' + (i + 1) + ' asks for its power pin to stay ' +
+                      'energised but names no power pin, so the request is ' +
+                      'dropped on save.');
+        return;
+      }
+      warnings.push('Probe ' + (i + 1) + ' holds GPIO ' + probe.powerPin +
+                    ' energised between readings. A resistive probe left ' +
+                    'powered in wet soil is an electrolysis cell and ' +
+                    'dissolves its own electrode in weeks — and measured on ' +
+                    'this firmware it also pinned the reading to 0.00, the ' +
+                    'ADC rail, which came back to 44.1 the moment the pin ' +
+                    'was switched again.');
     });
   }
 
@@ -577,6 +697,7 @@
     }
 
     warnOrphanedProbes(model, warnings);
+    warnProbePower(model, warnings);
 
     var schedules = (doc && isArray(doc.schedules)) ? doc.schedules : [];
     $.each(schedules, function (i, s) {

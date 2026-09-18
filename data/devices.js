@@ -121,6 +121,9 @@
     $('.ms-power').each(function () {
       model.probes[$(this).data('row')].powerPin = pinValue($(this).val());
     });
+    $('.ms-power-always').each(function () {
+      model.probes[$(this).data('row')].powerAlways = $(this).prop('checked');
+    });
     $('.ms-settle').each(function () {
       model.probes[$(this).data('row')].settleMs = $.trim(String($(this).val()));
     });
@@ -310,10 +313,21 @@
     // typed into. `input change` covers both: a checkbox does not fire `input`
     // everywhere, and a <select> does not fire it at all.
     $('#tbody-relays, #tbody-probes, #tbody-sensors')
-      .on('input change', 'input:not(.sn-fit), select', function () {
-        collect();
-        refresh();
-      });
+      .on('input change', 'input:not(.sn-fit):not(.ms-power-always), select',
+          function () {
+            collect();
+            refresh();
+          });
+
+    // "Always on" changes what its own row says — the cost note under it is
+    // rendered only while it is ticked — so this one repaints the table, the
+    // way .sn-fit does for sensors. A checkbox has no caret to move, which is
+    // the only reason the general handler above cannot do it for text fields.
+    $('#tbody-probes').on('change', '.ms-power-always', function () {
+      collect();
+      renderProbes();
+      refresh();
+    });
 
     // Fitting or removing a sensor changes which of its fields are live, so
     // that one does re-render — and it lands the new sensor on a free pin
@@ -342,7 +356,10 @@
       if (model.relays.length >= caps.relayMax) return;
       // No pin is proposed: the page cannot know where the relay is wired, and
       // the first free output GPIO is the serial TX line.
-      model.relays.push({ name: '', pin: null, on: 0, liveIndex: null });
+      // No sourceIndex either: there is no entry in the served document to
+      // carry unrendered keys from, because this row was not in it.
+      model.relays.push({ name: '', pin: null, on: 0, liveIndex: null,
+                          sourceIndex: null });
       render();
     });
 
@@ -384,6 +401,9 @@
         // otherwise claim a relay it is not plumbed to, and the classifier
         // would label its readings against the wrong waterings.
         name: '', pin: null, dry: '0', wet: '0', relay: -1, liveKey: null,
+        // Switched, like every board that does not say otherwise, and with no
+        // entry in the served document behind it.
+        powerAlways: false, sourceIndex: null,
       });
       render();
     });

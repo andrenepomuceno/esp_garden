@@ -152,6 +152,14 @@
           time. Mind the current: an LM393 module with its LED draws around
           20 mA, which is most of what one GPIO should source, so two of them
           want a small MOSFET rather than a shared pin.
+          <em>Always on</em> gives that up and holds the pin high
+          (<code>powerAlways</code>). It also destroys the READING, which is the
+          faster problem: measured on this firmware, a probe with the flag set
+          sat at 0.00 &mdash; the ADC rail &mdash; from the first sample after
+          boot, and read 44.1 again the moment the pin was switched. The
+          settle delay is not a compromise, it is the measurement. One power
+          pin usually feeds a whole bank, and the flag is answered per PIN: it
+          holds the bank up if any probe on it asks.
           Changing the label or the polarity DISCARDS that probe's trained
           model &mdash; which is the point, since the stored bands describe a
           sensor that is no longer in the pot.

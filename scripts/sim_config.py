@@ -79,8 +79,16 @@ SIM_CONFIG = {
             # Power-gated, which is what a resistive probe needs to survive:
             # energised only around the reading, so it is not an electrolysis
             # cell the rest of the time.
+            #
+            # `powerAlways` gives that up and is here on purpose, seeded TRUE:
+            # /devices.html rebuilds each of these entries from its own model
+            # on every save, so a key the page does not render is a key the
+            # save deletes. That cost this setting on a live board, and the
+            # mirror is where the round trip is exercised — load the page,
+            # save without touching anything, and this key has to still be
+            # here with this value.
             {"pin": 34, "name": "Bed 2", "powerPin": 25, "powerOn": 1,
-             "settleMs": 30},
+             "powerAlways": True, "settleMs": 30},
             {"pin": 32, "name": "<img src=x onerror=\"window.__xss=1\">Bed 3"},
             {"pin": 33, "name": "Bed 4 (no pump)"},
         ],
