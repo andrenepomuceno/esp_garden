@@ -21,3 +21,17 @@ HTTP from a single `async_tcp` task.
 
 Note it does **not** answer the 2026-09-03 drying plateau retroactively: that
 evening was never in a collected buffer and is gone.
+
+---
+**Done, 2026-09-17.** 2787 records in 19 requests / 455 KB / ~4.9 s, one session
+slot. Neither guard fired — and that is the guard meeting a real eviction and
+having nothing to say, not a test of it: no rotation lands inside a 4.9 s walk.
+
+**The 17.6 h clock-bug hole is confirmed at 17.72 h**, and attributed to the
+device not having written rather than to nobody collecting, by arithmetic: 2787
+records at 60 s cover 46.45 h inside a 64.41 h span.
+
+The fit still refuses, and the gate moved from "zero events" to "1 and 2" —
+but the measured watering response is +0.16, −0.21 and −0.07 points. See
+[015](../tasks-inbox/015-let-a-zone-dry-out.md): six more events would satisfy
+the gate and not the physics.

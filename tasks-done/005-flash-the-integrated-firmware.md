@@ -30,3 +30,15 @@ no SHT40 to read, no portal to raise, and the archiver is PC-side.
 
 **Do it in this order:** plug USB, flash, watch the serial boot for `ID: 6224`,
 `Sensors:` and the absence of any onboarding line, then archive the ELF.
+
+---
+**Done, 2026-09-17.** `espgarden1` went 2.13.3 → 2.17.0 over the air. The
+blocker in the note above was answered by evidence rather than waited out: the
+same boot path had by then run on S3 silicon in Normal mode, which is the arm a
+configured WROOM-32 takes.
+
+History **survived** (2793/3000 — an app-only OTA does not touch the
+partition), `Ambient Sensor: DHT11` rendered, MQTT reconnected at 1m36s,
+largest free block 33 → 107 KB after the reboot. ELF archived, restorable
+config backup taken first. **No USB was attached; the recovery path is still
+onboarding, not a cable.**

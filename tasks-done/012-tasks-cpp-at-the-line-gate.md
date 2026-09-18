@@ -17,3 +17,17 @@ those.
 
 **Done means:** a seam that leaves the registration order in one readable place,
 six envs still building, and the file comfortably under — not at 990.
+
+---
+**Done** — `603ed07`, merged as `f3f06be`. `tasks.cpp` 998 → **746**, new
+`src/task_events.cpp` (305).
+
+The seam is the one the ordering rule allows: **no `DECLARE_TASK`, no handler
+body and no `addTask()` moved** — verified by counting (15 and 17, before and
+after) and by `tasksSetup()`, `tasksSetupOnboarding()`, `ioTaskHandler()` and
+`tasksLoop()` coming out **byte-identical**. What left is the work those
+handlers call out to. Cost +256 B flash, because four publishers GCC used to
+inline are now cross-TU calls.
+
+**`src/config.cpp` at 940 is now the closest to the gate**, and `check_lines`
+says so on every green run.
