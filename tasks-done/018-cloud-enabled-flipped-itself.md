@@ -28,3 +28,20 @@ different season. Set back to false.
 **What would make it findable next time:** the log rolls faster than anyone can
 notice a config change. A durable record of config writes — who, when, how many
 bytes — is the thing this incident could not be diagnosed without.
+
+---
+**Closed, 2026-09-17: the operator changed it through `/config.html`.** No
+firmware defect. Not silent corruption. The restore path is fine.
+
+**The real lesson is about the investigation, not the flag.** The evidence could
+never have settled it: every session in that board's log comes from the
+workstation's IP, so a human save and a scripted one are indistinguishable. 32
+reproduction attempts were spent on a question that was unfalsifiable from the
+start and that one sentence answered — *"fui eu quem mudou. não custa nada
+perguntar."*
+
+Nothing to build here. The durable-record gap this note proposed is already
+recorded in CLAUDE.md, under Sampling vs events: *"Config writes and restarts —
+an audit trail that lives only in a log that rotates."* It stays there, at the
+priority it had, rather than being promoted by an incident that turned out to
+be a person doing a normal thing.
