@@ -95,7 +95,10 @@ from moisture_thermal_report import report_thermal, thermal_findings
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "backups" / "telemetry.sqlite"
 DEFAULT_HISTORY_DB = ROOT / "backups" / "history.sqlite"
-DEFAULT_DEVICE = "192.168.1.55"
+# The mDNS name rather than the address this file used to carry; see the note
+# on DEFAULT_DEVICE in scripts/history_export.py, where a stale 192.168.1.55
+# was found by a run that timed out against it on 2026-09-17.
+DEFAULT_DEVICE = "espgarden1.local"
 DEFAULT_CREDENTIALS = ROOT / "data" / "config.json"
 DEFAULT_TZ_HOURS = -3
 
