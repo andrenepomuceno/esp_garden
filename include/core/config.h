@@ -232,6 +232,21 @@ class ConfigFile
     uint8_t soilMoisturePowerPin[MOISTURE_MAX];
     uint8_t soilMoisturePowerOn[MOISTURE_MAX];
 
+    // Opt-in: leave this probe's power pin ENERGISED between readings instead
+    // of switching it around each conversion, which buys a stable reading and
+    // pays for it by putting the electrolysis above back at a 100 % duty cycle.
+    // Ships false, which is what every board did before this existed.
+    //
+    // Coalesced per PIN, not per probe — see core/probe_power.h. Several probes
+    // on one MOSFET is the normal wiring, so one probe asking for permanent
+    // power keeps the whole pin up.
+    //
+    // It is the only way to say "declared, and permanently on": with no
+    // powerPin the firmware never drives the pin at all, and whether the probe
+    // is then powered is the board's business — on the esp-garden-hardware
+    // carrier R9 holds SOIL_PWR_EN low, so there it means permanently OFF.
+    bool soilMoisturePowerAlways[MOISTURE_MAX];
+
     // How long after energising before the reading means anything. The divider
     // itself settles in microseconds; what takes time is the module's own
     // regulator and comparator. Per probe because it is a property of the

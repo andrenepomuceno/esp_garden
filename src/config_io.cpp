@@ -118,8 +118,12 @@ applySingleProbeLabel(ConfigFile& cfg)
 }
 
 // The optional power-gating half of an `io.soilMoisture` entry:
-// {pin, name, powerPin, powerOn, settleMs}. Absent keys leave the defaults,
-// which are "permanently powered" — what every board did before this existed.
+// {pin, name, powerPin, powerOn, powerAlways, settleMs}. Absent keys leave the
+// defaults, which are "the firmware never drives a power pin" — what every
+// board did before this existed. Whether the probe is then powered is the
+// BOARD's business: wired to 3V3 it runs permanently, and on the
+// esp-garden-hardware carrier R9 holds SOIL_PWR_EN low, so it is permanently
+// off. `powerAlways` is the only way to say "declared, and permanently on".
 static void
 loadProbePower(JSONVar node, ConfigFile& cfg, unsigned i)
 {
@@ -140,6 +144,26 @@ loadProbePower(JSONVar node, ConfigFile& cfg, unsigned i)
     }
     if (entry.hasOwnProperty("powerOn")) {
         cfg.soilMoisturePowerOn[i] = ((int)entry["powerOn"] != 0) ? 1 : 0;
+    }
+    // Both spellings, for the reason moisture[i].invert takes both: a plain
+    // (bool) cast on a JSONVar is true only for the JSON literal `true`, so
+    // `"powerAlways": 1` — the obvious hand-edit for "yes" — would read as
+    // FALSE and the bank would keep being switched with nothing said. This one
+    // fails in the safe direction when it gets it wrong, which is why it warns
+    // rather than being read permissively and silently.
+    if (entry.hasOwnProperty("powerAlways")) {
+        JSONVar flag = entry["powerAlways"];
+        const String kind = JSON.typeof(flag);
+        if (kind == "boolean") {
+            cfg.soilMoisturePowerAlways[i] = (bool)flag;
+        } else if (kind == "number") {
+            cfg.soilMoisturePowerAlways[i] = ((double)flag != 0.0);
+        } else {
+            logger.warning(
+              "io.soilMoisture[" + String(i) +
+              "].powerAlways is not a boolean; keeping " +
+              String(cfg.soilMoisturePowerAlways[i] ? "true" : "false"));
+        }
     }
     if (JSON.typeof(entry["settleMs"]) == "number") {
         const int ms = (int)entry["settleMs"];

@@ -4,6 +4,7 @@
 #include "core/config.h"
 #include "core/logger.h"
 #include "core/moisture_model.h"
+#include "core/probe_power.h"
 #include "core/sht4x.h"
 #include "core/tasks.h"
 #include <new>
@@ -25,6 +26,32 @@ unsigned g_ambientReadErrors = 0;
 unsigned g_ambientTotalReads = 0;
 
 AccumulatorV2 g_soilMoisture[MOISTURE_MAX];
+
+// core/probe_power.h answers every question about a power pin that several
+// probes share, and it is free of Arduino so a host test can reach it — so it
+// cannot read a ConfigFile. This is the copy it reads instead, taken once in
+// sensorsSetup(). Nothing re-reads config.json at runtime (a config change
+// carries restartRequired for exactly that reason), so a snapshot cannot go
+// stale; taking it per tick would rebuild the same four entries at 1 Hz.
+static probe_power::Probe g_probePower[MOISTURE_MAX];
+
+// The header spells kNoPin itself rather than including config.h, which would
+// drag Arduino in behind it. This is what keeps the two honest.
+static_assert(probe_power::kNoPin == ConfigFile::kNoPin,
+              "probe_power::kNoPin must match ConfigFile::kNoPin");
+
+static void
+probePowerSnapshot()
+{
+    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
+        const bool fitted = (i < config.moistureCount);
+        g_probePower[i].powerPin =
+          fitted ? config.soilMoisturePowerPin[i] : probe_power::kNoPin;
+        g_probePower[i].settleMs = fitted ? config.soilMoistureSettleMs[i] : 0;
+        g_probePower[i].always =
+          fitted ? config.soilMoisturePowerAlways[i] : false;
+    }
+}
 
 AccumulatorV2 g_luminosity(g_mqttTaskPeriod / g_ioTaskPeriod);
 
@@ -218,17 +245,33 @@ sensorsSetup()
 
     pinMode(config.buttonPin, INPUT);
 
-    // A probe's power pin is driven OFF before it is ever driven on. Until a
-    // pin is configured it floats, and a floating gate on whatever switches
-    // the sensor is an undefined amount of time with the electrodes live —
-    // which is the exact thing power gating exists to avoid.
+    probePowerSnapshot();
+
+    // A probe's power pin is driven to its parked level BEFORE pinMode() and
+    // again after. Until a pin is configured it floats, and a floating gate on
+    // whatever switches the sensor is an undefined amount of time at an
+    // undefined level — which for a gated probe is the electrodes live, the
+    // exact thing power gating exists to avoid.
+    //
+    // The parked level is OFF, unless some probe on that pin asked for
+    // permanent power, in which case it is ON. Parking an always-on pin off
+    // and letting the first read switch it up would put a 1 Hz square wave on
+    // the bank for the length of boot and hand the first conversion an
+    // unsettled rail — and the pin is meant to be up from here to the next
+    // reset, so the honest thing is to write that level once and never again.
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         const uint8_t pin = config.soilMoisturePowerPin[i];
-        if (pin != ConfigFile::kNoPin) {
-            digitalWrite(pin, config.soilMoisturePowerOn[i] ? LOW : HIGH);
-            pinMode(pin, OUTPUT);
-            digitalWrite(pin, config.soilMoisturePowerOn[i] ? LOW : HIGH);
+        if (pin == ConfigFile::kNoPin) {
+            continue;
         }
+        const bool energised = probe_power::pinIsAlwaysOn(
+          g_probePower, config.moistureCount, pin);
+        const int level =
+          config.soilMoisturePowerOn[i] ? (energised ? HIGH : LOW)
+                                        : (energised ? LOW : HIGH);
+        digitalWrite(pin, level);
+        pinMode(pin, OUTPUT);
+        digitalWrite(pin, level);
     }
 
     // Only peripherals config.json declares get their pins touched. Attaching
@@ -257,15 +300,20 @@ sensorsSetup()
                 (config.floatFitted ? ", float switch" : ""));
 }
 
-// Energises every probe that has a power pin, waits the longest settle any of
-// them asked for, and reports whether anything was switched on.
+// Energises every probe that has a power pin, waits the longest settle among
+// the pins that actually had to come UP, and reports whether anything is
+// powered at all.
 //
 // Coalesced on purpose: two probes on one MOSFET is the normal wiring, and
 // powering them one at a time would pay the settle delay twice for no reason.
+//
+// The write to an always-on pin is a no-op electrically — it is already at that
+// level and has been since sensorsSetup() — and it is kept rather than skipped
+// because it costs nothing and puts the pin back where it belongs if anything
+// else ever moved it.
 static bool
 moisturePowerUp()
 {
-    uint16_t settle = 0;
     bool any = false;
 
     for (unsigned i = 0; i < config.moistureCount; ++i) {
@@ -275,23 +323,34 @@ moisturePowerUp()
         }
         digitalWrite(pin, config.soilMoisturePowerOn[i] ? HIGH : LOW);
         any = true;
-        if (config.soilMoistureSettleMs[i] > settle) {
-            settle = config.soilMoistureSettleMs[i];
-        }
     }
 
-    if (any && settle > 0) {
+    // Only for a rail that moved. A pin held up since boot has nothing to
+    // settle, and this delay runs inside the 1 Hz io task — the same
+    // cooperative pump MQTT, the cloud model and the /data.json cache share —
+    // so paying the carrier's 50 ms for a pin that never switched is 5 % of
+    // that task spent waiting on nothing, every second, for ever.
+    const uint16_t settle =
+      probe_power::settleMsForTick(g_probePower, config.moistureCount);
+    if (settle > 0) {
         delay(settle);
     }
     return any;
 }
 
+// De-energises every power pin EXCEPT the ones some probe asked to keep up.
+//
+// The exemption is per PIN and not per probe, which is the whole subtlety: the
+// four probes on the carrier share GPIO 14, so asking probe 0 alone for
+// permanent power has to keep the pin up through probes 1..3's turn in this
+// loop. Answered per probe, the last index wins and writes the pin back down.
 static void
 moisturePowerDown()
 {
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         const uint8_t pin = config.soilMoisturePowerPin[i];
-        if (pin != ConfigFile::kNoPin) {
+        if (probe_power::pinPowersDown(
+              g_probePower, config.moistureCount, pin)) {
             digitalWrite(pin, config.soilMoisturePowerOn[i] ? LOW : HIGH);
         }
     }

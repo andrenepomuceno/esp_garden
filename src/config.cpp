@@ -188,6 +188,7 @@ ConfigFile::ConfigFile()
         moistureKind[i] = "";
         soilMoisturePowerPin[i] = kNoPin;
         soilMoisturePowerOn[i] = 1;
+        soilMoisturePowerAlways[i] = false;
         soilMoistureSettleMs[i] = 10;
         // One pump per zone is the common layout, so probe i defaults to
         // relay i. validated against relayCount at load.

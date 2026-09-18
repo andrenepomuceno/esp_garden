@@ -77,6 +77,7 @@
         "name": "Umidade Zona 1",
         "powerPin": 14,
         "powerOn": 1,
+        "powerAlways": true,
         "settleMs": 50
       },
       {
