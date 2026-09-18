@@ -439,13 +439,17 @@
     var flagged = {};
     var claims = {};
 
-    function claim(pin, owner, selector) {
+    // `kind` exists so the conflict report can tell the ONE legal duplicate
+    // from every illegal one. Default 'exclusive': anything that does not say
+    // otherwise may not share a pin.
+    function claim(pin, owner, selector, kind) {
       if (typeof pin !== 'number') return;
       if (!claims[pin]) claims[pin] = [];
-      claims[pin].push({ owner: owner, selector: selector });
+      claims[pin].push({ owner: owner, selector: selector,
+                         kind: kind || 'exclusive' });
     }
 
-    function checkPin(pin, role, owner, selector) {
+    function checkPin(pin, role, owner, selector, kind) {
       if (pin === null) {
         problems.push(owner + ': no GPIO selected.');
         flagged[selector] = true;
@@ -461,7 +465,7 @@
         warnings.push(owner + ': GPIO ' + pin + ' is a strapping pin, sampled ' +
                       'at reset. A pull on one can stop the board booting.');
       }
-      claim(pin, owner, selector);
+      claim(pin, owner, selector, kind);
     }
 
     // io.button is edited in Config, not here, but it holds a GPIO — without
@@ -488,8 +492,15 @@
       var owner = probeOwner(i);
       checkPin(p.pin, 'analog', owner, '.ms-pin[data-row="' + i + '"]');
       if (typeof p.powerPin === 'number') {
+        // 'probePower', because ONE MOSFET switching a bank of probes is the
+        // normal wiring and the firmware allows it on purpose — see the
+        // sharing rule in validatePins(), whose own comment cites this case.
+        // The esp-garden-hardware carrier ships exactly this: four resistive
+        // probes on one switched power bank, GPIO 14. A page that refuses to
+        // save the board's own wiring is a page that sends the operator to
+        // /config.html to hand-edit JSON, which is the more dangerous door.
         checkPin(p.powerPin, 'output', owner + ' power',
-                 '.ms-power[data-row="' + i + '"]');
+                 '.ms-power[data-row="' + i + '"]', 'probePower');
       }
       var settle = numeric(p.settleMs);
       if (p.settleMs !== '' && (settle === null || isNaN(settle) ||
@@ -531,6 +542,16 @@
 
     $.each(claims, function (pin, owners) {
       if (owners.length < 2) return;
+      // Probes sharing one power pin is the intended wiring, not a conflict —
+      // and the exemption stops there, exactly as it does in the firmware. A
+      // relay or a second probe's DATA pin landing on the same GPIO still
+      // reports, and that is the case that matters, because it breaks both
+      // peripherals silently.
+      var sharable = true;
+      $.each(owners, function (_, entry) {
+        if (entry.kind !== 'probePower') sharable = false;
+      });
+      if (sharable) return;
       var names = [];
       $.each(owners, function (_, entry) {
         names.push(entry.owner);
