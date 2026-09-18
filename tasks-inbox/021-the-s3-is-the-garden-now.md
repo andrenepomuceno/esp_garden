@@ -34,6 +34,14 @@ already attached.
 **A meter or a scope on one relay coil through one boot settles it.** Until then,
 treat every reset, OTA and power cycle on this board as unproven, not safe.
 
+**Update, same day: the operator reports the relays tested and working.** That is
+a real measurement and it retires a long list of "unverified" claims — `b580` has
+now switched relays, so `startRelay()`, the 30 s ceiling, the sticky mask and
+`relayStartedHook()` have run on this family. **It does NOT answer the question
+above**, which is a different measurement: switching on command and staying
+released through a reset are two behaviours, and only the second one decides
+whether a boot runs a pump. Asked; awaiting the answer.
+
 ## What can start a pump today — checked, not assumed
 
 Read off the device 2026-09-18:
