@@ -46,3 +46,19 @@ board are the rail, not the pot, until this is resolved or the key is set false.
 - The hardware repo's electrolysis warning ("scrap in weeks") is about the
   probe's LIFE and is a separate, unmeasured concern that still applies while the
   bank is held up.
+
+---
+
+## Closed 2026-09-21 — the LED is SOLID with the flag on
+
+The operator looked, with `powerAlways: true` in force: **the LED is on, not
+blinking.** So GPIO 14 does stay up, `moisturePowerDown()` really is skipping
+it, and the coalesced rule in `include/core/probe_power.h` works on hardware.
+
+The contradiction is explained the way it was guessed: for part of the window
+the key had been deleted by a `/devices.html` save, so blinking was correct
+behaviour at the time it was seen. That page no longer drops the key.
+
+**Still not done, and cheap if anyone ever wants it:** nobody has put a meter
+on GPIO 14, so "the pin is high" rests on an LED and a reading rather than a
+measurement of the pin. Good enough to close this.
