@@ -32,3 +32,19 @@ half) and 4 are now measurements; see CLAUDE.md. The board runs at
 Its admin account was seeded with the SAME `ota.username`/`ota.password` pair as
 the garden board, because that is what `data/config.json` had to hand. Change it
 in `/config.html` if two boards should not share one credential.
+
+---
+
+## Closed 2026-09-21 — every item answered, and then some
+
+1. `templates/config.espgarden_s3.json` went through `loadFile()` via the
+   compiled portal template on 2026-09-16, with a real `id`.
+2. `validatePins()` ran on the real carrier wiring on 2026-09-17 and reported
+   nothing; all four ADC channels and the LDR read; the SHT40 answers on I2C.
+3. **The relays were tested by the operator and work** (2026-09-21). That
+   retires `startRelay()`, the 30 s ceiling, the sticky mask and
+   `relayStartedHook()` as never-run on this family. It does NOT answer what a
+   RESET does to the coils — a different measurement, left in task 021.
+
+The board is no longer a bring-up: it is the garden, with real pumps. See
+task 021 for what that changed, and CLAUDE.md for the record.

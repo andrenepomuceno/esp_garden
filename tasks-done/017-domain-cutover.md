@@ -23,3 +23,19 @@ banner asks you to turn proxying on — ignore it for these records.
 **What this retires:** the dependency on sslip.io, a third-party wildcard DNS
 service whose disappearance would break the name and the certificate renewal
 together. That was the known weak point of the deploy from the day it shipped.
+
+---
+
+## Closed 2026-09-21 — the cutover happened and the pin never moved
+
+Delegation completed, the six records stayed grey-cloud, and the broker is
+`tb.espgarden.com.br:8883` behind Traefik. The check that mattered was made
+BEFORE either board was touched: the new chain terminates in ISRG Root YR,
+which `data/thingsboard.pem` already pins, and it validates against that
+bundle AND against YR alone — so `mqtt.cacert` never changed. Only
+`mqtt.server`, `mqtt.username` and `mqtt.password` moved.
+
+Recorded and NOT fixed: `tbctl ca-export` emits ISRG Root X1, which validates
+the live chain only through a transitional cross-signature. Using it would
+reintroduce the exact shape of the 2023-2026 outage. It lives in the deploy
+repo.
