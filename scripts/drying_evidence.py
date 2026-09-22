@@ -107,8 +107,25 @@ def effective_samples(count, rho):
     regression with correlated errors. It is a rough one and it errs
     conservative - which is the direction to err when the output is "is this
     number real". Reported alongside the raw n, never instead of it.
+
+    THE CEILING ON RHO USED TO BE 0.99, AND THAT WAS A RATE-BLIND THRESHOLD.
+    n*(1-rho)/(1+rho) is scale-invariant on its own: for a process with
+    correlation time T sampled every dt, rho = exp(-dt/T), and as dt shrinks
+    the ratio tends to span/(2T) whatever dt was. Clamping rho at 0.99 asserts
+    a correlation time of at most ~99*dt, which is 8.2 h at a 300 s sample and
+    99 min at 60 s - so the SAME curve, sampled five times finer, was handed
+    five times the effective sample size and a much tighter F threshold. On
+    this garden that is not academic: the Arranjo's long fall read n_eff 12.9
+    at 60 s against 4.0 at 300 s, threshold 1.50 against 52.19, purely from
+    the clamp. An asymptote must not become identifiable because somebody
+    sampled faster.
+    Only the NEGATIVE side needs a clamp - the ratio diverges at rho = -1 -
+    and the max(4.0, ...) floor is what keeps the positive side finite. Verified
+    a no-op on backups/telemetry.sqlite: the one segment above 0.99 there
+    (rho 0.9927, n 767) floors at 4.0 either way, and the whole 13-segment
+    report is byte-identical before and after.
     """
-    rho = max(-0.99, min(0.99, rho))
+    rho = max(-0.99, min(1.0, rho))
     return max(4.0, count * (1.0 - rho) / (1.0 + rho))
 
 
@@ -608,6 +625,21 @@ def self_test():
     check("neff/monotone",
           effective_samples(1000, 0.99) < effective_samples(1000, 0.5)
           < effective_samples(1000, 0.0))
+
+    # ...and it must KEEP falling past 0.99, which is where the old ceiling
+    # stopped it. Red against `min(0.99, rho)`: both of these returned 5.03.
+    check("neff/keeps-falling-past-the-old-ceiling",
+          effective_samples(1000, 0.9993) < effective_samples(1000, 0.99),
+          "%.3f vs %.3f" % (effective_samples(1000, 0.9993),
+                            effective_samples(1000, 0.99)))
+    # The real claim is scale invariance: one curve with a 2 h correlation
+    # time, sampled at 300 s and at 60 s, must be worth about the same amount
+    # of information. Within 5 % here; under the old ceiling the finer sample
+    # was worth 3.9x the coarser one.
+    coarse = effective_samples(514, math.exp(-300.0 / 7200.0))
+    fine = effective_samples(2570, math.exp(-60.0 / 7200.0))
+    check("neff/scale-invariant", abs(fine / coarse - 1.0) < 0.05,
+          "300 s -> %.2f, 60 s -> %.2f" % (coarse, fine))
 
     # 4. The bootstrap resamples around the FITTED curve, so it measures noise
     #    and not model error: it must bracket the point estimate, and it must

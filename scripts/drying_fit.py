@@ -3,6 +3,7 @@
 
     python scripts/drying_fit.py                 # segment, fit, judge, report
     python scripts/drying_fit.py --stitch-seam   # rejoin the renamed probe
+    python scripts/drying_fit.py --history-db    # the device's OWN 60 s record
     python scripts/drying_fit.py --json out.json
     python scripts/drying_fit.py --self-test     # the pure logic only
 
@@ -45,8 +46,20 @@ to have got to. So an asymptote is printed only when four checks pass, and the
 refusal names the check - the same contract /moisture.json keeps with
 `blockedBy` and moisture_fit.py keeps with its four refusals.
 
-Standard library only. Reads backups/telemetry.sqlite READ-ONLY and touches
-nothing else: no device, no config, no write anywhere.
+TWO ARCHIVES, AND THE PERIOD IS THE DIFFERENCE THAT MATTERS
+
+Everything above was measured against the 300 s ThingsBoard uplink. The device
+also keeps its own 60 s record, and scripts/history_export.py collects it;
+`--history-db` reads that instead, through drying_sources.py. A threshold
+expressed as a delta PER SAMPLE means a different thing at each rate, so every
+one of them here is either scaled by the observed period or says below why it
+is a time and not a count. Getting that wrong is not a smaller number - at 60 s
+an unscaled 5-point step threshold cannot see a re-seated probe at all, and an
+unscaled two-period tau floor calls a five-minute transient unresolvable when
+the record resolves two.
+
+Standard library only. Both archives are opened READ-ONLY and nothing else is
+touched: no device, no config, no write anywhere.
 """
 
 from __future__ import annotations
@@ -54,7 +67,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -65,22 +77,21 @@ from drying_evidence import (block_bootstrap, choose, criteria,
 from drying_evidence import self_test as evidence_self_test
 from drying_models import MODELS, asymptote, fit, is_degenerate, resample
 from drying_models import self_test as models_self_test
-from moisture_stats import (MAX_GAP_SEC, STEP_MIN_POINTS, find_drift_segments,
-                            find_steps, local)
-from tb_export import SEAM_MS
+from drying_sources import (TELEMETRY_STEP_SEC, describe_source,
+                            history_channels, telemetry_channels)
+from drying_sources import self_test as sources_self_test
+from moisture_stats import (MAX_GAP_SEC, find_drift_segments, find_steps,
+                            local, step_threshold)
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "backups" / "telemetry.sqlite"
+DEFAULT_HISTORY_DB = ROOT / "backups" / "history.sqlite"
 DEFAULT_TZ_HOURS = -3
 
-# The publish period changed from 60 s to 300 s on 2026-09-03 18:43, so a
-# segment spanning that instant carries five times the weight per hour on one
-# side. Everything is binned to the coarser period before fitting; the finer
-# samples are averaged, not thrown away.
-RESAMPLE_SEC = 300.0
-
 # ---------------------------------------------------------------------------
-# Segmentation thresholds. Each says what it was measured against.
+# Segmentation thresholds. Each says what it was measured against, and each
+# says whether it is a TIME (rate-independent) or a delta per SAMPLE (which is
+# only meaningful with a rate, and is scaled).
 # ---------------------------------------------------------------------------
 
 # HANDLING: two or more steps inside two hours. Soil moisture is monotone
@@ -88,6 +99,15 @@ RESAMPLE_SEC = 300.0
 # Measured 2026-09-03: eight steps of 5-27 points inside 70 minutes while the
 # probes were carried between pot, air and water. Against that, the largest
 # single-publish jump in three days of undisturbed soil is 0.05 points.
+#
+# The WINDOW and the COUNT are rate-independent: two discontinuities inside two
+# hours is two discontinuities whatever the sample rate. What a "step" IS is
+# not - it is a delta per sample, so it comes from moisture_stats.
+# step_threshold(period), which already carries STEP_MIN_POINTS onto another
+# rate: 5.0 points at 300 s, 1.0 at 60 s (its floor). Read at the 300 s number
+# the device's own record misses a re-seating entirely - measured here on the
+# Arranjo, 16 steps at 5.0 against 43 at 1.0, and the 27 extra include both
+# ends of the 2026-09-21 rewire.
 HANDLING_CLUSTER_SEC = 2 * 3600
 HANDLING_MIN_STEPS = 2
 
@@ -118,7 +138,13 @@ HANDLING_SETTLE_SEC = 2 * 3600
 WETTING_RISE_POINTS = 2.0
 WETTING_WINDOW_SEC = 30 * 60
 
-# What counts as a segment worth fitting at all.
+# What counts as a segment worth fitting at all. The SECONDS and the decline
+# are the real thresholds and both are rate-independent. The point count is a
+# floor against fitting a line to nothing and is DOMINATED by the six hours at
+# either rate - 72 points at 300 s, 360 at 60 s - so it can only bind on a
+# stretch that is mostly holes, which is exactly what it should be for. Left
+# unscaled deliberately: scaling it would make it bind at 60 s, and it was
+# never the threshold deciding anything.
 MIN_SEGMENT_SEC = 6 * 3600
 MIN_SEGMENT_POINTS = 30
 MIN_DECLINE_POINTS = 1.0
@@ -173,79 +199,24 @@ ASYMPTOTE_FALSIFY_TOLERANCE = 0.25
 ASYMPTOTE_MIN_EXTRAPOLATION = 2.0
 
 # A time constant shorter than two sample periods is not measured, it is
-# guessed between two points. At the 300 s publish period the archive has since
-# 2026-09-03 18:43 that is ten minutes, which matters: the observation that
-# started this - a probe holding an apparent plateau for THREE MINUTES before
-# resuming its fall - is entirely below the archive's resolution, and no fit
-# to these series can confirm or deny it. A second exponential faster than this
-# is reported as UNRESOLVED rather than as a second timescale.
+# guessed between two points. It is a COUNT OF PERIODS on purpose, so it
+# follows whichever record is being read: ten minutes on the 300 s ThingsBoard
+# archive, TWO on the device's own 60 s record. That matters, and it is the
+# whole reason --history-db was worth wiring in: the observation that started
+# this - a probe holding an apparent plateau for THREE MINUTES before resuming
+# its fall - sits below the 300 s archive's resolution and above the 60 s one's,
+# so it is unanswerable in the first and reportable in the second. A second
+# exponential faster than this is reported as UNRESOLVED rather than as a
+# second timescale.
+#
+# A LIMIT UNDERNEATH IT, unchanged and now the binding one at 60 s:
+# drying_models.TAU_MIN_FRACTION puts the fit's tau grid's floor at span/500,
+# which on a 40 h segment is 4.8 min. So on a long 60 s segment the GRID, not
+# the sample rate, is what a short tau runs into first. Left alone because it
+# is a fraction of the window rather than a count of samples, and widening it
+# would change every 300 s answer in this file for a resolution no segment
+# here has asked for.
 TAU_UNRESOLVED_STEPS = 2.0
-
-
-# ---------------------------------------------------------------------------
-# the archive
-# ---------------------------------------------------------------------------
-
-
-def read_series(cursor, key, since=None, until=None):
-    query = "SELECT ts, value FROM telemetry WHERE key = ?"
-    args = [key]
-    if since is not None:
-        query += " AND ts >= ?"
-        args.append(since)
-    if until is not None:
-        query += " AND ts <= ?"
-        args.append(until)
-    out = []
-    for stamp, raw in cursor.execute(query + " ORDER BY ts", args):
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            continue
-        if value == value:
-            out.append((stamp / 1000.0, value))
-    return out
-
-
-def channels(cursor, since, until, stitch):
-    """The moisture series, and the one place the archive lies about identity.
-
-    tb_export.SEAM_MS records that at 2026-09-02 13:41:29 `moisture3` stopped
-    and `moisture2` took over the SAME physical sensor, because the archive
-    keys probes positionally and a slot was deleted. Off by default the seam is
-    a hard boundary, exactly as moisture_fit.py treats it; --stitch-seam joins
-    the two halves into one channel on the strength of that recorded identity.
-    The join is checked rather than assumed - the report prints the gap across
-    it, and here it is 0.08 points across 76 seconds.
-    """
-    found = {}
-    for index in range(1, 5):
-        key = "moisture%d" % index
-        series = read_series(cursor, key, since, until)
-        if series:
-            found[key] = series
-    if not stitch:
-        for key, series in list(found.items()):
-            if key in ("moisture2", "moisture3"):
-                seam = SEAM_MS / 1000.0
-                before = [p for p in series if p[0] < seam]
-                after = [p for p in series if p[0] >= seam]
-                keep = before if len(before) >= len(after) else after
-                found[key] = keep
-        return found, None
-
-    seam = SEAM_MS / 1000.0
-    before = [p for p in found.get("moisture3", []) if p[0] < seam]
-    after = [p for p in found.get("moisture2", []) if p[0] >= seam]
-    if not before or not after:
-        return found, None
-    found.pop("moisture3", None)
-    found.pop("moisture2", None)
-    found["zona3 (moisture3+moisture2)"] = before + after
-    joint = {"lastBefore": before[-1], "firstAfter": after[0],
-             "gapSec": after[0][0] - before[-1][0],
-             "gapPoints": after[0][1] - before[-1][1]}
-    return found, joint
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +224,15 @@ def channels(cursor, since, until, stitch):
 # ---------------------------------------------------------------------------
 
 
-def handling_windows(samples, settle_sec=HANDLING_SETTLE_SEC):
-    """Clusters of discontinuities: a probe being moved, not soil drying."""
-    steps = find_steps(samples, STEP_MIN_POINTS)
+def handling_windows(samples, settle_sec=HANDLING_SETTLE_SEC,
+                     period_sec=TELEMETRY_STEP_SEC):
+    """Clusters of discontinuities: a probe being moved, not soil drying.
+
+    `period_sec` is an ARGUMENT for the reason `settle_sec` is one: it changes
+    the answer, so it belongs in a signature rather than in a module global
+    that main() reassigns behind self_test()'s back.
+    """
+    steps = find_steps(samples, step_threshold(period_sec))
     windows = []
     index = 0
     while index < len(steps):
@@ -315,9 +292,17 @@ def wetting_events(samples):
     return events
 
 
-def segment(samples, settle_sec=HANDLING_SETTLE_SEC):
-    """Every stretch of this channel that is genuinely soil drying."""
-    handled, steps = handling_windows(samples, settle_sec)
+def segment(samples, settle_sec=HANDLING_SETTLE_SEC,
+            period_sec=TELEMETRY_STEP_SEC):
+    """Every stretch of this channel that is genuinely soil drying.
+
+    MAX_GAP_SEC, which breaks a series here and inside find_steps(), is a TIME
+    and is deliberately left at 1800 s for both rates. Its claim is that a boot
+    or an outage is not a slope, and half an hour of unobserved soil is half an
+    hour whether the record would have held 6 samples or 30. moisture_stats
+    records the same decision and the same reason not to re-fit it at 60 s.
+    """
+    handled, steps = handling_windows(samples, settle_sec, period_sec)
     step_times = [entry["at"] for entry in steps]
 
     def in_handling(stamp):
@@ -570,13 +555,14 @@ def hours(seconds):
     return "%.1f h" % (seconds / 3600.0)
 
 
-def print_report(results, tz, joint, handled_by_channel):
+def print_report(results, tz, joint, handled_by_channel, source, step_sec):
     print("=" * 78)
     print("SOIL DRYING - is it exponential, and does the fit give a dry anchor?")
     print("=" * 78)
+    describe_source(source, step_sec, tz, local)
     if joint:
         print("\nSeam: moisture3 -> moisture2 rejoined at %s"
-              % local(SEAM_MS / 1000.0, tz))
+              % local(joint["at"], tz))
         print("  last before %.2f, first after %.2f: %+.2f points across %.0f s"
               % (joint["lastBefore"][1], joint["firstAfter"][1],
                  joint["gapPoints"], joint["gapSec"]))
@@ -763,7 +749,8 @@ def print_report(results, tz, joint, handled_by_channel):
 
 
 def self_test():
-    failures = list(models_self_test()) + list(evidence_self_test())
+    failures = (list(models_self_test()) + list(evidence_self_test())
+                + list(sources_self_test()))
 
     def check(name, condition, detail=""):
         if not condition:
@@ -818,6 +805,46 @@ def self_test():
     kept, _, _ = segment(flat)
     check("segment/drops-flat", kept == [], "kept %d" % len(kept))
 
+    # THE RATE. Every check above runs at the default 300 s threshold, which
+    # is what the archive they were measured against publishes at. These are
+    # the claim that the same series read as a 60 s record says something
+    # different - and they are red against a handling detector that reads
+    # STEP_MIN_POINTS directly, which is what this file did.
+    #
+    # Two 2-point jumps forty minutes apart. At 300 s that is 2 points per
+    # publish, well under the 5-point threshold and therefore soil; at 60 s it
+    # is 2 points per RECORD, twice the floor, and a probe somebody moved.
+    nudged = [(i * step, 70.0 - 0.002 * i) for i in range(1200)]
+    for index in (300, 340):
+        for later in range(index, len(nudged)):
+            nudged[later] = (nudged[later][0], nudged[later][1] - 2.0)
+    slow_rate, _ = handling_windows(nudged, period_sec=300.0)
+    fast_rate, _ = handling_windows(nudged, period_sec=60.0)
+    check("rate/300s-calls-two-point-jumps-soil", slow_rate == [],
+          "found %d" % len(slow_rate))
+    check("rate/60s-calls-them-handling", len(fast_rate) == 1,
+          "found %d" % len(fast_rate))
+    # ...and the segmentation has to act on it. At 300 s the whole 20 h is one
+    # clean stretch; at 60 s the jumps and their settle window are cut out, so
+    # what survives starts AFTER them and is flagged CONFOUNDED.
+    whole = segment(nudged, period_sec=300.0)[0]
+    cut = segment(nudged, period_sec=60.0)[0]
+    check("rate/segment-honours-the-period",
+          len(whole) == 1 and len(cut) == 1
+          and cut[0]["samples"][0][0] > whole[0]["samples"][0][0] + 7000.0
+          and cut[0]["confounds"],
+          "%d whole, %d cut, starts %+.0f s later"
+          % (len(whole), len(cut),
+             (cut[0]["samples"][0][0] - whole[0]["samples"][0][0])
+             if cut and whole else 0.0))
+
+    # ...and the UNRESOLVED floor is TAU_UNRESOLVED_STEPS periods, so it has
+    # to follow the step the caller resampled at. A 6-minute tau is below the
+    # 300 s archive's resolution and above the 60 s record's; a floor frozen
+    # at ten minutes would call it unresolvable in both.
+    check("rate/unresolved-floor-follows-the-step",
+          TAU_UNRESOLVED_STEPS * 300.0 > 360.0 > TAU_UNRESOLVED_STEPS * 60.0)
+
     # The falsification check has to fire on the case it exists for.
     channel = [(i * step, 80.0 - 0.001 * i) for i in range(2000)]
     hit = falsified_by_later(79.0, channel, channel[:900])
@@ -847,12 +874,17 @@ def parse_when(text, tz_hours):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=str(DEFAULT_DB))
+    parser.add_argument("--history-db", nargs="?", const=str(DEFAULT_HISTORY_DB),
+                        help="read the DEVICE'S OWN 60 s record collected by"
+                             " scripts/history_export.py instead of the 300 s"
+                             " ThingsBoard archive")
     parser.add_argument("--since")
     parser.add_argument("--until")
     parser.add_argument("--tz", type=int, default=DEFAULT_TZ_HOURS)
-    parser.add_argument("--step", type=float, default=RESAMPLE_SEC,
-                        help="resample period in seconds (default 300, the"
-                             " device's current publish period)")
+    parser.add_argument("--step", type=float, default=None,
+                        help="resample period in seconds; default is the"
+                             " source's own - 300 for the ThingsBoard archive,"
+                             " the observed period for a history archive")
     parser.add_argument("--stitch-seam", action="store_true",
                         help="rejoin moisture3 and moisture2 across the"
                              " 2026-09-02 index seam into one channel")
@@ -874,34 +906,54 @@ def main(argv=None):
         return 1 if problems else 0
 
     settle_sec = args.settle_hours * 3600.0
-
-    path = Path(args.db)
-    if not path.is_file():
-        raise SystemExit("no archive at %s - run scripts/tb_export.py first"
-                         % path)
     since = parse_when(args.since, args.tz) if args.since else None
     until = parse_when(args.until, args.tz) if args.until else None
 
-    connection = sqlite3.connect("file:%s?mode=ro" % path.as_posix(), uri=True)
-    try:
-        cursor = connection.cursor()
-        found, joint = channels(cursor, since, until, args.stitch_seam)
-    finally:
-        connection.close()
+    if args.history_db:
+        if args.stitch_seam:
+            # Refused rather than ignored. --stitch-seam names ONE recorded
+            # moment in the ThingsBoard archive - tb_export.SEAM_MS, where
+            # moisture3 became moisture2 - and the device's own record is a
+            # different series keyed by slot with its own identity stamps.
+            # Accepting the flag here and doing nothing would report a join
+            # that never happened.
+            raise SystemExit(
+                "--stitch-seam joins moisture3 to moisture2 across the"
+                " 2026-09-02 index seam in the ThingsBoard archive. The"
+                " device's own record keys probes by SLOT and carries its own"
+                " identity stamps, so there is nothing here for it to join;"
+                " use --since to bound a window instead")
+        path = Path(args.history_db)
+        if not path.is_file():
+            raise SystemExit("no archive at %s - run"
+                             " scripts/history_export.py first" % path)
+        found, joint, source = history_channels(path, since, until)
+    else:
+        path = Path(args.db)
+        if not path.is_file():
+            raise SystemExit("no archive at %s - run scripts/tb_export.py"
+                             " first" % path)
+        found, joint, source = telemetry_channels(path, since, until,
+                                                  args.stitch_seam)
+
+    # The resample step defaults to the SOURCE'S OWN period, which is what
+    # carries TAU_UNRESOLVED_STEPS onto the finer record: those two numbers
+    # have to move together or the tool reports a resolution it does not have.
+    step_sec = args.step if args.step is not None else source["periodSec"]
 
     results = []
     handled_by_channel = {}
     for name, samples in sorted(found.items()):
-        blocks, handled, _ = segment(samples, settle_sec)
+        blocks, handled, _ = segment(samples, settle_sec, source["periodSec"])
         handled_by_channel[name] = handled
         for block in blocks:
-            item = analyse(name, block, samples, args.step,
+            item = analyse(name, block, samples, step_sec,
                            do_bootstrap=not args.no_bootstrap)
             if item is not None:
                 results.append(item)
     results.sort(key=lambda item: item["from"])
 
-    print_report(results, args.tz, joint, handled_by_channel)
+    print_report(results, args.tz, joint, handled_by_channel, source, step_sec)
 
     if args.json:
         payload = []
