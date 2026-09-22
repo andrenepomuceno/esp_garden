@@ -137,6 +137,81 @@ buildOrder(const uint32_t* seq, uint8_t segments, uint8_t* orderOut)
     return n;
 }
 
+// ---------------------------------------------------------------------------
+// SEGMENTS DO NOT ALL HAVE TO BE THE SAME SIZE
+//
+// `history.records` is divided across the eight slots, so changing it changes
+// recordsPerSegment(). A segment written under the previous value is still a
+// perfectly readable file: the record LAYOUT did not move, only how many of
+// them one file is allowed to hold, and that is an eviction policy rather than
+// a format. Deleting such a segment — which is what this subsystem used to do
+// — throws away weeks of history to enact a preference about retention.
+//
+// Nothing above this line ever assumed uniform segments. locate() sums
+// counts[] per slot, slotToRecycle() and buildOrder() work off sequence
+// numbers, and IoHistory::forEach() walks in absolute ordinals corrected by
+// evicted(). The two functions below are the whole of what mixed sizes need.
+
+// How full a segment is allowed to get, when the file on disk was written
+// under one `history.records` and the running configuration wants another.
+//
+// `own` is the segment's own header: how long that FILE may legitimately get.
+// `target` is recordsPerSegment() for the capacity configured now.
+//
+// The answer is the SMALLER of the two, and each half is load-bearing:
+//
+//   - never past `own`, because a segment's record count is its file length
+//     clamped to its header. A file grown past its own header loses the tail
+//     at the next boot, silently, since a too-long file and a corrupt one are
+//     the same observation.
+//   - never past `target`, because ioHistoryFitCapacity() credited back the
+//     space these files occupy RIGHT NOW. A part-full segment adopted from a
+//     LARGER previous geometry would otherwise keep growing to that larger
+//     size, taking space nothing checked — and a shrink would then need eight
+//     full segments' worth of appends before it freed a single block.
+//
+// So both directions converge on the new geometry within one full cycle of the
+// slots, by ordinary eviction, and nothing is deleted to get there.
+inline uint16_t
+segmentFillLimit(uint16_t own, uint16_t target)
+{
+    return (own < target) ? own : target;
+}
+
+// Records the history can hold before something has to be dropped, when the
+// segments on disk do not all share one capacity.
+//
+// `capacities`, `counts` and `seq` are all indexed by SLOT. An unused slot
+// contributes `target`, because that is the size it will be stamped with when
+// it is claimed. A slot in use contributes whichever is larger of what it may
+// still be filled to and what it already holds — the second term is what keeps
+// this from ever reporting less than stored() after a shrink, which would
+// render /data.json's "stored / capacity" row as a number over a smaller one.
+//
+// With one capacity across every slot this is exactly `target * segments`,
+// which is what capacity() returned before segments could differ, and it
+// converges back to that as the old slots age out.
+inline uint32_t
+liveCapacity(const uint16_t* capacities,
+             const uint16_t* counts,
+             const uint32_t* seq,
+             uint8_t segments,
+             uint16_t target)
+{
+    if (capacities == nullptr || counts == nullptr || seq == nullptr) {
+        return 0;
+    }
+    uint32_t total = 0;
+    for (uint8_t i = 0; i < segments; ++i) {
+        if (seq[i] == 0) {
+            total += (uint32_t)target;
+            continue;
+        }
+        const uint16_t limit = segmentFillLimit(capacities[i], target);
+        total += (uint32_t)((counts[i] > limit) ? counts[i] : limit);
+    }
+    return total;
+}
 
 // ---------------------------------------------------------------------------
 // DOES THE REQUESTED CAPACITY FIT?

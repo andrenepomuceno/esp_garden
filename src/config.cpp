@@ -772,14 +772,28 @@ ConfigFile::loadFile(unsigned deviceID)
         JSONVar history = configJson["history"];
         if (history.hasOwnProperty("records")) {
             const int records = (int)history["records"];
-            // 5000 records is 256 KB of segment files, rounded to whole
-            // LittleFS blocks: 8 * ceil((12 + 625 * 48) / 4096) * 4096. That is
-            // what the RECORD costs, and it is the only question this ceiling
-            // is entitled to answer. 235 KB is the UNROUNDED figure — the same
-            // 8 * (12 + 625 * 48) this repo used to reason with — and it stood
-            // here beside the formula that corrects it. Rounding is the whole
-            // point: 32 KB of block slack across eight segments is a fifth of
-            // what was free on the board this ceiling was first written for.
+            // 10000 records is 480 KB of segment files, rounded to whole
+            // LittleFS blocks: 8 * ceil((12 + 1250 * 48) / 4096) * 4096 =
+            // 8 * 15 * 4096 = 491 520 B. That is what the RECORD costs, and it
+            // is the only question this ceiling is entitled to answer. 468.8 KB
+            // (480 096 B) is the UNROUNDED figure — the same 8 * (12 + 1250 *
+            // 48) this repo used to reason with — and it stands here beside
+            // the formula that corrects it. Rounding is the whole point:
+            // 11.2 KB of block slack across eight segments here, and 32 KB at
+            // the 625-per-segment geometry the previous ceiling described,
+            // which was a fifth of what was free on the board it was written
+            // for.
+            //
+            // Raised 5000 -> 10000 in 2.20.0, at the operator's request, for a
+            // moisture programme that needs long records. It exceeds every
+            // WROOM-32 board here by a wide margin — device 6224 resolves a
+            // request of 10000 to 3408, exactly as it resolved 5000, because
+            // there the DEVICE is what refuses and not the ceiling. On the S3
+            // carrier's 2432 KB filesystem 10000 is granted whole, at 480 KB,
+            // and that partition would in fact hold 40 952. So this constant
+            // is now the binding limit on one family and irrelevant on the
+            // other, which is the correct shape for a number that is about the
+            // record rather than about any board.
             //
             // It is deliberately larger than any board here can currently
             // hold. What decides whether a value fits is the state of that
@@ -798,7 +812,7 @@ ConfigFile::loadFile(unsigned deviceID)
             // space by hand and writing the answer down as a constant. The
             // constant is in RECORDS and still has to come down if the record
             // grows; the free space is no longer its job.
-            if (records >= 0 && records <= 5000) {
+            if (records >= 0 && records <= 10000) {
                 historyRecords = records;
             } else {
                 logger.warning("Ignoring out-of-range history.records " +

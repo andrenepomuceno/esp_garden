@@ -263,6 +263,16 @@ class DeviceState:
         self.history = SegmentHistory(granted)
         # IoHistory::capacity() is segmentRecords * kSegments with
         # segmentRecords rounded UP, so a granted 1001 is reported as 1008.
+        #
+        # Since firmware 2.20.0 the device can also hold segments of DIFFERENT
+        # sizes for a while: changing history.records no longer deletes the
+        # segments written under the previous value, so capacity() is the sum
+        # of the slots' own ceilings until the old ones have aged out. This
+        # mirror cannot reach that state — it builds a fresh SegmentHistory on
+        # every reconfigure and never re-adopts files across a capacity change,
+        # which is exactly the boot the firmware now handles — so the product
+        # above is the whole of what it can ever report. Said here rather than
+        # papered over: a green simulator is not a statement about the C++.
         self.history_capacity = self.history.capacity
         # records = 0 means disabled on the device, where /history.json answers
         # 503. Coercing it to 1 here made that branch unreachable in the UI.

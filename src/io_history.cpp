@@ -31,6 +31,7 @@ IoHistory::adoptSegmentLocked(uint8_t slot)
     const String path = pathFor(slot);
     segmentSeq[slot] = 0;
     segmentCount[slot] = 0;
+    segmentCapacity[slot] = 0;
 
     if (!fs->exists(path)) {
         return false;
@@ -47,12 +48,20 @@ IoHistory::adoptSegmentLocked(uint8_t slot)
     const uint32_t size = (uint32_t)file.size();
     file.close();
 
-    // Every field has to agree. A firmware that changed the record layout would
-    // otherwise read the old file as garbage and publish it as history.
+    // The FORMAT fields have to agree. A firmware that changed the record
+    // layout would otherwise read the old file as garbage and publish it as
+    // history.
+    //
+    // `onDisk.records` is deliberately NOT one of them. It is this segment's
+    // own ceiling, and it changes whenever history.records does — so testing
+    // it here made an edit to the buffer size in /devices.html delete every
+    // stored record at the next boot, which is destroying an archive to enact
+    // a preference about how much of it to keep. The only value it cannot take
+    // is 0: rotateLocked() never writes one, a segment that may hold nothing
+    // can never be appended to, and it is the shape a zeroed header has.
     if (!readOk || onDisk.magic != IO_HISTORY_MAGIC ||
-        onDisk.recordSize != sizeof(IoRecord) ||
-        onDisk.records != segmentRecords || onDisk.seq == 0 ||
-        size < IO_SEGMENT_HEADER_SIZE) {
+        onDisk.recordSize != sizeof(IoRecord) || onDisk.records == 0 ||
+        onDisk.seq == 0 || size < IO_SEGMENT_HEADER_SIZE) {
         logger.warning("io_history: dropping unusable " + path);
         fs->remove(path);
         return false;
@@ -64,8 +73,15 @@ IoHistory::adoptSegmentLocked(uint8_t slot)
     // is simply not one of the records.
     const uint32_t body = size - IO_SEGMENT_HEADER_SIZE;
     uint32_t records = body / sizeof(IoRecord);
-    if (records > segmentRecords) {
-        records = segmentRecords; // a longer file than this build would write
+    if (records > onDisk.records) {
+        // Against its OWN header, not against the current geometry. A file
+        // longer than its own header said it could get is the one case this
+        // cannot distinguish from corruption, and it is no longer reachable by
+        // an ordinary config change — so it is now worth saying out loud.
+        logger.warning("io_history: " + path + " holds " + String(records) +
+                       " records but its header allows " +
+                       String(onDisk.records) + "; ignoring the tail");
+        records = onDisk.records;
     }
     if (body % sizeof(IoRecord) != 0) {
         logger.warning("io_history: " + path + " ends in a partial record, " +
@@ -74,6 +90,7 @@ IoHistory::adoptSegmentLocked(uint8_t slot)
 
     segmentSeq[slot] = onDisk.seq;
     segmentCount[slot] = (uint16_t)records;
+    segmentCapacity[slot] = onDisk.records;
     return true;
 }
 
@@ -130,9 +147,62 @@ IoHistory::begin(uint16_t capacity, FS& filesystem)
     initialised = true;
     logger.info("io_history: ready, " + String(storedTotal) + "/" +
                 String(this->capacity()) + " records across " + String(orderCount) +
-                " of " + String((int)segment::kSegments) + " segments (" +
-                String(segmentRecords) + " each)");
+                " of " + String((int)segment::kSegments) + " segments (new " +
+                "segments hold " + String(segmentRecords) + " each)");
+
+    reportInheritedGeometry();
     return true;
+}
+
+// Says what a history.records change actually did, because "nothing was
+// deleted" is invisible by construction and the interesting half — a shrink
+// evicting a whole OLD segment at once — is a surprise that arrives hours
+// later. The boot log is an 8 KB rolling buffer, so this is said once per boot
+// for as long as the condition lasts rather than once ever.
+void
+IoHistory::reportInheritedGeometry()
+{
+    uint8_t inherited = 0;
+    uint16_t smallest = 0xFFFFU;
+    uint16_t largest = 0;
+    for (uint8_t i = 0; i < orderCount; ++i) {
+        const uint8_t slot = order[i];
+        if (segmentCapacity[slot] == segmentRecords) {
+            continue;
+        }
+        ++inherited;
+        if (segmentCapacity[slot] < smallest) {
+            smallest = segmentCapacity[slot];
+        }
+        if (segmentCapacity[slot] > largest) {
+            largest = segmentCapacity[slot];
+        }
+    }
+
+    if (inherited == 0) {
+        return;
+    }
+
+    logger.warning(
+      "io_history: history.records changed. " + String(inherited) + " of " +
+      String(orderCount) + " stored segments were written at " +
+      String(smallest) + ".." + String(largest) +
+      " records each against the " + String(segmentRecords) +
+      " a new one gets. They are KEPT and fully readable — a capacity change "
+      "is an eviction policy, not a format — and each is recycled to the new "
+      "size when it ages out, so the buffer converges within one full cycle of "
+      "the " + String((int)segment::kSegments) + " slots.");
+
+    if (largest > segmentRecords) {
+        logger.warning(
+          "io_history: that is a REDUCTION, so until it has converged the "
+          "buffer holds more than the configured capacity and each rotation "
+          "drops a whole old segment — up to " + String(largest) +
+          " records at once rather than " + String(segmentRecords) +
+          ". Nothing is discarded to make it happen sooner, so if the point "
+          "was to FREE SPACE, the flash comes back one segment per rotation "
+          "and not at this boot.");
+    }
 }
 
 bool
@@ -150,6 +220,12 @@ IoHistory::rotateLocked(uint8_t& slotOut)
     }
     segmentCount[slot] = 0;
     segmentSeq[slot] = 0;
+    // The slot loses whatever ceiling it inherited here and takes the current
+    // one below. This is the only place a segment's size changes, and it is a
+    // truncate-and-restamp rather than a rewrite — which is what keeps the
+    // convergence after a capacity change free of the mid-file writes that
+    // panicked this board under LittleFS.
+    segmentCapacity[slot] = 0;
 
     const String path = pathFor(slot);
     // FILE_WRITE truncates, which is the point: the segment is reused in place
@@ -181,6 +257,7 @@ IoHistory::rotateLocked(uint8_t& slotOut)
     }
 
     segmentSeq[slot] = nextSeq++;
+    segmentCapacity[slot] = segmentRecords;
     orderCount = segment::buildOrder(segmentSeq, segment::kSegments, order);
     slotOut = slot;
     return true;
@@ -201,7 +278,13 @@ IoHistory::append(const IoRecord& record)
     bool haveSlot = false;
     if (orderCount > 0) {
         const uint8_t newest = order[orderCount - 1];
-        if (segmentCount[newest] < segmentRecords) {
+        // Against the SMALLER of this segment's own header and the current
+        // geometry — see segment::segmentFillLimit(). An inherited segment
+        // grown past its own header loses the tail at the next boot, and one
+        // grown past the current geometry takes space the fit check never
+        // credited.
+        if (segmentCount[newest] <
+            segment::segmentFillLimit(segmentCapacity[newest], segmentRecords)) {
             slot = newest;
             haveSlot = true;
         }

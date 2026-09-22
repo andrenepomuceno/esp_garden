@@ -251,6 +251,421 @@ test_a_full_rotation_keeps_the_history_contiguous()
 
 
 // ---------------------------------------------------------------------------
+// CHANGING history.records MUST NOT DESTROY THE HISTORY
+//
+// A segment's header carries its own capacity, and begin() used to DELETE any
+// segment whose capacity disagreed with the one derived from history.records.
+// So editing the buffer size wiped every stored record at the next boot.
+//
+// `recordSize` guards a FORMAT and stays absolute; capacity guards an EVICTION
+// POLICY, and a 48-byte record written into a 5-per-segment file is
+// byte-identical to one written into a 12-per-segment file. Segments of
+// different sizes now coexist and are recycled to the new size as they age
+// out.
+//
+// WHAT THESE TESTS ARE NOT. src/io_history.cpp reaches Arduino, FreeRTOS and
+// LittleFS and cannot be built for the host at all, so nothing here executes
+// one line of it. The model below is a SECOND implementation of its append and
+// rotate decisions, written against the same core/segment_index.h functions
+// the firmware calls. What it pins is the arithmetic and the interaction
+// between the three functions — which is the half where a wrong answer
+// reorders history instead of failing, and the half that gives right answers
+// until the first rotation and wrong ones forever after.
+
+namespace {
+
+static const uint8_t kSeg = 8;
+static const uint16_t kMaxPer = 32; // biggest per-segment capacity used below
+
+struct History
+{
+    uint16_t target = 0;                ///< recordsPerSegment() right now
+    uint16_t count[kSeg] = {};          ///< records held, by SLOT
+    uint16_t cap[kSeg] = {};            ///< each slot's own header, by SLOT
+    uint32_t seq[kSeg] = {};
+    uint8_t order[kSeg] = {};
+    uint8_t orderCount = 0;
+    uint32_t nextSeq = 1;
+    uint32_t stored = 0;
+    uint32_t evicted = 0;
+    uint32_t written = 0;               ///< ordinals ever appended
+    uint32_t cell[kSeg][kMaxPer] = {};  ///< which ordinal lives where
+
+    // IoHistory::append() plus rotateLocked(), with the filesystem replaced by
+    // a count. The fill test is the one line that had to change for mixed
+    // sizes: against segmentFillLimit(), not against `target`.
+    void append()
+    {
+        uint8_t slot = 0;
+        bool haveSlot = false;
+        if (orderCount > 0) {
+            const uint8_t newest = order[orderCount - 1];
+            if (count[newest] < segmentFillLimit(cap[newest], target)) {
+                slot = newest;
+                haveSlot = true;
+            }
+        }
+        if (!haveSlot) {
+            slot = slotToRecycle(seq, kSeg);
+            if (seq[slot] != 0) {
+                stored -= count[slot];
+                evicted += count[slot];
+            }
+            count[slot] = 0;
+            cap[slot] = target; // a recycled slot is stamped with the new size
+            seq[slot] = nextSeq++;
+            orderCount = buildOrder(seq, kSeg, order);
+        }
+        cell[slot][count[slot]] = written;
+        ++count[slot];
+        ++stored;
+        ++written;
+    }
+
+    // A reboot: history.records changed, begin() re-adopts the files. `cap`
+    // comes from each header and `count` from each file's length, so both
+    // survive; only the target moves. evicted/written are per-boot ordinals
+    // and are NOT reset here, so the invariant below keeps checking across it.
+    void resizeAndReboot(uint16_t newTarget)
+    {
+        target = newTarget;
+        orderCount = buildOrder(seq, kSeg, order);
+    }
+
+    uint32_t liveCap() const
+    {
+        return liveCapacity(cap, count, seq, kSeg, target);
+    }
+};
+
+// Everything that must be true after every single append. One helper rather
+// than scattered assertions, because the failure this guards against is not a
+// crash: it is one record served in place of another.
+static void
+assertConsistent(const History& h)
+{
+    uint32_t seen = 0;
+    for (uint8_t k = 0; k < h.orderCount; ++k) {
+        seen += h.count[h.order[k]];
+    }
+    TEST_ASSERT_EQUAL_UINT32(h.stored, seen);
+    TEST_ASSERT_EQUAL_UINT32(h.stored, h.written - h.evicted);
+
+    // The held records are exactly the contiguous run of ordinals ending at
+    // the newest, in order. That single property rules out a reorder, a
+    // duplicate, a hole and a silent loss at once.
+    uint8_t slot = 0xFF;
+    uint32_t offset = 0;
+    for (uint32_t i = 0; i < h.stored; ++i) {
+        TEST_ASSERT_TRUE(locate(i, h.count, h.order, h.orderCount, slot, offset));
+        TEST_ASSERT_EQUAL_UINT32(h.written - h.stored + i, h.cell[slot][offset]);
+    }
+    TEST_ASSERT_FALSE(locate(h.stored, h.count, h.order, h.orderCount, slot,
+                             offset));
+
+    // No segment is ever written past its OWN header. A file longer than its
+    // header allows loses the tail at the next boot, silently — that is what
+    // adoptSegmentLocked() clamps, and it must never have anything to clamp.
+    for (uint8_t s = 0; s < kSeg; ++s) {
+        if (h.seq[s] != 0) {
+            TEST_ASSERT_TRUE(h.count[s] <= h.cap[s]);
+        }
+    }
+
+    // The /data.json row is "stored / capacity". It may never read as a number
+    // over a smaller one.
+    TEST_ASSERT_TRUE(h.liveCap() >= h.stored);
+}
+
+} // namespace
+
+static void
+test_a_segment_is_full_at_the_smaller_of_its_own_header_and_the_new_geometry()
+{
+    // Growing: the inherited segment stops at its own 5 and is recycled to 12
+    // afterwards. Writing 12 into a file whose header says 5 would lose 7
+    // records at the next boot.
+    TEST_ASSERT_EQUAL_UINT16(5, segmentFillLimit(5, 12));
+
+    // Shrinking: the inherited segment stops at the new 3 even though its own
+    // header allows 12. Letting it run to 12 would take space
+    // ioHistoryFitCapacity() never credited — it measured the file as it is
+    // today — and would delay any reduction in flash use by a whole cycle.
+    TEST_ASSERT_EQUAL_UINT16(3, segmentFillLimit(12, 3));
+
+    // Unchanged geometry is the ordinary case and must be exactly what it was.
+    TEST_ASSERT_EQUAL_UINT16(180, segmentFillLimit(180, 180));
+
+    // A header claiming a capacity of zero can never be appended to, which is
+    // why adoptSegmentLocked() refuses that one value outright rather than
+    // keeping a segment nothing can ever write into. (The refusal itself is in
+    // src/io_history.cpp and is not reachable from here.)
+    TEST_ASSERT_EQUAL_UINT16(0, segmentFillLimit(0, 180));
+}
+
+static void
+test_growing_the_capacity_keeps_every_record_and_converges_by_rotation()
+{
+    History h;
+    h.target = 5;
+    for (uint32_t i = 0; i < 100; ++i) { // well past a full cycle
+        h.append();
+        assertConsistent(h);
+    }
+    const uint32_t before = h.stored;
+    const uint32_t writtenBefore = h.written;
+    TEST_ASSERT_TRUE(before >= 35 && before <= 40);
+
+    // The change. Under the old rule this was the moment every segment was
+    // deleted and `stored` went to 0.
+    h.resizeAndReboot(12);
+    TEST_ASSERT_EQUAL_UINT32(before, h.stored);
+    TEST_ASSERT_EQUAL_UINT32(writtenBefore, h.written);
+    assertConsistent(h);
+
+    // The first append after the change finds the newest inherited segment
+    // already at its own ceiling, so it rotates — dropping the oldest 5, which
+    // is exactly what an ordinary rotation would have dropped.
+    h.append();
+    assertConsistent(h);
+    TEST_ASSERT_EQUAL_UINT32(before - 5 + 1, h.stored);
+
+    // Eight rotations and the geometry is uniform again.
+    for (uint32_t i = 0; i < 8 * 12; ++i) {
+        h.append();
+        assertConsistent(h);
+    }
+    for (uint8_t s = 0; s < kSeg; ++s) {
+        TEST_ASSERT_EQUAL_UINT16(12, h.cap[s]);
+    }
+    TEST_ASSERT_EQUAL_UINT32(96, h.liveCap());
+    TEST_ASSERT_TRUE(h.stored >= 7 * 12 && h.stored <= 8 * 12);
+}
+
+static void
+test_shrinking_the_capacity_evicts_rather_than_deletes()
+{
+    History h;
+    h.target = 12;
+    for (uint32_t i = 0; i < 200; ++i) {
+        h.append();
+        assertConsistent(h);
+    }
+    const uint32_t before = h.stored;
+    TEST_ASSERT_TRUE(before >= 84 && before <= 96);
+
+    // Shrinking is the hard direction: every stored segment can hold four
+    // times what the new geometry allows. Nothing is dropped AT THE CHANGE.
+    h.resizeAndReboot(3);
+    TEST_ASSERT_EQUAL_UINT32(before, h.stored);
+    assertConsistent(h);
+
+    // It converges downwards, monotonically, one whole old segment per
+    // rotation — which is the cost worth knowing: a rotation during the
+    // convergence drops up to 12 records at once, not 3.
+    uint32_t previous = h.stored;
+    uint32_t biggestDrop = 0;
+    for (uint32_t i = 0; i < 8 * 3 + 40; ++i) {
+        h.append();
+        assertConsistent(h);
+        if (h.stored < previous + 1) {
+            // An append that rotated: it added one and evicted a whole
+            // segment, so the segment it dropped was (previous + 1) - stored.
+            const uint32_t drop = (previous + 1) - h.stored;
+            if (drop > biggestDrop) {
+                biggestDrop = drop;
+            }
+        }
+        TEST_ASSERT_TRUE(h.stored <= previous + 1);
+        previous = h.stored;
+    }
+    TEST_ASSERT_EQUAL_UINT32(12, biggestDrop);
+
+    for (uint8_t s = 0; s < kSeg; ++s) {
+        TEST_ASSERT_EQUAL_UINT16(3, h.cap[s]);
+    }
+    TEST_ASSERT_EQUAL_UINT32(24, h.liveCap());
+    TEST_ASSERT_TRUE(h.stored >= 7 * 3 && h.stored <= 8 * 3);
+}
+
+static void
+test_a_resize_that_is_undone_before_it_converges_still_orders_correctly()
+{
+    // The case that is easy to get right for one resize and wrong for two:
+    // slots then carry three different capacities at once, and the oldest is
+    // not slot 0. An operator trying values in /devices.html does exactly this.
+    History h;
+    h.target = 4;
+    for (uint32_t i = 0; i < 60; ++i) {
+        h.append();
+    }
+    h.resizeAndReboot(11);
+    for (uint32_t i = 0; i < 25; ++i) {
+        h.append();
+        assertConsistent(h);
+    }
+    h.resizeAndReboot(6);
+    for (uint32_t i = 0; i < 25; ++i) {
+        h.append();
+        assertConsistent(h);
+    }
+
+    // Three capacities really are live at once, or this test is checking the
+    // uniform case with extra steps.
+    bool seen4 = false, seen11 = false, seen6 = false;
+    for (uint8_t s = 0; s < kSeg; ++s) {
+        if (h.seq[s] == 0) {
+            continue;
+        }
+        seen4 = seen4 || h.cap[s] == 4;
+        seen11 = seen11 || h.cap[s] == 11;
+        seen6 = seen6 || h.cap[s] == 6;
+    }
+    TEST_ASSERT_TRUE(seen4);
+    TEST_ASSERT_TRUE(seen11);
+    TEST_ASSERT_TRUE(seen6);
+
+    for (uint32_t i = 0; i < 120; ++i) {
+        h.append();
+        assertConsistent(h);
+    }
+    for (uint8_t s = 0; s < kSeg; ++s) {
+        TEST_ASSERT_EQUAL_UINT16(6, h.cap[s]);
+    }
+}
+
+static void
+test_the_absolute_walk_survives_a_rotation_between_mixed_size_segments()
+{
+    // IoHistory::forEach() releases the mutex every 64 records and tracks an
+    // ABSOLUTE ordinal, converting with `absolute - evicted()`. With uniform
+    // segments a rotation shifted every logical index by one segment; with
+    // mixed sizes it shifts by whatever the recycled segment held, which is
+    // the number the walk must not assume.
+    History h;
+    h.target = 11;
+    for (uint32_t i = 0; i < 90; ++i) {
+        h.append();
+    }
+    h.resizeAndReboot(4);
+    const uint32_t base = h.evicted; // begin() would restart the ordinals here
+
+    // Walk the first few records, then let appends rotate an eleven-record
+    // segment out from under it.
+    uint32_t absolute = base;
+    for (int i = 0; i < 3; ++i) {
+        const uint32_t index = absolute - h.evicted;
+        uint8_t slot = 0xFF;
+        uint32_t offset = 0;
+        TEST_ASSERT_TRUE(locate(index, h.count, h.order, h.orderCount, slot,
+                                offset));
+        TEST_ASSERT_EQUAL_UINT32(absolute, h.cell[slot][offset]);
+        ++absolute;
+    }
+
+    const uint32_t evictedBefore = h.evicted;
+    while (h.evicted == evictedBefore) {
+        h.append();
+    }
+    TEST_ASSERT_EQUAL_UINT32(11, h.evicted - evictedBefore);
+
+    // The three records already visited are gone, and so are eight the walk
+    // had not reached. The correction is the one forEach() makes: clamp the
+    // absolute ordinal up to evicted() rather than carrying on from where the
+    // logical index used to point.
+    TEST_ASSERT_TRUE(absolute < h.evicted);
+    if (absolute < h.evicted) {
+        absolute = h.evicted;
+    }
+    const uint32_t index = absolute - h.evicted;
+    uint8_t slot = 0xFF;
+    uint32_t offset = 0;
+    TEST_ASSERT_TRUE(locate(index, h.count, h.order, h.orderCount, slot, offset));
+    TEST_ASSERT_EQUAL_UINT32(absolute, h.cell[slot][offset]);
+
+    // And the rest of the walk runs to the end with no repeat and no skip.
+    uint32_t expected = absolute;
+    while (absolute - h.evicted < h.stored) {
+        const uint32_t at = absolute - h.evicted;
+        TEST_ASSERT_TRUE(locate(at, h.count, h.order, h.orderCount, slot, offset));
+        TEST_ASSERT_EQUAL_UINT32(expected, h.cell[slot][offset]);
+        ++absolute;
+        ++expected;
+    }
+    TEST_ASSERT_EQUAL_UINT32(h.written, expected);
+}
+
+static void
+test_locate_crosses_segments_that_hold_different_numbers_of_records()
+{
+    // The existing coverage uses unequal FILLS, which under one capacity only
+    // ever happens to the newest segment. Unequal CAPACITIES put a short
+    // segment in the middle of the order, with the slots out of sequence.
+    //
+    // Slot 6 holds 11 (inherited), slot 3 holds 4, slot 0 holds 2 and is the
+    // newest: 17 records.
+    const uint16_t counts[8] = { 2, 0, 0, 4, 0, 0, 11, 0 };
+    const uint8_t order[8] = { 6, 3, 0 };
+
+    uint8_t slot = 0xFF;
+    uint32_t offset = 0xFFFFFFFF;
+
+    TEST_ASSERT_TRUE(locate(10, counts, order, 3, slot, offset));
+    TEST_ASSERT_EQUAL_UINT8(6, slot);
+    TEST_ASSERT_EQUAL_UINT32(10, offset);
+
+    TEST_ASSERT_TRUE(locate(11, counts, order, 3, slot, offset));
+    TEST_ASSERT_EQUAL_UINT8(3, slot);
+    TEST_ASSERT_EQUAL_UINT32(0, offset);
+
+    TEST_ASSERT_TRUE(locate(15, counts, order, 3, slot, offset));
+    TEST_ASSERT_EQUAL_UINT8(0, slot);
+    TEST_ASSERT_EQUAL_UINT32(0, offset);
+
+    TEST_ASSERT_TRUE(locate(16, counts, order, 3, slot, offset));
+    TEST_ASSERT_EQUAL_UINT8(0, slot);
+    TEST_ASSERT_EQUAL_UINT32(1, offset);
+
+    TEST_ASSERT_FALSE(locate(17, counts, order, 3, slot, offset));
+}
+
+static void
+test_the_reported_capacity_is_the_product_again_once_the_slots_agree()
+{
+    // The row /data.json renders. With one capacity everywhere it has to be
+    // exactly what `segmentRecords * kSegments` always returned, or this change
+    // has quietly redefined a number operators read.
+    uint16_t cap[8], counts[8];
+    uint32_t seq[8];
+    for (uint8_t i = 0; i < 8; ++i) {
+        cap[i] = 180;
+        counts[i] = (i == 3) ? 42 : 180;
+        seq[i] = i + 1;
+    }
+    TEST_ASSERT_EQUAL_UINT32(1440, liveCapacity(cap, counts, seq, 8, 180));
+
+    // A fresh device: every slot unused, so every slot contributes the size it
+    // will be stamped with.
+    uint32_t none[8] = {};
+    uint16_t zero[8] = {};
+    TEST_ASSERT_EQUAL_UINT32(1440, liveCapacity(zero, zero, none, 8, 180));
+
+    // Mid-shrink: four slots still hold 1250 each, four have been recycled to
+    // 180. The ceiling is the real one and not the target, so the row never
+    // reads as more stored than the buffer can hold.
+    for (uint8_t i = 0; i < 4; ++i) {
+        cap[i] = 1250;
+        counts[i] = 1250;
+    }
+    for (uint8_t i = 4; i < 8; ++i) {
+        cap[i] = 180;
+        counts[i] = 180;
+    }
+    TEST_ASSERT_EQUAL_UINT32(4 * 1250 + 4 * 180,
+                             liveCapacity(cap, counts, seq, 8, 180));
+}
+
+// ---------------------------------------------------------------------------
 // Does the requested capacity fit? Nothing is preallocated, so a capacity the
 // partition cannot hold is accepted at boot, grows for days and only then runs
 // the filesystem out from inside append(). These are the checks that stop that
@@ -281,6 +696,12 @@ test_littlefs_charges_for_whole_blocks_and_the_estimate_says_so()
     TEST_ASSERT_EQUAL_UINT32(262144, storageBytes(5000, kHeader, kRecord));
     TEST_ASSERT_EQUAL_UINT32(98304, storageBytes(1440, kHeader, kRecord));
     TEST_ASSERT_EQUAL_UINT32(0, storageBytes(0, kHeader, kRecord));
+
+    // The ceiling ConfigFile::loadFile() carries since 2.20.0. 1250 records per
+    // segment is 60 012 B of data, which LittleFS charges 15 blocks for: 480 KB
+    // against the 468.8 KB the unrounded arithmetic would claim. The comment on
+    // that constant quotes this number and the test is what keeps them equal.
+    TEST_ASSERT_EQUAL_UINT32(491520, storageBytes(10000, kHeader, kRecord));
 }
 
 static void
@@ -305,6 +726,12 @@ test_the_ceiling_does_not_fit_this_device_and_is_reduced_not_accepted()
       fitCapacity(5000, kPartition, kFree, kOnDisk, kHeader, kRecord);
     TEST_ASSERT_EQUAL_UINT32(3408, granted);
     TEST_ASSERT_TRUE(granted < 5000);
+
+    // And raising the ceiling to 10000 changes nothing here, which is the
+    // point of having two checks: on a WROOM-32 the DEVICE refuses, not the
+    // constant, so the same 3408 comes back for either request.
+    TEST_ASSERT_EQUAL_UINT32(
+      3408, fitCapacity(10000, kPartition, kFree, kOnDisk, kHeader, kRecord));
 }
 
 static void
@@ -315,7 +742,7 @@ test_what_is_granted_actually_fits_with_the_reserve_still_intact()
     // reserve untouched once every segment has filled.
     const uint32_t available = kFree + kOnDisk;
     const uint32_t reserve = reserveBytes(kPartition);
-    for (uint32_t asked = 0; asked <= 5000; asked += 137) {
+    for (uint32_t asked = 0; asked <= 10000; asked += 137) {
         const uint32_t granted =
           fitCapacity(asked, kPartition, kFree, kOnDisk, kHeader, kRecord);
         TEST_ASSERT_TRUE(granted <= asked);
@@ -330,7 +757,10 @@ test_cost_and_capacity_are_inverses_of_each_other()
     // capacityForBytes() must be the exact inverse of storageBytes(), or the
     // clamp either wastes blocks or hands back a number that does not fit. One
     // more record per segment has to overflow the budget it was derived from.
-    for (uint32_t budget = 0; budget <= 512u * 1024u; budget += 4096) {
+    // Up to the whole S3 filesystem, not just the WROOM-32's partition: with
+    // the ceiling at 10000 the budgets the clamp has to invert on that family
+    // are four times larger than anything this loop used to reach.
+    for (uint32_t budget = 0; budget <= 2432u * 1024u; budget += 4096) {
         const uint32_t fits = capacityForBytes(budget, kHeader, kRecord);
         TEST_ASSERT_TRUE(storageBytes(fits, kHeader, kRecord) <= budget);
         TEST_ASSERT_TRUE(storageBytes(fits + kSegments, kHeader, kRecord) >
@@ -343,7 +773,7 @@ test_the_grant_is_a_whole_number_of_segments()
 {
     // Segments are equal by construction, so a capacity that is not a multiple
     // of eight is a capacity one segment cannot deliver.
-    for (uint32_t asked = 1; asked <= 5000; asked += 91) {
+    for (uint32_t asked = 1; asked <= 10000; asked += 91) {
         const uint32_t granted =
           fitCapacity(asked, kPartition, kFree, kOnDisk, kHeader, kRecord);
         if (granted != asked) {
@@ -422,9 +852,11 @@ test_the_8mb_filesystem_holds_the_record_ceiling_with_room_to_spare()
 {
     const uint32_t kFs = 0x260000u;   // 2 490 368 B = 2432 KB, the spiffs row
 
-    // The shipped ConfigFile ceiling, in whole blocks. 256 KB, not the 120 KB
-    // the header quoted for a 2500 that no longer applies.
-    TEST_ASSERT_EQUAL_UINT32(262144u, storageBytes(5000, kHeader, kRecord));
+    // The shipped ConfigFile ceiling, in whole blocks. 480 KB since 2.20.0
+    // raised it from 5000 to 10000; 256 KB is what the previous one cost, and
+    // neither is the 120 KB the header once quoted for a 2500 that no longer
+    // applies.
+    TEST_ASSERT_EQUAL_UINT32(491520u, storageBytes(10000, kHeader, kRecord));
 
     // The first partition on which max(64 KB, partition / 8) picks the
     // proportional term. On every 4 MB board both terms are 64 KB, so the
@@ -434,18 +866,50 @@ test_the_8mb_filesystem_holds_the_record_ceiling_with_room_to_spare()
 
     // 212 KB of block-rounded web assets is measured, not asserted here; what
     // the header needs is that the other two plus that figure still leave the
-    // filesystem several times larger than the worst case it must hold.
+    // filesystem comfortably larger than the worst case it must hold. Raising
+    // the ceiling moved that margin from 3.1x to 2.4x, which is the honest
+    // number and the reason this assertion says 2 and not 3.
     const uint32_t assets = 212u * 1024u;
-    const uint32_t worst = assets + storageBytes(5000, kHeader, kRecord) +
+    const uint32_t worst = assets + storageBytes(10000, kHeader, kRecord) +
                            reserveBytes(kFs);
-    TEST_ASSERT_EQUAL_UINT32(790528u, worst);   // 772 KB
-    TEST_ASSERT_TRUE(worst * 3u < kFs);
+    TEST_ASSERT_EQUAL_UINT32(1019904u, worst);   // 996 KB
+    TEST_ASSERT_TRUE(worst * 2u < kFs);
 
     // And the whole ceiling is granted on this partition rather than clamped,
     // which is what "the cap can be raised later without a serial reflash"
     // means. Free space here is the partition minus those assets.
     TEST_ASSERT_EQUAL_UINT32(
-      5000, fitCapacity(5000, kFs, kFs - assets, 0, kHeader, kRecord));
+      10000, fitCapacity(10000, kFs, kFs - assets, 0, kHeader, kRecord));
+}
+
+static void
+test_what_each_family_actually_resolves_to_at_the_raised_ceiling()
+{
+    // The two answers the 2.20.0 change has to be able to state. Both are
+    // arithmetic on numbers read off the two boards, not measurements taken
+    // after the change: nothing here has run on hardware.
+    //
+    // WROOM-32, device 6224: 512 KB partition, the free space and segment
+    // bytes at the top of this section. The ceiling is irrelevant there — 5000
+    // and 10000 both come back as 3408, because what refuses is the partition.
+    TEST_ASSERT_EQUAL_UINT32(
+      3408, fitCapacity(10000, kPartition, kFree, kOnDisk, kHeader, kRecord));
+
+    // ESP32-S3, device b580: 2432 KB filesystem reporting 248 KB used, with
+    // 1440 records already stored at 180 per segment. 10000 is granted whole,
+    // at 480 KB of a partition that would in fact hold 40 952 — so on this
+    // family the CEILING is the binding limit and the device is not.
+    const uint32_t s3Fs = 0x260000u;
+    const uint32_t s3Free = (2432u - 248u) * 1024u;
+    const uint32_t s3OnDisk = 8u * (kHeader + 180u * kRecord);
+    TEST_ASSERT_EQUAL_UINT32(
+      10000, fitCapacity(10000, s3Fs, s3Free, s3OnDisk, kHeader, kRecord));
+    TEST_ASSERT_EQUAL_UINT32(
+      40952, capacityForBytes(s3Free + s3OnDisk - reserveBytes(s3Fs), kHeader,
+                              kRecord));
+    TEST_ASSERT_TRUE(storageBytes(10000, kHeader, kRecord) +
+                       reserveBytes(s3Fs) <=
+                     s3Free + s3OnDisk);
 }
 
 static void
@@ -491,6 +955,14 @@ run_segment_index_tests(void)
     RUN_TEST(test_the_order_is_rebuilt_oldest_first_skipping_unused_slots);
     RUN_TEST(test_a_fresh_device_has_no_order_at_all);
     RUN_TEST(test_a_full_rotation_keeps_the_history_contiguous);
+    RUN_TEST(
+      test_a_segment_is_full_at_the_smaller_of_its_own_header_and_the_new_geometry);
+    RUN_TEST(test_growing_the_capacity_keeps_every_record_and_converges_by_rotation);
+    RUN_TEST(test_shrinking_the_capacity_evicts_rather_than_deletes);
+    RUN_TEST(test_a_resize_that_is_undone_before_it_converges_still_orders_correctly);
+    RUN_TEST(test_the_absolute_walk_survives_a_rotation_between_mixed_size_segments);
+    RUN_TEST(test_locate_crosses_segments_that_hold_different_numbers_of_records);
+    RUN_TEST(test_the_reported_capacity_is_the_product_again_once_the_slots_agree);
     RUN_TEST(test_littlefs_charges_for_whole_blocks_and_the_estimate_says_so);
     RUN_TEST(test_a_capacity_that_fits_is_granted_unchanged);
     RUN_TEST(test_the_ceiling_does_not_fit_this_device_and_is_reduced_not_accepted);
@@ -504,4 +976,5 @@ run_segment_index_tests(void)
     RUN_TEST(test_the_reserve_has_a_floor_and_a_fraction_and_takes_the_larger);
     RUN_TEST(test_the_compiled_default_capacity_is_not_exempt_from_the_fit);
     RUN_TEST(test_the_8mb_filesystem_holds_the_record_ceiling_with_room_to_spare);
+    RUN_TEST(test_what_each_family_actually_resolves_to_at_the_raised_ceiling);
 }

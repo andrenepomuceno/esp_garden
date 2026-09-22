@@ -36,6 +36,15 @@
 // `recordSize` and begin() drops any segment that disagrees — which is the
 // point: reading 40-byte records out of a 48-byte file would silently return
 // garbage that looks like data.
+//
+// Changing `history.records` does NOT. It used to: the header also carries the
+// segment's capacity and begin() dropped anything that disagreed, so editing
+// the buffer size in /devices.html silently wiped every stored record at the
+// next boot. `recordSize` guards a FORMAT and has to be absolute; capacity
+// guards an EVICTION POLICY, and a 48-byte record written into a
+// 375-per-segment file is byte-identical to one written into a 1250-per-segment
+// file. Segments of different sizes now coexist and are recycled to the new
+// size as they age out. See core/segment_index.h — segmentFillLimit().
 
 #define IO_HISTORY_MAX_MOISTURE 4
 
@@ -72,7 +81,10 @@ struct IoSegmentHeader
 {
     uint32_t magic;
     uint16_t recordSize; ///< sizeof(IoRecord) as written
-    uint16_t records;    ///< this segment's capacity, to catch a config change
+    uint16_t records;    ///< THIS segment's own ceiling: how long the file may
+                         ///< get. Not a claim about the other seven, and not a
+                         ///< version — a segment stamped with a different
+                         ///< number is read, not deleted.
     uint32_t seq;        ///< monotonic, higher is newer; 0 is never written
 };
 #pragma pack(pop)
@@ -90,9 +102,12 @@ class IoHistory
 {
   public:
     // Adopts whatever segments are already on disk and agree with this build.
-    // A segment that disagrees about magic, record size or per-segment capacity
-    // is deleted rather than reinterpreted: a half-understood binary log is
-    // worse than none.
+    // A segment that disagrees about magic or record size is deleted rather
+    // than reinterpreted: a half-understood binary log is worse than none.
+    //
+    // A segment whose CAPACITY disagrees is kept. `capacity` here is the
+    // requested total, so it changes whenever history.records does, and
+    // dropping on it meant a buffer-size edit destroyed the whole archive.
     //
     // Nothing is preallocated. The old design wrote the whole file at begin()
     // so an append could never fail for space; with append-only segments the
@@ -130,9 +145,16 @@ class IoHistory
     using Visitor = bool (*)(const IoRecord& record, uint32_t index, void* ctx);
     size_t forEach(Visitor visit, void* ctx);
 
+    // Records holdable before something has to be dropped. This is the sum of
+    // the slots' own ceilings rather than `segmentRecords * kSegments`,
+    // because after a history.records change the segments on disk do not all
+    // share one size. It converges back to that product within one full cycle
+    // of the slots, and it is never below stored() — a "12000 / 3000" row is
+    // what the simpler arithmetic would print the day after a shrink.
     uint32_t capacity() const
     {
-        return (uint32_t)segmentRecords * segment::kSegments;
+        return segment::liveCapacity(segmentCapacity, segmentCount, segmentSeq,
+                                     segment::kSegments, segmentRecords);
     }
     uint32_t stored() const { return storedTotal; }
     bool ready() const { return initialised; }
@@ -173,11 +195,22 @@ class IoHistory
     bool rotateLocked(uint8_t& slotOut);
     bool adoptSegmentLocked(uint8_t slot);
 
+    // Logs what a history.records change did to the segments already on disk,
+    // if anything. Called from begin() once the table is built.
+    void reportInheritedGeometry();
+
     FS* fs = nullptr;
     bool initialised = false;
 
-    uint16_t segmentRecords = 0;
+    uint16_t segmentRecords = 0; ///< what a NEW segment is stamped with
     uint16_t segmentCount[segment::kSegments] = {}; ///< records held, by SLOT
+    // Each slot's own ceiling, read from its header — which is `segmentRecords`
+    // for anything this configuration wrote and the previous value for anything
+    // it inherited. Sixteen bytes so that a capacity change costs nothing:
+    // without it, append() would have to judge an inherited segment by the new
+    // geometry, and writing past a file's own header loses the tail at the
+    // next boot.
+    uint16_t segmentCapacity[segment::kSegments] = {};
     uint32_t segmentSeq[segment::kSegments] = {};   ///< 0 means unused, by SLOT
     uint8_t order[segment::kSegments] = {};         ///< slots, oldest first
     uint8_t orderCount = 0;

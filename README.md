@@ -270,14 +270,24 @@ uploading the filesystem:
     },
     "history": {                 // on-device append-only I/O snapshots
         // Total capacity, spread over 8 segments; 0 disables. 1440 = 24 h at
-        // 60 s. The ceiling is 5000, which is what the RECORD costs: 256 KB of
-        // segment files once every segment has filled, LittleFS blocks
-        // included. Whether that fits is a separate question and a per-device
-        // one, so the firmware also measures it against the partition at boot
-        // and CLAMPS with a loud log line naming both numbers. /config.json is
-        // never rewritten by that clamp, and Status.History in /data.json says
-        // so for as long as it applies. On device 6224 today, 5000 resolves to
-        // 3408 records.
+        // 60 s. The ceiling is 10000 (raised from 5000 in 2.20.0), which is
+        // what the RECORD costs: 480 KB of segment files once every segment
+        // has filled, LittleFS blocks included. Whether that fits is a
+        // separate question and a per-device one, so the firmware also
+        // measures it against the partition at boot and CLAMPS with a loud log
+        // line naming both numbers. /config.json is never rewritten by that
+        // clamp, and Status.History in /data.json says so for as long as it
+        // applies. On device 6224 today, both 5000 and 10000 resolve to 3408
+        // records; on the S3 carrier's 2432 KB filesystem 10000 is granted
+        // whole.
+        //
+        // CHANGING THIS NO LONGER DESTROYS THE STORED HISTORY. It used to:
+        // the per-segment capacity is in each segment's header and begin()
+        // deleted anything that disagreed. Since 2.20.0 segments written under
+        // the previous value are kept and read, and are recycled to the new
+        // size as they age out — so a reduction converges downwards over one
+        // full cycle of the eight slots instead of emptying the buffer at the
+        // next boot, and the flash it frees comes back one segment at a time.
         "records": 1440,
         "periodSec": 60          // one record per this many seconds
     },
