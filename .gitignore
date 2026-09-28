@@ -20,3 +20,7 @@ __pycache__/
 chave_tb*
 .tb_key*
 tb_key*
+
+# Working notes: kept locally, not versioned
+tasks-inbox/
+tasks-done/
