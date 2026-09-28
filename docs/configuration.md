@@ -228,3 +228,32 @@ written for a single-relay device still loads unchanged, as exactly one relay
 and one probe.
 
 The device ID is printed to the serial monitor on every boot (`ID: 1a2b`).
+
+## Runtime hardware — the build no longer knows what is fitted
+
+`HAS_MOISTURE_SENSOR` and friends are **gone**, along with `RELAY_COUNT` and `MOISTURE_SENSOR_COUNT`. Every driver compiles into every image; what a board actually has comes from `config.json` and is counted at load:
+
+| Was | Is | Decided by |
+|---|---|---|
+| `-D RELAY_COUNT=4` | `config.relayCount`, capped by `RELAY_MAX` (8) | length of `io.relays` |
+| `-D MOISTURE_SENSOR_COUNT=3` | `config.moistureCount`, capped by `MOISTURE_MAX` (4) | length of `io.soilMoisture` |
+| `-D HAS_DHT_SENSOR` | `config.dhtFitted` | `io.dht` key exists |
+| — (new kind) | `config.sht4xFitted` | `io.sht4x` key exists. **Declaring both clears `dhtFitted`** — see [Two ambient sensors](ambient-sensors.md) |
+| `-D HAS_LUMINOSITY_SENSOR` | `config.luminosityFitted` | `io.luminosity` key exists |
+| `-D HAS_WATER_LEVEL_SENSOR` | `config.waterLevelFitted` | `io.waterLevel` key exists |
+| `-D HAS_FLOW_SENSOR` | `config.flowFitted` | `io.flow` key exists |
+| `-D HAS_FLOAT_SWITCH` | `config.floatFitted` | `io.floatSwitch` key exists |
+| `-D MOISTURE2_FIELD=n` | `config.thingSpeakMoisture2Field` | `thingSpeak.moisture2Field` | **Presence IS the key.** There is no separate `enabled` flag, because one would drift out of step with the pin it names. Deleting a sensor in `/devices.html` means removing its key.
+
+Measured before it was chosen: the minimal board was 1.166 MB and the fully populated one 1.187 MB, so the whole `HAS_*` split was buying **21 KB out of a 1.69 MB slot** — against 75 `#ifdef` sites, five build shapes to keep in step, and a sensor you could not add without a toolchain. **What is still compile-time, and must stay so:** the set of KINDS. A DHT needs the DHT driver linked in; no web page adds a kind there is no code for. `GET /capabilities.json` publishes the kinds, the maxima and the usable pins so the UI never restates a rule the firmware owns.
+
+Traps this created, every one of which was a real defect first:
+
+- **`relayPinsSafeInit()` runs over `RELAY_MAX`, not `relayCount`** — at its first call the config has not been read, and a floating pin on an active-low board reads as energise. So slots past the count must have **no pin**: `clearUndeclaredRelayPins()` sets them to `kNoPin` after the load, or the second call force-drives the compiled defaults over whatever the config gave those GPIOs to.
+- **`kNoPin` has to be honoured everywhere, not just at init.** A relay row saved without a pin is startable otherwise: the index check passes, `startRelay()` reports success, the dashboard counts down, and `digitalWrite(255, …)` does nothing.
+- **Dropping an `#ifdef` is not the same as deleting it.** Every guard removed needs a runtime test in its place. Missing ones made `/data.json` report a confident `0.00` for sensors that were not there, and made the history record write `FLOAT_VALID` with "lowered" on a board with no float — the exact case that flag exists to distinguish.
+- **A count constant is not a presence test.** `MOISTURE_MAX == 1` is always false, so the single-probe `"Soil Moisture"` label — the `/data.json` key dashboards have read for years — silently became `"Soil Moisture 1"`. The test belongs where `moistureCount` is known.
+- **Bounds that were compile-time are now per-device.** A schedule aimed at relay 3 on a two-relay board has to be rejected at load, not fire daily into `startRelay()`'s index check.
+- **`config.floatInterlock` cannot outlive `io.floatSwitch`.** `loadFile()` clears it when no switch is declared; otherwise removing the sensor leaves a veto that refuses every watering on a reading nothing produces.
+
+Pin rules live in exactly one place — `pinIsADC1`, `pinIsInputOnly`, `pinIsFlash`, `pinIsBonded`, `pinIsSerialConsole`, `pinIsStrapping` and `pinMaxGpio` in `config_pins.cpp`, forwarding to `include/core/pin_rules.h`. **The compiled DEFAULT map is a second per-family table**, `include/core/default_pins.h`, and it earns the same treatment for the same reason: `relayPinsSafeInit()` drives it 1.5 s before the config is read, `loadSensor()` keeps it whenever an `io` entry carries no `"pin"` key, and neither `validatePins()` (which only logs) nor `documentPinsAreUsable()` (which skips an entry with no pin) refuses the result. `validatePins()` uses them at boot, `documentPinsAreUsable()` refuses a bad map at **save** time (boot is too late: the document is already on flash), and `/capabilities.json` derives the UI's pin lists by walking every GPIO through the same predicates. **`pinMaxGpio()` is the seventh because three of those consumers each spelled `39` into their own source**, and a literal 39 on an S3 hides GPIO 40-48 — its UART, its strapping pins and half its spares — from the picker, refuses them at save time, and turns a valid probe power pin into `kNoPin` so the bank is simply never energised.
