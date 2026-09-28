@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Operating guide for **esp-garden**. Companion doc: [README.md](README.md).
+Operating guide for **esp-garden**. [README.md](README.md) is the entry point and [docs/](docs/) holds the reference documentation, one file per subsystem.
 
 **Reference repo:** `fullbot-firmware` (ESP32-S3 firmware for the FullBot solar-panel cleaning robot), at `~/solarbot/fullbot-firmware` **inside WSL** (`wsl.exe -e bash -lc '...'` from Windows — it is not on a `/mnt` path). It has its own `CLAUDE.md` plus a `docs/` directory. The user's explicit instruction is to **reuse it freely** — scheduler, MQTT, web UI, web server, OTA, config, logging. Read it before designing anything new here; most problems this repo is about to hit are already solved there. See [Porting from fullbot-firmware](#porting-from-fullbot-firmware) for what transplants cleanly and what does not.
 
@@ -1617,7 +1617,7 @@ Concrete gotchas measured in this tree:
 - **No AI co-author trailers** in commits. **Never `git add -A`** — stage explicitly. **Commits and pushes no longer need to be asked for** (standing authorization from the repo owner), but the gate does not move: five envs build, `pio test -e native` passes and `python scripts/check_lines.py` is green before a commit exists. Never commit `data/config.json` or anything under `backups/`.
 - Commit format: imperative + conventional tag (`feat | fix | refactor | chore | docs | test | perf | style`), e.g. `fix(tasks): construct DHT after config load`.
 - **Never overwrite `data/config.json`** (gitignored, holds a real device's credentials) and never commit real credentials — only `data/config.template.json` is tracked.
-- Do not create new `.md` files unless asked; update this file or `README.md`.
+- **Prose belongs in `docs/`, not in code comments and not here.** A comment is not documentation. When a file being changed carries a large explanatory comment block, the block goes to `docs/` and out of the source. `README.md` stays an entry point and an index; this file stays the operating guide.
 
 ## End-of-change checklist
 
