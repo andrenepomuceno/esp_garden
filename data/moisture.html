@@ -39,17 +39,9 @@
     <div id="status"></div>
 
     <div class="alert alert-secondary hint">
-      Dry / Humid / Wet come from a <strong>Gaussian naive Bayes</strong> model
-      fitted per probe, one Gaussian per class. The labels are not guessed from
-      the shape of the data &mdash; they come from the <strong>watering
-      record</strong>: soil is wettest shortly after its pump runs and driest
-      just before the next time it does. Training runs once a day and
-      <em>accumulates</em>, because one day holds only a watering cycle or two.
-      <br>
-      A probe reports nothing until its model earns it. That is deliberate: an
-      earlier attempt to derive these bands by clustering a month of history
-      produced three confident groups that were an artefact of the drying trend
-      plus the readings of a disconnected probe.
+      Dry / Humid / Wet come from a per-probe model trained on that probe's own
+      watering record, falling back to the two-point calibration. A probe that
+      fails a gate below reports no badge at all.
     </div>
 
     <div id="probes"></div>

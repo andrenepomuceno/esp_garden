@@ -46,13 +46,7 @@
     <div id="status"></div>
 
     <div class="alert alert-secondary hint">
-      <strong>Which peripherals this board has is configuration, not a build
-      flag.</strong> A sensor is fitted if and only if its key exists in
-      <code>io</code>; the number of relays is the length of
-      <code>io.relays</code> and the number of probes the length of
-      <code>io.soilMoisture</code>. Adding and deleting here rewrites
-      <code>config.json</code>, which the device only reads at boot &mdash; so
-      <strong>nothing changes until the device restarts</strong>.
+      Changes take effect after a restart.
       <div id="caps-note" class="mt-1 text-muted"></div>
     </div>
 
@@ -82,16 +76,8 @@
         <button id="button-add-relay" type="button" class="btn btn-outline-secondary btn-sm" disabled>+ Add relay</button>
         <span id="relay-add-note" class="hint text-muted ms-2"></span>
         <div class="hint text-muted mt-1">
-          <strong>Index 0 is the watering relay on every board.</strong>
-          TalkBack's <code>watering:&lt;ms&gt;</code>, the legacy
-          <code>watering</code> parameter of <code>/control</code> and ThingSpeak
-          field 2 all address it, and every schedule targets a relay by index
-          &mdash; so deleting row 0, or deleting any row above another, changes
-          what all of those mean. <em>Active level</em> is the level that
-          energises the relay: 0 for the usual opto-isolated board, which idles
-          high. <em>Test</em> switches the <strong>running</strong> relay on for
-          three seconds, on the pin the device booted with, not the one selected
-          above.
+          Relays are addressed by index: deleting a row renumbers the ones
+          below it. <em>Test</em> switches the running relay for three seconds.
         </div>
       </div>
     </div>
@@ -126,43 +112,9 @@
         <button id="button-add-probe" type="button" class="btn btn-outline-secondary btn-sm" disabled>+ Add probe</button>
         <span id="probe-add-note" class="hint text-muted ms-2"></span>
         <div class="hint text-muted mt-1">
-          Each probe carries its own two reference readings: <em>dry</em> taken
-          in air, <em>wet</em> taken submerged. They live in the
-          <code>moisture</code> array, which stays parallel to this table &mdash;
-          delete a probe here and its calibration goes with it instead of sliding
-          onto the next probe. While the two are equal the probe counts as
-          uncalibrated and the dashboard shows no Dry/Humid/Wet badge, which is
-          honest rather than a band invented from nothing. A disconnected probe
-          does NOT read at a rail &mdash; measured here, an unplugged one sat
-          mid-scale and quiet, indistinguishable from soil by value alone
-          &mdash; so it is not a usable dry anchor either.
-        </div>
-        <div class="alert alert-secondary small mb-0 mt-2">
-          <em>Sensor</em> is a free label plus the probe's polarity.
-          <em>Reads lower when wet</em> is what the capacitive v2 modules do; a
-          resistive divider usually does the opposite. Getting it backwards
-          inverts the number on the dashboard without the classifier noticing,
-          because the classifier accepts either direction. Two readings settle
-          it: one in air, one in water &mdash; whichever is higher tells you
-          the sign.
-          <em>Power</em> names a GPIO that energises the probe only while it is
-          read. A resistive probe left permanently powered is an electrolysis
-          cell in wet soil and dissolves its own electrode in weeks; at a 1 s
-          period and a few milliseconds of reading, it is live under 1 % of the
-          time. Mind the current: an LM393 module with its LED draws around
-          20 mA, which is most of what one GPIO should source, so two of them
-          want a small MOSFET rather than a shared pin.
-          <em>Always on</em> gives that up and holds the pin high
-          (<code>powerAlways</code>). It also destroys the READING, which is the
-          faster problem: measured on this firmware, a probe with the flag set
-          sat at 0.00 &mdash; the ADC rail &mdash; from the first sample after
-          boot, and read 44.1 again the moment the pin was switched. The
-          settle delay is not a compromise, it is the measurement. One power
-          pin usually feeds a whole bank, and the flag is answered per PIN: it
-          holds the bank up if any probe on it asks.
-          Changing the label or the polarity DISCARDS that probe's trained
-          model &mdash; which is the point, since the stored bands describe a
-          sensor that is no longer in the pot.
+          <em>Dry</em> is read in air, <em>wet</em> submerged. While the two are
+          equal the probe is uncalibrated and no badge is shown. Changing the
+          label or the polarity discards that probe's trained model.
         </div>
       </div>
     </div>
@@ -187,15 +139,8 @@
         </div>
       </div>
       <div class="card-footer hint text-muted">
-        Unticking a box removes the key from <code>io</code> entirely, which is
-        how the device is told the hardware is not there. A phantom sensor is not
-        harmless: a flow meter that is not wired counts interference as flow, and
-        a float switch that is not wired reads at its pull-up, which means
-        &ldquo;empty&rdquo;. A name is the dashboard label
-        <code>/data.json</code> keys <code>Inputs</code> by; on the DHT it is a
-        <em>prefix</em>, because one pin produces two channels. Names are labels,
-        not identifiers &mdash; telemetry keys and the history record stay
-        positional, so a rename never rewrites stored data.
+        Unticking a box removes the sensor from the config. Names are labels:
+        telemetry keys and the history record stay positional.
       </div>
     </div>
 

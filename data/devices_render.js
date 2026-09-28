@@ -1,10 +1,3 @@
-// ESP Garden — the devices page's HTML builders: the three tables, the GPIO
-// pickers and the pin map.
-//
-// Split out of devices.js when that file crossed the 1000-line gate. Nothing
-// here reaches the network or writes the model; it paints what the model half
-// already decided, and every value it interpolates goes through
-// espUI.escapeHtml.
 (function (global) {
   var ctx = null;   // { caps, live, model, ready } getters, owned by devices.js
   var esc = null;   // bound in use(), once auth.js has run
@@ -32,17 +25,10 @@
     return '<span class="text-muted">&mdash;</span>';
   }
 
-  // A pin this firmware does not offer for the role keeps an option of its own
-  // instead of falling through to the first entry: silently moving a live
-  // peripheral onto another GPIO is worse than showing the bad value and
-  // refusing to save.
   function pinSelect(cls, attributes, role, selected, noneLabel) {
     var options = '';
     var known = false;
 
-    // A power pin is optional in a way a sensor pin is not, so it gets an
-    // explicit "none" entry rather than the "select a GPIO" placeholder that
-    // reads as something still to be filled in.
     if (noneLabel) {
       options += '<option value=""' + (selected === null ? ' selected' : '') +
                  '>' + esc(noneLabel) + '</option>';
@@ -100,11 +86,7 @@
                   Number(running.on) ? 'On' : 'Off')
           : '<span class="text-muted small">' + esc(missingNote(r)) + '</span>';
 
-        var note = (i === 0)
-          ? '<div class="form-text hint">Watering relay: TalkBack, the legacy ' +
-            '<code>watering</code> control and ThingSpeak field 2 all address ' +
-            'index 0.</div>'
-          : '';
+        var note = '';
 
         html += '<tr>' +
           '<td class="text-muted small">' + i + '</td>' +
@@ -139,10 +121,6 @@
       : '');
   }
 
-  // One relay picker, used by the float switch's refill relay and by each
-  // probe's feeding pump. A stored index the board no longer has keeps its own
-  // option rather than falling through to relay 0 — silently retargeting
-  // either of those points something at the watering pump.
   function relayPickerOptions(selected) {
   var model = ctx.model();
   var options = '<option value="-1"' +
@@ -161,19 +139,10 @@
   return options;
   }
 
-  // io.soilMoisture[i].powerAlways: hold the bank up instead of pulsing it.
-  //
-  // The cost is spelled out only on the rows that ASKED for it, the same rule
-  // /data.json's `fault` follows — a caution repeated under four healthy
-  // probes is a caution the eye learns to skip. What it costs in general is
-  // one paragraph in devices.html, where somebody reads it before ticking.
   function powerAlwaysHtml(i, p) {
     var note = p.powerAlways
-      ? '<div class="form-text hint text-danger">Electrolysis: a resistive ' +
-        'probe powered in wet soil dissolves its electrode in weeks. ' +
-        'Measured here it also pinned the reading to 0.00 &mdash; the ADC ' +
-        'rail &mdash; and 44.1 came back the moment the pin was switched.' +
-        '</div>'
+      ? '<div class="form-text hint text-danger">Electrolysis risk, and the ' +
+        'reading can pin to the ADC rail.</div>'
       : '';
     return '<div class="form-check form-check-sm mt-1">' +
       '<input class="form-check-input ms-power-always" type="checkbox"' +
@@ -220,9 +189,6 @@
           '<td>' + pinSelect('ms-power', 'data-row="' + i + '"', 'output',
                              (typeof p.powerPin === 'number') ? p.powerPin : null,
                              'always on') +
-            // The active level, exactly as a relay row offers one: a probe
-            // switched by a P-channel MOSFET is energised LOW, and without
-            // this the only route to that was the raw JSON editor.
             '<select class="form-select form-select-sm ms-power-on mt-1"' +
             ' data-row="' + i + '" title="the level that energises the probe">' +
             '<option value="1"' + (p.powerOn === 0 ? '' : ' selected') +
@@ -354,8 +320,8 @@
               ' <span class="small">' + esc(names.join(' + ')) + '</span></span>';
     });
     $('#pin-map').html(html + '<div class="hint text-muted mt-2">' +
-      'Red is two peripherals on one pin, which is refused. Amber is a ' +
-      'strapping pin, which is allowed. Pins not listed are free.</div>');
+      'Red: two peripherals on one pin, refused. Amber: strapping pin, ' +
+      'allowed.</div>');
   }
 
   function use(context) {
