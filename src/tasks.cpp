@@ -41,6 +41,7 @@ static TSScheduler g_taskScheduler;
 static TSFreeRTOSCriticalRunner g_criticalRunner(g_taskScheduler);
 
 DECLARE_TASK(io, 1000);                         // 1 s
+DECLARE_TASK(moisture, 1000);                   // 1 s
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
 DECLARE_TASK(checkInternet, 15 * 1000);         // 15 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
@@ -105,6 +106,12 @@ static void
 relaysTaskHandler()
 {
     relaysTick();
+}
+
+static void
+moistureTaskHandler()
+{
+    sensorsReadMoisture();
 }
 
 static void
@@ -555,6 +562,7 @@ tasksSetup()
     }
 
     g_taskScheduler.addTask(&g_ioTask);
+    g_taskScheduler.addTask(&g_moistureTask);
     g_taskScheduler.addTask(&g_relaysTask);
     g_taskScheduler.addTask(&g_ledBlinkTask);
     g_taskScheduler.addTask(&g_clockUpdateTask);
@@ -649,6 +657,14 @@ tasksSetup()
 #endif
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
+
+    const unsigned moisturePeriod =
+      (unsigned)config.moisturePeriodSec * 1000u;
+    g_moistureTask.setPeriod(moisturePeriod);
+    g_moistureTask.enableDelayed(moisturePeriod);
+    logger.info("Soil moisture sampled every " +
+                String(config.moisturePeriodSec) + " s");
+
     sensorsSetupAmbient();
     // Only when one is declared. Ticking at 1 Hz into a handler that returns
     // at its null check wastes a scheduler slot, and the bucket caps at 16.

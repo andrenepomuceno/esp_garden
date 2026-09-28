@@ -15,6 +15,7 @@ const time_t g_safeTimestamp = 1609459200; // 01/01/2021
 // their publish queue from them, so each average still covers exactly one
 // publish interval.
 extern const unsigned g_ioTaskPeriod;
+extern const unsigned g_moistureTaskPeriod;
 extern const unsigned g_mqttTaskPeriod;
 extern const unsigned g_ambientTaskPeriod;
 

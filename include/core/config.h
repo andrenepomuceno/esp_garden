@@ -254,6 +254,8 @@ class ConfigFile
     // new firmware when a different sensor arrives.
     uint16_t soilMoistureSettleMs[MOISTURE_MAX];
 
+    int moisturePeriodSec;
+
     // Display labels. /data.json keys Inputs by these, so they are what the
     // dashboard, the history charts and the table show. They are labels, not
     // identifiers: telemetry keys and the Relays array stay index-based, so

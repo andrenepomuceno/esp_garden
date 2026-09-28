@@ -60,6 +60,7 @@ SIM_CONFIG = {
     "history": {"records": 1440, "periodSec": 60},
     "io": {
         "button": 0,
+        "soilMoisturePeriodSec": 1,
         "relays": [
             {"pin": 19, "on": 0, "name": "Watering"},
             {"pin": 16, "on": 0, "name": "Relay 2"},
@@ -139,6 +140,9 @@ def config_masked() -> dict:
         # empty stored value would make every save fail.
         if doc.get(section, {}).get(key):
             doc[section][key] = CONFIG_SECRET_MASK
+    io = doc.get("io")
+    if isinstance(io, dict) and "soilMoisturePeriodSec" not in io:
+        io["soilMoisturePeriodSec"] = 1
     return doc
 
 

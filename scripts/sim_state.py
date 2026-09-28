@@ -297,6 +297,10 @@ class DeviceState:
         self._history_next = time.time() + self.history_period_s
         self._history_reads = 0
 
+        self.moisture_period_s = max(1.0, float(
+            SIM_CONFIG.get("io", {}).get("soilMoisturePeriodSec", 1)))
+        self._moisture_next = 0.0
+
     def history_read_hook(self) -> None:
         """Fault injection: recycle a segment between two /history.json reads.
 
@@ -601,7 +605,12 @@ class DeviceState:
                 if relay["on"] and now >= relay["until"]:
                     relay["on"] = 0
                     finished.append(self.relay_names[index])
-            for sensor in self._sensors.values():
+            sample_moisture = now >= self._moisture_next
+            if sample_moisture:
+                self._moisture_next = now + self.moisture_period_s
+            for name, sensor in self._sensors.items():
+                if name.startswith("Soil Moisture") and not sample_moisture:
+                    continue
                 sensor.update()
 
             # A flow meter reads zero unless something is pumping. Faking a

@@ -337,6 +337,11 @@ uploading the filesystem:
             "hz": 100000         //   10 000..1 000 000; standard mode ships.
         },                       //   It is brought up only when an I2C DEVICE
                                  //   is declared, so this alone drives nothing.
+        "soilMoisturePeriodSec": 1,       // how often the probe bank is
+                                          //   sampled, in seconds. 1..10000;
+                                          //   anything outside that is
+                                          //   absurd, warned about at boot,
+                                          //   and the previous value kept.
         "soilMoisture": [                 // bare pin, or an object:
             36,
             {"pin": 35, "name": "Bed 2",  // optional power gating: the
@@ -959,7 +964,8 @@ TalkBack, an MQTT drain) stalls every other background task for its duration.
 |---|---|---|
 | `relays` | 50 ms — **critical** | Switch each relay off when its timer expires |
 | `ledBlink` | 1 s — **critical** | Blink built-in LED (enabled on config error) |
-| `io` | 1 s | Read ADC sensors and rebuild the `/data.json` payload |
+| `io` | 1 s | Read the luminosity, water-level, flow and float inputs and rebuild the `/data.json` payload |
+| `moisture` | `io.soilMoisturePeriodSec` | Read the soil-moisture probe bank. Separate from `io` because that task also paces the relay, cloud and ET0 events and the `/data.json` cache, none of which may slow down with the ADC |
 | `ambient` | 1 s | Read air temperature and humidity from whichever part is fitted — a DHT11 on one wire or an SHT40 on I²C. One task for both: a task per sensor kind is how a firmware reaches the 16-slot cap `addTask()` overruns silently |
 | `checkInternet` | 15 s | Ping DNS servers, update connectivity state |
 | `history` | `history.periodSec` | Append one I/O snapshot to the newest segment |

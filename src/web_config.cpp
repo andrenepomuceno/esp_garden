@@ -85,6 +85,12 @@ handleConfigGet(AsyncWebServerRequest* request)
         doc[section][key] = g_configSecretMask;
     }
 
+    JSONVar ioSection = doc["io"];
+    if (JSON.typeof(ioSection) == "object" &&
+        !ioSection.hasOwnProperty("soilMoisturePeriodSec")) {
+        doc["io"]["soilMoisturePeriodSec"] = config.moisturePeriodSec;
+    }
+
     AsyncWebServerResponse* response =
       request->beginResponse(200, "application/json", JSON.stringify(doc));
     response->addHeader("Cache-Control", "no-store");

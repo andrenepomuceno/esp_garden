@@ -181,6 +181,17 @@ loadProbePower(JSONVar node, ConfigFile& cfg, unsigned i)
 void
 loadSoilMoisture(ConfigFile& cfg, JSONVar& io)
 {
+    if (io.hasOwnProperty("soilMoisturePeriodSec")) {
+        const int period = (int)io["soilMoisturePeriodSec"];
+        if (period >= 1 && period <= 10000) {
+            cfg.moisturePeriodSec = period;
+        } else {
+            logger.warning("Ignoring out-of-range io.soilMoisturePeriodSec " +
+                           String(period) + "; keeping " +
+                           String(cfg.moisturePeriodSec) + " s");
+        }
+    }
+
     JSONVar pins = io["soilMoisture"];
 
     if (JSON.typeof(pins) == "array") {

@@ -97,6 +97,9 @@ sensorsSetup();
 void
 sensorsReadIo();
 
+void
+sensorsReadMoisture();
+
 // Brings up whichever ambient sensor is declared: constructs the DHT driver on
 // its configured pin, or starts the I2C bus and probes for the SHT40. Separate
 // from sensorsSetup() because it must run after the blocking boot waits,

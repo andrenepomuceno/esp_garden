@@ -49,6 +49,7 @@
   },
   "io": {
     "button": 0,
+    "soilMoisturePeriodSec": 1,
     "relays": [
       {
         "pin": 19,

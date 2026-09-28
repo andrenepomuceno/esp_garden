@@ -85,7 +85,6 @@ static bool g_floatRaised = false;
 static portMUX_TYPE g_moistureSnapshotMux = portMUX_INITIALIZER_UNLOCKED;
 static MoistureReading g_moistureSnapshot[MOISTURE_MAX] = {};
 
-// Owned by the io task; only the report below crosses to another thread.
 static ProbeHealth g_probeHealth[MOISTURE_MAX];
 static ProbeHealthReport g_probeHealthSnapshot[MOISTURE_MAX] = {};
 
@@ -213,25 +212,15 @@ floatRaised()
 void
 sensorsSetup()
 {
-    // EVERY accumulator is sized here, scalars included, and the size comes
-    // from the CONFIGURED publish period rather than from the compiled one.
-    //
-    // The scalars used to take their window from g_mqttTaskPeriod at file
-    // scope, which was correct only while that period was a constant. It is
-    // mqtt.publishSec now, and static initialisers run long before
-    // config.json is read — the exact trap that made a file-scope DHT_Unified
-    // run for ever on the compiled default pin. So the constructor argument is
-    // just a safe starting length and this is where the real one is applied.
-    //
-    // Sized for every slot, not just the fitted ones: an unfitted probe is
-    // never fed, so the window costs nothing, and a probe added in the web UI
-    // is correctly sized on the next boot without a second code path.
     const unsigned publishMs = mqttPublishPeriodMs();
     const unsigned ioWindow = publishMs / g_ioTaskPeriod;
     const unsigned ambientWindow = publishMs / g_ambientTaskPeriod;
+    const unsigned moistureMs = (unsigned)config.moisturePeriodSec * 1000u;
+    const unsigned moistureWindow =
+      (publishMs / moistureMs > 0) ? (publishMs / moistureMs) : 1;
 
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
-        g_soilMoisture[i].setMaxLen(ioWindow);
+        g_soilMoisture[i].setMaxLen(moistureWindow);
     }
     g_luminosity.setMaxLen(ioWindow);
     g_waterLevel.setMaxLen(ioWindow);
@@ -357,7 +346,7 @@ moisturePowerDown()
 }
 
 void
-sensorsReadIo()
+sensorsReadMoisture()
 {
     const bool powered = moisturePowerUp();
     (void)powered;
@@ -365,15 +354,6 @@ sensorsReadIo()
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         const uint8_t pin = config.soilMoisturePin[i];
 
-        // TWO conversions, and the second is the reading. The first carries
-        // charge from the previous channel through the SAR hold capacitor, so
-        // discarding it is simply a better measurement; it costs one extra
-        // conversion per probe per second, about 100 us.
-        //
-        // The difference between them used to be regressed against the step
-        // the ADC was asked to make, as a source-impedance test. That test
-        // accused a probe sitting in wet soil and was removed — see
-        // core/probe_health.h.
         (void)analogRead(pin);
         const int second = analogRead(pin);
         probeHealthAdd(g_probeHealth[i], second);
@@ -383,9 +363,6 @@ sensorsReadIo()
         }
 
         const double pct = ADC_TO_PERCENT(second);
-        // Per probe, not one sign for the board: a capacitive module reads
-        // lower as the soil wets, a resistive divider reads higher, and a
-        // board can carry one of each.
         g_soilMoisture[i].add(config.moistureInvert[i] ? (100.0 - pct) : pct);
     }
 
@@ -393,6 +370,30 @@ sensorsReadIo()
         moisturePowerDown();
     }
 
+    MoistureReading fresh[MOISTURE_MAX];
+    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
+        fresh[i].average = g_soilMoisture[i].getAverage();
+        fresh[i].samples = g_soilMoisture[i].getSamples();
+    }
+
+    ProbeHealthReport health[MOISTURE_MAX];
+    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
+        health[i].verdict = probeHealthVerdict(g_probeHealth[i],
+                                               g_probeHealthMinSamples,
+                                               g_probeHealthMaxSd);
+        health[i].stepSd = (float)probeHealthStepSd(g_probeHealth[i]);
+        health[i].samples = g_probeHealth[i].samples;
+    }
+
+    portENTER_CRITICAL(&g_moistureSnapshotMux);
+    memcpy(g_moistureSnapshot, fresh, sizeof(fresh));
+    memcpy(g_probeHealthSnapshot, health, sizeof(health));
+    portEXIT_CRITICAL(&g_moistureSnapshotMux);
+}
+
+void
+sensorsReadIo()
+{
     if (config.luminosityFitted) {
         g_luminosity.add(ADC_TO_PERCENT(analogRead(config.luminosityPin)));
     }
@@ -407,51 +408,12 @@ sensorsReadIo()
         g_flowPulses = 0;
         portEXIT_CRITICAL(&g_flowMux);
 
-        // The io task runs at a known period, so pulses per tick converts
-        // directly. Litres per minute is the unit a flow meter is specified in.
         const double litres = (double)pulses / (double)config.flowPulsesPerLitre;
         g_flowTotalLitres += litres;
         g_flowRate.add((float)(litres * 60000.0 / (double)g_ioTaskPeriod));
     }
 
-    // Publish the snapshot for readers on other threads. Last, so it reflects
-    // this tick's samples.
-    //
-    // The VALUES ARE COMPUTED OUTSIDE THE LOCK, and the critical section is a
-    // 32-byte copy. The first version called getAverage() inside it, which
-    // walks the sample list TWICE — once for the mean, once for the variance —
-    // and writes a member on the way. Four probes at a 60-sample window is
-    // ~480 pointer-chased list nodes with interrupts disabled on this core,
-    // every one a potential cache miss that fetches from flash.
-    //
-    // CLAUDE.md states this rule about relayWrite and I broke it here anyway.
-    // The board panicked with InterruptWDTTimoutCPU1.
-    MoistureReading fresh[MOISTURE_MAX];
-    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
-        fresh[i].average = g_soilMoisture[i].getAverage();
-        fresh[i].samples = g_soilMoisture[i].getSamples();
-    }
-
-    // Computed OUTSIDE the lock, for the reason the comment above gives: the
-    // regression walks five doubles per probe, and doing that with interrupts
-    // disabled is the mistake that panicked this board once already.
-    ProbeHealthReport health[MOISTURE_MAX];
-    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
-        health[i].verdict = probeHealthVerdict(g_probeHealth[i],
-                                               g_probeHealthMinSamples,
-                                               g_probeHealthMaxSd);
-        health[i].stepSd = (float)probeHealthStepSd(g_probeHealth[i]);
-        health[i].samples = g_probeHealth[i].samples;
-    }
-
-    portENTER_CRITICAL(&g_moistureSnapshotMux);
-    memcpy(g_moistureSnapshot, fresh, sizeof(fresh));
-    memcpy(g_probeHealthSnapshot, health, sizeof(health));
-    portEXIT_CRITICAL(&g_moistureSnapshotMux);
-
     if (config.floatFitted) {
-        // Two agreeing reads a tick apart: a float bobbing on the surface
-        // chatters, and a single read would report it as level changes.
         static bool lastRead = false;
         const bool raised =
           (digitalRead(config.floatPin) == config.floatActiveLevel);
