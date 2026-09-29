@@ -41,7 +41,7 @@ static TSScheduler g_taskScheduler;
 static TSFreeRTOSCriticalRunner g_criticalRunner(g_taskScheduler);
 
 DECLARE_TASK(io, 1000);                         // 1 s
-DECLARE_TASK(moisture, 1000);                   // 1 s
+DECLARE_TASK(moisture, 10);                     // 10 ms
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
 DECLARE_TASK(checkInternet, 15 * 1000);         // 15 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
@@ -111,6 +111,33 @@ relaysTaskHandler()
 static void
 moistureTaskHandler()
 {
+    static unsigned long nextSample = 0;
+    static unsigned long settleUntil = 0;
+    static bool settling = false;
+
+    const unsigned long now = millis();
+
+    if (settling) {
+        if ((long)(now - settleUntil) < 0) {
+            return;
+        }
+        settling = false;
+        sensorsReadMoisture();
+        return;
+    }
+
+    if ((long)(now - nextSample) < 0) {
+        return;
+    }
+    nextSample = now + (unsigned long)config.moisturePeriodSec * 1000ul;
+
+    const uint16_t settle = sensorsMoisturePowerUp();
+    if (settle > 0) {
+        settleUntil = now + settle;
+        settling = true;
+        return;
+    }
+
     sensorsReadMoisture();
 }
 
@@ -658,12 +685,9 @@ tasksSetup()
 
     g_ioTask.enableDelayed(g_ioTaskPeriod);
 
-    const unsigned moisturePeriod =
-      (unsigned)config.moisturePeriodSec * 1000u;
-    g_moistureTask.setPeriod(moisturePeriod);
-    g_moistureTask.enableDelayed(moisturePeriod);
-    logger.info("Soil moisture sampled every " +
-                String(config.moisturePeriodSec) + " s");
+    g_moistureTask.enableDelayed(g_moistureTaskPeriod);
+    logger.info("Soil moisture every " + String(config.moisturePeriodSec) +
+                " s");
 
     sensorsSetupAmbient();
     // Only when one is declared. Ticking at 1 Hz into a handler that returns

@@ -53,11 +53,8 @@ pinPowersDown(const Probe* probes, unsigned count, uint8_t pin)
 }
 
 // The settle this tick owes: the longest any probe asked for, among the pins
-// that actually transitioned off to on. A pin held up since sensorsSetup() has
-// nothing to settle, and this delay runs inside the 1 Hz io task — the same
-// cooperative pump MQTT and the /data.json cache share — so the carrier's
-// 50 ms would otherwise be spent every second waiting on a rail that did not
-// move. Zero when every powered pin is always-on.
+// that actually transitioned off to on. Zero when every powered pin is
+// always-on, or when none has a power pin.
 inline uint16_t
 settleMsForTick(const Probe* probes, unsigned count)
 {

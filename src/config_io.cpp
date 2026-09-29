@@ -166,13 +166,15 @@ loadProbePower(JSONVar node, ConfigFile& cfg, unsigned i)
         }
     }
     if (JSON.typeof(entry["settleMs"]) == "number") {
-        const int ms = (int)entry["settleMs"];
-        // Capped: this delay runs inside the 1 Hz io task, which is the same
-        // cooperative pump MQTT and TalkBack share. A probe that genuinely
-        // needs more than a quarter second is one to read less often, not one
-        // to stall every other background task for.
-        cfg.soilMoistureSettleMs[i] =
-          (ms < 0) ? 0 : ((ms > 250) ? 250 : (uint16_t)ms);
+        const long ms = (long)entry["settleMs"];
+        if (ms < 0 || ms > 65535) {
+            logger.warning("Ignoring out-of-range io.soilMoisture[" +
+                           String(i) + "].settleMs " + String(ms) +
+                           "; keeping " +
+                           String(cfg.soilMoistureSettleMs[i]) + " ms");
+        } else {
+            cfg.soilMoistureSettleMs[i] = (uint16_t)ms;
+        }
     }
 }
 

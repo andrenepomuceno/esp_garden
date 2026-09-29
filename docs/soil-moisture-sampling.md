@@ -3,9 +3,42 @@
 `io.soilMoisturePeriodSec` — seconds between reads of the probe bank.
 Default **1**. Editable in `/config.html`, under the **Io** tab.
 
-Added in firmware 2.21.0.
+Added in firmware 2.21.0. The two-phase read and the removal of the 250 ms
+settle cap are 2.22.0.
 
 ---
+
+## The task ticks at 10 ms and is reentrant
+
+It does **not** tick at the sampling period. `delay()` inside a task is
+forbidden here — background tasks are cooperative, so a handler that sleeps
+stalls every other one for its duration — and the probe bank needs a settle
+between energising its power pin and reading it.
+
+So the task runs at a fixed 10 ms and carries its state in statics:
+
+| tick | what happens |
+|---|---|
+| the sample is due | energise the bank, note `now + settleMs`, return |
+| still settling | return |
+| the settle has elapsed | read the probes, de-energise, return |
+| nothing due | return |
+
+`nextSample` is stamped at the **power-up**, not at the read, so the cadence is
+exactly `io.soilMoisturePeriodSec` rather than that plus the settle. Measured
+on the state machine over 600 s: at a 1 s period and a 50 ms settle, 600 reads
+with the gap at 1000 ms every time and a 5.00 % duty cycle; at a 10 ms settle,
+1.00 %; with no power pin the read is single-phase and nothing is energised.
+
+A 10 ms tick costs nothing on the cooperative pump. `Scheduler::execute()`
+runs the **most overdue** due task, so a handler that returns in two
+comparisons is picked often and never starves a 1 s or 60 s task.
+
+**`setPeriod()` is what the scheduler honours from inside a handler, and
+`enableDelayed()` is not** — `Task::run()` calls the callback and then
+overwrites `_nextRunTime = endTime + _period`, discarding anything the handler
+set. A two-phase design built on `enableDelayed()` silently does nothing. This
+one does not depend on either.
 
 ## Why it is its own task
 
@@ -45,6 +78,19 @@ no-op that would leave the window at whatever the constructor set.
 publish period therefore makes the window bottom out at 1, and the published
 `moistureN` stops being a mean over a publish interval and becomes a single
 sample. That is a consequence to know about, not a refusal.
+
+## `settleMs` is 0..65535 and that is the storage, not a judgement
+
+It used to be capped at 250 ms, on the argument that the delay ran inside the
+1 Hz io task and a probe needing more was one to read less often. Moving the
+read to its own task made the first half of that false, and removing the delay
+made the second half moot. The range is now the one its `uint16_t` holds.
+
+A settle longer than the sampling period is accepted. It degrades rather than
+breaking: 2000 ms against a 1 s period measures 298 reads over 600 s, a
+2010 ms cadence, and the bank powered 99 % of the time — which is the
+continuous-power condition that dissolves a resistive electrode. That is a
+consequence to know, not a value to refuse.
 
 ## What does NOT follow the period
 

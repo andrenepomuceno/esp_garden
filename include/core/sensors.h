@@ -97,6 +97,14 @@ sensorsSetup();
 void
 sensorsReadIo();
 
+// Energises the probe bank and returns the settle it owes, in ms. Zero when
+// nothing transitioned, which is a bank with no power pin or one held up by
+// powerAlways.
+uint16_t
+sensorsMoisturePowerUp();
+
+// Samples the probe bank, de-energises it and publishes the snapshot. Call it
+// only once the settle above has elapsed.
 void
 sensorsReadMoisture();
 

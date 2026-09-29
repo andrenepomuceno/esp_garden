@@ -624,10 +624,8 @@
       }
       var settle = numeric(p.settleMs);
       if (p.settleMs !== '' && (settle === null || isNaN(settle) ||
-                                settle < 0 || settle > 250)) {
-        // Unchecked, a non-number reached the device as JSON null and was read
-        // as a 0 ms settle: every reading taken before the module had come up.
-        problems.push(owner + ': settle time must be 0-250 ms.');
+                                settle < 0 || settle > 65535)) {
+        problems.push(owner + ': settle time must be 0-65535 ms.');
         flagged['.ms-settle[data-row="' + i + '"]'] = true;
       }
       $.each([['dry', p.dry], ['wet', p.wet]], function (_, pair) {

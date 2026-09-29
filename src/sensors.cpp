@@ -300,31 +300,18 @@ sensorsSetup()
 // level and has been since sensorsSetup() — and it is kept rather than skipped
 // because it costs nothing and puts the pin back where it belongs if anything
 // else ever moved it.
-static bool
-moisturePowerUp()
+uint16_t
+sensorsMoisturePowerUp()
 {
-    bool any = false;
-
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         const uint8_t pin = config.soilMoisturePowerPin[i];
         if (pin == ConfigFile::kNoPin) {
             continue;
         }
         digitalWrite(pin, config.soilMoisturePowerOn[i] ? HIGH : LOW);
-        any = true;
     }
 
-    // Only for a rail that moved. A pin held up since boot has nothing to
-    // settle, and this delay runs inside the 1 Hz io task — the same
-    // cooperative pump MQTT, the cloud model and the /data.json cache share —
-    // so paying the carrier's 50 ms for a pin that never switched is 5 % of
-    // that task spent waiting on nothing, every second, for ever.
-    const uint16_t settle =
-      probe_power::settleMsForTick(g_probePower, config.moistureCount);
-    if (settle > 0) {
-        delay(settle);
-    }
-    return any;
+    return probe_power::settleMsForTick(g_probePower, config.moistureCount);
 }
 
 // De-energises every power pin EXCEPT the ones some probe asked to keep up.
@@ -348,9 +335,6 @@ moisturePowerDown()
 void
 sensorsReadMoisture()
 {
-    const bool powered = moisturePowerUp();
-    (void)powered;
-
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         const uint8_t pin = config.soilMoisturePin[i];
 
@@ -366,9 +350,7 @@ sensorsReadMoisture()
         g_soilMoisture[i].add(config.moistureInvert[i] ? (100.0 - pct) : pct);
     }
 
-    if (powered) {
-        moisturePowerDown();
-    }
+    moisturePowerDown();
 
     MoistureReading fresh[MOISTURE_MAX];
     for (unsigned i = 0; i < MOISTURE_MAX; ++i) {

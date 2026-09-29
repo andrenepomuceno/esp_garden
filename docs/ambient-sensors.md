@@ -70,7 +70,7 @@ The bounds left over are therefore doing much less work, and they are **delibera
 
 **~10 ms, on the 1 Hz `ambient` task**, in the background bucket — the same cooperative pump the DHT task used and that the cloud model, the step events and the `/data.json` cache share. Almost all of it is the datasheet's measurement time for the high-repeatability command 0xFD: typical 6.9 ms, **maximum 8.2**, rounded up to a whole millisecond because `delay()`'s resolution is 1 ms. The two transactions add ~0.8 ms at 100 kHz.
 
-**It is cheaper than the DHT read it replaces.** The Adafruit DHT driver bit-bangs a single-wire frame for 20-27 ms with interrupts disabled; this is a `delay()` that yields to FreeRTOS. It is also well inside what this task already accepts — `settleMs` on a probe is capped at 250 ms on this same tick.
+**It is cheaper than the DHT read it replaces.** The Adafruit DHT driver bit-bangs a single-wire frame for 20-27 ms with interrupts disabled; this is a `delay()` that yields to FreeRTOS.
 
 High repeatability and not medium (4.5 ms) or low (1.7 ms) deliberately: the ±1.8 %RH that makes the part worth an I²C driver at all is the high-repeatability figure, and 10 ms of a 1000 ms tick is 1 %. A **two-phase read** — command on tick N, read on tick N+1 — would remove even that and was not written: it buys 1 % of one background tick for a state machine and a second of latency on a quantity that moves in minutes.
 
