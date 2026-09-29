@@ -50,6 +50,12 @@ Credentials come from `data/config.json`, `--username` / `--password`, or
   (`0x0000` ESP32, `0x0009` ESP32-S3) is matched against the family the device
   reports through `/capabilities.json`'s `analogPins` (32-39 on a WROOM-32,
   1-10 on an S3). Flashing across that boundary is a serial recovery.
+- **A stale asset bundle.** `scripts/pio_assets.py` builds `.pio/assets/` only
+  for `buildfs`, `uploadfs` and `uploadfsota`, so a plain `pio run` leaves it
+  untouched and a deploy would ship the previous UI. Any file under `data/`
+  newer than the newest built asset is refused, naming the command to run.
+  This fired for real on 2026-09-28 and caught a `devices_model.js` edit that
+  would otherwise have gone out as the old bundle.
 - **An image whose version equals the running one.** `fwVersionDiffers()`
   would answer false and the broker would report a successful update that
   never flashed. Bumping `FW_VERSION` in the same commit as the change is the
@@ -87,8 +93,16 @@ immediately and reports a failure on a flash that landed.
   build, and `Status.History` read 9213/10000 across the whole operation —
   nothing in the filesystem was disturbed.
 
-**Not exercised:** the firmware path end to end, because the board was already
-on the target version when the tool first ran. `/updateEnable`, `/update`, the
-reboot wait and the version confirmation have not been executed by this tool
-against any board. The family refusal and the relay refusal have not fired
-either — both were checked and both passed.
+**Later the same day, 2.21.0 -> 2.22.0 on the same board, the whole path:**
+
+- The stale-bundle refusal fired and was right; after
+  `python scripts/build_assets.py` the plan grew from 4 assets to 5.
+- Five assets sent, then `/updateEnable` 200, `/update` 200 in 8.7 s. The board
+  went down at 7 s and was serving again at 9 s, and the version confirmation
+  read **2.22.0** back.
+- `Status.History` went 9232 -> 9233 across the reboot and the filesystem stayed
+  at 712 / 2432 KB, which is the whole point: the app slot was rewritten and the
+  filesystem partition was not.
+
+**Still not exercised:** the family refusal and the relay refusal. Both are
+checked on every run and both have always passed.

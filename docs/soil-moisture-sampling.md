@@ -178,6 +178,30 @@ and a save writes it back explicitly.
 `?secrets=1` is unaffected — it returns the file verbatim, because a backup has
 to restore what was actually stored.
 
+## The 1 s every 60 s setting
+
+`io.soilMoisturePeriodSec: 60` with `settleMs: 1000` on every probe energises
+the bank for one second a minute: a 1.67 % duty cycle, and the reading taken at
+the end of that second, when the module has had a full second to come up. The
+old 250 ms cap forbade exactly this.
+
+**Measured on `espgarden-s3` (device `cfd0`), firmware 2.22.0, 2026-09-28:**
+`Soil moisture every 60 s` in the boot log, and the probe sample counter moved
+at **60.2, 60.8 and 60.5 seconds**. Four probes reading 89.26 / 80.10 / 90.43 /
+52.60 with the history intact at 9233/10000 across the update.
+
+**What that does NOT establish is the second of power itself.** Nothing here
+watched GPIO 14. The 1.67 % duty is arithmetic from the state machine, and this
+project has never put a meter or a scope on that pin — the same gap the
+`powerAlways` entry in the verification log records.
+
+**Two consequences of a 60 s period, both real:** every moisture accumulator
+window becomes `mqttPublishPeriodMs() / 60000` = **5 samples** at the 300 s
+publish period, where a 1 s period gives 300, so the published `moistureN` is a
+mean of five readings and `Sd` beside it is correspondingly noisy; and the
+probe-health sample counts do not follow the rate, so a first verdict takes
+120 samples = **2 hours** and the evidence halves over 600 samples = 10 hours.
+
 ## What has run, and what has not
 
 **Not run on hardware. Nothing was flashed and no board was touched.**

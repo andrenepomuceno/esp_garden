@@ -70,6 +70,24 @@ def is_shadowed(name):
     return name.startswith(SHADOWED_PREFIXES)
 
 
+def stale_refusal(newest_source, newest_asset):
+    if newest_source > newest_asset:
+        return ("a file under data/ is newer than the built assets, so "
+                ".pio/assets/ would ship a stale bundle. A plain `pio run` "
+                "does not rebuild them - scripts/pio_assets.py runs only for "
+                "buildfs, uploadfs and uploadfsota. Run "
+                "`python scripts/build_assets.py` first.")
+    return None
+
+
+def newest_mtime(directory):
+    root = pathlib.Path(directory)
+    if not root.exists():
+        return 0.0
+    times = [p.stat().st_mtime for p in root.rglob("*") if p.is_file()]
+    return max(times) if times else 0.0
+
+
 def image_family(blob):
     if not blob or blob[0] != IMAGE_MAGIC:
         raise Refused("the image does not start with %#04x" % IMAGE_MAGIC)
@@ -376,6 +394,10 @@ def self_test():
     check("no version in the image is refused", version_refusal(None, "2.20.0"))
     check("no running version passes", version_refusal("2.21.0", None) is None)
 
+    check("fresh assets pass", stale_refusal(100.0, 200.0) is None)
+    check("equal mtimes pass", stale_refusal(100.0, 100.0) is None)
+    check("a newer source is refused", stale_refusal(200.0, 100.0))
+
     local = {"a.gz": "1", "b.gz": "2", "config.js.gz": "3", "config.json": "4"}
     remote = {"a.gz": "1", "b.gz": "changed"}
     upload, identical, unverifiable = plan_uploads(local, remote, {"config.js.gz"})
@@ -447,6 +469,9 @@ def main():
 
     upload = []
     if do_assets:
+        refusal = stale_refusal(newest_mtime("data"), newest_mtime(ASSET_DIR))
+        if refusal:
+            raise Refused(refusal)
         names = [p.name for p in sorted(ASSET_DIR.iterdir()) if p.is_file()]
         local = {}
         for name in names:

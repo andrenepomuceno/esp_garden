@@ -72,7 +72,11 @@ The bounds left over are therefore doing much less work, and they are **delibera
 
 **It is cheaper than the DHT read it replaces.** The Adafruit DHT driver bit-bangs a single-wire frame for 20-27 ms with interrupts disabled; this is a `delay()` that yields to FreeRTOS.
 
-High repeatability and not medium (4.5 ms) or low (1.7 ms) deliberately: the ±1.8 %RH that makes the part worth an I²C driver at all is the high-repeatability figure, and 10 ms of a 1000 ms tick is 1 %. A **two-phase read** — command on tick N, read on tick N+1 — would remove even that and was not written: it buys 1 % of one background tick for a state machine and a second of latency on a quantity that moves in minutes.
+**The `delay()` in this read stays.** The moisture task had its removed
+because the settle is operator-configurable and unbounded; this one is a fixed
+~9 ms on a background task that is not critical, and a two-phase read would buy
+1 % of one tick for a state machine. High repeatability and not medium (4.5 ms)
+or low (1.7 ms) deliberately: the ±1.8 %RH that makes the part worth an I²C driver at all is the high-repeatability figure, and 10 ms of a 1000 ms tick is 1 %. A **two-phase read** — command on tick N, read on tick N+1 — would remove even that and was not written: it buys 1 % of one background tick for a state machine and a second of latency on a quantity that moves in minutes.
 
 ## What ET0 gains, which is nothing yet
 
