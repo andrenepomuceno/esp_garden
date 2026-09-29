@@ -287,6 +287,7 @@ per subsystem: prose belongs there, not in code comments and not in this file.
 | [docs/onboarding.md](docs/onboarding.md) | The first-boot setup AP and its marker |
 | [docs/relays.md](docs/relays.md) | The two seams, and why `startRelay()` is the only door |
 | [docs/task-schedule.md](docs/task-schedule.md) | Every task, its period and its bucket |
+| [docs/deploy.md](docs/deploy.md) | Deploying firmware and assets over HTTP without erasing config or history |
 | [docs/tooling.md](docs/tooling.md) | The PC-side scripts under `scripts/` |
 | [docs/porting-fullbot.md](docs/porting-fullbot.md) | What came from `fullbot-firmware` and what did not |
 

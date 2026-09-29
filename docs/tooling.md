@@ -19,3 +19,8 @@ this" — several currently do.
 
 Each carries `--self-test` where it has pure logic worth pinning; those run in
 Python because `pio test -e native` is C++ Unity and cannot reach them.
+
+`deploy_ota.py` sends a firmware image and the changed web assets to a running
+board without rewriting the filesystem partition, so `/config.json`, the history
+segments and the moisture model survive. `--plan` is the default and a write needs
+`--yes`. See [deploy.md](deploy.md).
