@@ -41,7 +41,7 @@ static TSScheduler g_taskScheduler;
 static TSFreeRTOSCriticalRunner g_criticalRunner(g_taskScheduler);
 
 DECLARE_TASK(io, 1000);                         // 1 s
-DECLARE_TASK(moisture, 10);                     // 10 ms
+DECLARE_TASK(moisture, 50);                     // 50 ms
 DECLARE_TASK(clockUpdate, 24 * 60 * 60 * 1000); // 24 h
 DECLARE_TASK(checkInternet, 15 * 1000);         // 15 s
 DECLARE_TASK(logBackup, 60 * 60 * 1000);        // 1 h
@@ -118,27 +118,25 @@ moistureTaskHandler()
     const unsigned long now = millis();
 
     if (settling) {
-        if ((long)(now - settleUntil) < 0) {
-            return;
+        if ((long)(now - settleUntil) >= 0) {
+            settling = false;
+            sensorsReadMoisture();
         }
-        settling = false;
-        sensorsReadMoisture();
-        return;
+    } else if ((long)(now - nextSample) >= 0) {
+        nextSample = now + (unsigned long)config.moisturePeriodSec * 1000ul;
+        const uint16_t settle = sensorsMoisturePowerUp();
+        if (settle > 0) {
+            settleUntil = now + settle;
+            settling = true;
+        } else {
+            sensorsReadMoisture();
+        }
     }
 
-    if ((long)(now - nextSample) < 0) {
-        return;
-    }
-    nextSample = now + (unsigned long)config.moisturePeriodSec * 1000ul;
-
-    const uint16_t settle = sensorsMoisturePowerUp();
-    if (settle > 0) {
-        settleUntil = now + settle;
-        settling = true;
-        return;
-    }
-
-    sensorsReadMoisture();
+    const long wait = (long)((settling ? settleUntil : nextSample) - millis());
+    g_moistureTask.setPeriod(wait > (long)g_moistureTaskPeriod
+                               ? (unsigned long)wait
+                               : g_moistureTaskPeriod);
 }
 
 static void

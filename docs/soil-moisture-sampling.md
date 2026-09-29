@@ -8,37 +8,61 @@ settle cap are 2.22.0.
 
 ---
 
-## The task ticks at 10 ms and is reentrant
+## The task sleeps until the next event, and is reentrant
 
-It does **not** tick at the sampling period. `delay()` inside a task is
-forbidden here — background tasks are cooperative, so a handler that sleeps
-stalls every other one for its duration — and the probe bank needs a settle
-between energising its power pin and reading it.
+It does **not** tick at the sampling period, and it does not poll. `delay()`
+inside a task is forbidden here — background tasks are cooperative, so a
+handler that sleeps stalls every other one for its duration — and the probe
+bank needs a settle between energising its power pin and reading it.
 
-So the task runs at a fixed 10 ms and carries its state in statics:
+So the handler carries its state in statics and does a little each call:
 
-| tick | what happens |
+| state | what happens |
 |---|---|
 | the sample is due | energise the bank, note `now + settleMs`, return |
 | still settling | return |
 | the settle has elapsed | read the probes, de-energise, return |
 | nothing due | return |
 
-`nextSample` is stamped at the **power-up**, not at the read, so the cadence is
-exactly `io.soilMoisturePeriodSec` rather than that plus the settle. Measured
-on the state machine over 600 s: at a 1 s period and a 50 ms settle, 600 reads
-with the gap at 1000 ms every time and a 5.00 % duty cycle; at a 10 ms settle,
-1.00 %; with no power pin the read is single-phase and nothing is energised.
+and then sets its own period to the time until whichever deadline is next, so
+the scheduler wakes it exactly twice per sample rather than polling. **The
+reentrancy is the contract and the period is only an optimisation**: woken
+early it returns, woken late it acts, and a config change takes effect at the
+next wake-up either way.
 
-A 10 ms tick costs nothing on the cooperative pump. `Scheduler::execute()`
-runs the **most overdue** due task, so a handler that returns in two
-comparisons is picked often and never starves a 1 s or 60 s task.
+`g_moistureTaskPeriod` (50 ms, the tick the relays run at) is the floor, which
+keeps the task from spinning when something is already overdue.
+
+Measured on the state machine over 600 s, with the scheduler polled every 1 ms:
+
+| period | settle | reads | wake-ups | gap | duty |
+|---|---|---|---|---|---|
+| 1 s | 50 ms | 600 | 1201 | 1000 ms | 5.00 % |
+| 1 s | 10 ms | 600 | 1201 | 1000 ms | 5.00 % |
+| 1 s | none | 601 | 601 | 1000 ms | 0 % |
+| 5 s | 50 ms | 120 | 241 | 5000 ms | 1.00 % |
+| 60 s | 50 ms | 10 | 21 | 60000 ms | 0.08 % |
+
+Two wake-ups per sample, one when the settle is zero, and the gap is exactly
+the configured period every time. A fixed 50 ms tick would have been 12 000
+wake-ups in each of those rows; at a 60 s period this is **21 instead of
+12 000**.
+
+`nextSample` is stamped at the **power-up**, not at the read, which is what
+makes the gap exactly `io.soilMoisturePeriodSec` rather than that plus the
+settle.
+
+**The 50 ms floor is also the settle's granularity.** A settle below it is
+rounded up, so the compiled default of 10 ms energises the bank for 50 ms and
+measures 5.00 % duty rather than 1.00 %. It is more settle than asked for,
+which harms the reading not at all, and five times the power-on, which is
+still twenty times better than the ungated 100 %. The carrier asks for 50 ms,
+so the board this runs on is unaffected.
 
 **`setPeriod()` is what the scheduler honours from inside a handler, and
 `enableDelayed()` is not** — `Task::run()` calls the callback and then
 overwrites `_nextRunTime = endTime + _period`, discarding anything the handler
-set. A two-phase design built on `enableDelayed()` silently does nothing. This
-one does not depend on either.
+set through `enableDelayed()`. That is why this sets the period.
 
 ## Why it is its own task
 
@@ -87,8 +111,8 @@ read to its own task made the first half of that false, and removing the delay
 made the second half moot. The range is now the one its `uint16_t` holds.
 
 A settle longer than the sampling period is accepted. It degrades rather than
-breaking: 2000 ms against a 1 s period measures 298 reads over 600 s, a
-2010 ms cadence, and the bank powered 99 % of the time — which is the
+breaking: 2000 ms against a 1 s period measures 292 reads over 600 s, a
+2050 ms cadence, and the bank powered 97 % of the time — which is the
 continuous-power condition that dissolves a resistive electrode. That is a
 consequence to know, not a value to refuse.
 
