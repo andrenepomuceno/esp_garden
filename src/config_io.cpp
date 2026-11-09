@@ -5,6 +5,7 @@
 #include "core/config_io.h"
 #include "core/config.h"
 #include "core/logger.h"
+#include "core/probe_sampling.h"
 #include "core/sht4x_protocol.h"
 #include <Arduino_JSON.h>
 
@@ -191,6 +192,34 @@ loadSoilMoisture(ConfigFile& cfg, JSONVar& io)
             logger.warning("Ignoring out-of-range io.soilMoisturePeriodSec " +
                            String(period) + "; keeping " +
                            String(cfg.moisturePeriodSec) + " s");
+        }
+    }
+
+    if (io.hasOwnProperty("soilMoistureSampleMs")) {
+        JSONVar node = io["soilMoistureSampleMs"];
+        const bool number = JSON.typeof(node) == "number";
+        const double interval = number ? (double)node : -1.0;
+        if (number && interval >= 0.0 && interval <= 65535.0) {
+            cfg.moistureSampleMs = (uint16_t)interval;
+        } else {
+            logger.warning(
+              "Ignoring io.soilMoistureSampleMs " + JSON.stringify(node) +
+              ": expected a number of ms in 0..65535; keeping " +
+              String(cfg.moistureSampleMs) + " ms");
+        }
+    }
+
+    if (io.hasOwnProperty("soilMoistureTailSamples")) {
+        JSONVar node = io["soilMoistureTailSamples"];
+        const bool number = JSON.typeof(node) == "number";
+        const double tail = number ? (double)node : 0.0;
+        if (number && tail >= 1.0 && tail <= (double)probe_sampling::kCapacity) {
+            cfg.moistureTailSamples = (uint16_t)tail;
+        } else {
+            logger.warning(
+              "Ignoring io.soilMoistureTailSamples " + JSON.stringify(node) +
+              ": a window holds 1.." + String(probe_sampling::kCapacity) +
+              " samples; keeping " + String(cfg.moistureTailSamples));
         }
     }
 

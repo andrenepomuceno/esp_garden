@@ -86,9 +86,17 @@ handleConfigGet(AsyncWebServerRequest* request)
     }
 
     JSONVar ioSection = doc["io"];
-    if (JSON.typeof(ioSection) == "object" &&
-        !ioSection.hasOwnProperty("soilMoisturePeriodSec")) {
-        doc["io"]["soilMoisturePeriodSec"] = config.moisturePeriodSec;
+    if (JSON.typeof(ioSection) == "object") {
+        if (!ioSection.hasOwnProperty("soilMoisturePeriodSec")) {
+            doc["io"]["soilMoisturePeriodSec"] = config.moisturePeriodSec;
+        }
+        if (!ioSection.hasOwnProperty("soilMoistureSampleMs")) {
+            doc["io"]["soilMoistureSampleMs"] = (int)config.moistureSampleMs;
+        }
+        if (!ioSection.hasOwnProperty("soilMoistureTailSamples")) {
+            doc["io"]["soilMoistureTailSamples"] =
+              (int)config.moistureTailSamples;
+        }
     }
 
     AsyncWebServerResponse* response =

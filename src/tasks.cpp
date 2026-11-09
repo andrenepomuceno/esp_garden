@@ -5,6 +5,7 @@
 #include "core/io_history.h"
 #include "core/moisture_model.h"
 #include "core/logger.h"
+#include "core/probe_sampling.h"
 #include "core/relays.h"
 #include "core/sensors.h"
 #include "core/task_events.h"
@@ -112,28 +113,35 @@ static void
 moistureTaskHandler()
 {
     static unsigned long nextSample = 0;
-    static unsigned long settleUntil = 0;
-    static bool settling = false;
+    static unsigned long poweredAt = 0;
+    static probe_sampling::Cycle cycle = {};
 
     const unsigned long now = millis();
 
-    if (settling) {
-        if ((long)(now - settleUntil) >= 0) {
-            settling = false;
-            sensorsReadMoisture();
-        }
-    } else if ((long)(now - nextSample) >= 0) {
+    if (!cycle.active && (long)(now - nextSample) >= 0) {
         nextSample = now + (unsigned long)config.moisturePeriodSec * 1000ul;
-        const uint16_t settle = sensorsMoisturePowerUp();
-        if (settle > 0) {
-            settleUntil = now + settle;
-            settling = true;
-        } else {
-            sensorsReadMoisture();
+        probe_sampling::begin(
+          cycle, sensorsMoisturePowerUp(), config.moistureSampleMs);
+        poweredAt = now;
+    }
+
+    if (cycle.active) {
+        const uint32_t elapsed = (uint32_t)(now - poweredAt);
+        const probe_sampling::Action action = probe_sampling::step(cycle, elapsed);
+        if (action != probe_sampling::kWait) {
+            sensorsSampleMoisture(elapsed);
+        }
+        if (action == probe_sampling::kSampleAndFinish) {
+            sensorsFinishMoisture();
         }
     }
 
-    const long wait = (long)((settling ? settleUntil : nextSample) - millis());
+    if (cycle.active) {
+        g_moistureTask.setPeriod(probe_sampling::waitMs(
+          cycle, (uint32_t)(millis() - poweredAt), g_moistureTaskPeriod));
+        return;
+    }
+    const long wait = (long)(nextSample - millis());
     g_moistureTask.setPeriod(wait > (long)g_moistureTaskPeriod
                                ? (unsigned long)wait
                                : g_moistureTaskPeriod);
@@ -684,8 +692,21 @@ tasksSetup()
     g_ioTask.enableDelayed(g_ioTaskPeriod);
 
     g_moistureTask.enableDelayed(g_moistureTaskPeriod);
+    const uint16_t settle = sensorsMoistureSettleMs();
+    const unsigned windowSamples = probe_sampling::samplesPerWindow(
+      settle, config.moistureSampleMs, g_moistureTaskPeriod);
     logger.info("Soil moisture every " + String(config.moisturePeriodSec) +
-                " s");
+                " s, settle " + String(settle) + " ms, " +
+                String(windowSamples) + " sample(s) per window (every " +
+                String(config.moistureSampleMs) + " ms), median of the last " +
+                String(config.moistureTailSamples));
+    if (config.moistureTailSamples > windowSamples) {
+        logger.warning("io.soilMoistureTailSamples " +
+                       String(config.moistureTailSamples) + " exceeds the " +
+                       String(windowSamples) +
+                       " sample(s) a window takes; the median uses " +
+                       String(windowSamples));
+    }
 
     sensorsSetupAmbient();
     // Only when one is declared. Ticking at 1 Hz into a handler that returns

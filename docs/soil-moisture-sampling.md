@@ -4,7 +4,88 @@
 Default **1**. Editable in `/config.html`, under the **Io** tab.
 
 Added in firmware 2.21.0. The two-phase read and the removal of the 250 ms
-settle cap are 2.22.0.
+settle cap are 2.22.0. Several samples per window, `io.soilMoistureSampleMs` and
+`io.soilMoistureTailSamples`, are 2.23.0.
+
+---
+
+## Several samples per window (2.23.0)
+
+| key | default | meaning |
+|---|---|---|
+| `io.soilMoistureSampleMs` | **0** | a conversion every N ms while the bank is energised. 0 is a single one at the end of the settle, which is 2.22.0 exactly |
+| `io.soilMoistureTailSamples` | **1** | the reading is the MEDIAN of the last N samples of the window. 1 is the last sample, which is 2.22.0 exactly |
+
+With `settleMs` 2000 and a sample every 100 ms the bank is read at 100, 200, …,
+2000 ms: twenty samples, the last on the settle. An interval that does not
+divide the settle still ends on it (2000 / 300: 300 … 1800, 2000), and one
+longer than the settle is a single sample. A bank with no power pin, or held up
+by `powerAlways`, has no window and is read once, as before.
+
+**Why it exists.** On `cfd0` every change of the acquisition time stepped all
+four probes at once, by up to ~420 ADC counts, and a longer powered time always
+read drier (the table is in [What has actually run](verification-log.md),
+2026-11-09). Nobody knew where
+the output stops moving, and every config experiment cost a reboot and a seam in
+the data. The window answers it at every reading for no extra powered time.
+
+**What is reported.** The median of the tail, not the mean of the window: the
+reading is still rising during the window, so a mean would mix the transient in
+and depend on the curve's shape. With the defaults nothing about the published
+value changes, so turning the curve on (`soilMoistureSampleMs` alone) does not
+start a new calibration epoch. Raising `soilMoistureTailSamples` does. A tail
+longer than the window uses every sample it holds, and `/moisture.json` says how
+many (`tailUsed`).
+
+**Timing is recorded, not assumed.** The task is cooperative, so a wake can land
+late behind a ping or an MQTT drain. Each sample carries the milliseconds since
+the bank came up as actually measured; a late wake takes one sample at the late
+time and goes on to the next point of the schedule, it does not burst to catch
+up, and the window still ends at the first wake at or after the settle. The
+50 ms task floor is the finest real spacing: an interval below it is accepted
+and simply measured at 50 ms (2000 / 10 is forty samples, not two hundred).
+**The final sample is the one wake NOT held to the floor**, when samples came
+before it: with a 199 ms grid the last one is at 1990 and the final still lands
+on 2000, where a floored wait would have read at ~2040 and moved the published
+value. With no window samples the floor applies exactly as in 2.22.0, so a
+10 ms settle is still energised for 50 ms. The whole schedule —
+`begin`/`step`/`waitMs` in `probe_sampling.h` — is host-tested against the floor;
+`moistureTaskHandler()` only calls it.
+
+**Probe health still sees one raw conversion**, the window's last, whatever the
+tail. Its 400-count floating-pin threshold was measured on single conversions,
+and a median of twenty would shrink a floating pin's spread under it.
+
+**Refusals.** Either key that is not a JSON number, or out of range, is a boot
+warning that names the value received, and the previous value is kept — a
+string `"100"` does not become 0 in silence. A tail larger than the window can
+produce is accepted and warned about at boot with the count the median will
+actually use.
+
+**Capacity is 64 samples per probe**, `probe_sampling::kCapacity`, and it is
+storage, not a judgement: 4 probes x 64 x 4 bytes, held twice (the working
+window and the snapshot other threads read), is ~2 KB of static RAM. A window
+with more samples keeps the NEWEST 64 — the end of the curve, where the reading
+is taken — and `dropped` counts the rest. The tail is refused outside 1..64 at
+boot, with the previous value kept, because it cannot exceed what is stored.
+The interval accepts 0..65535 like `settleMs`.
+
+**`/moisture.json` carries it per probe** under `capture`: `intervalMs`,
+`tailSamples`, `tailUsed`, `settledAdc` (the reported value in ADC counts,
+before the polarity flip), `dropped` and `count`. The curve itself — the
+parallel arrays `ms` and `adc`, `[]` before the first window — is added only
+with **`?capture=1`**: at 64 samples on four probes it is ~512 cJSON nodes, tens
+of KB of small allocations on a WROOM-32 whose largest free block is ~53 KB,
+and the moisture page polls this endpoint. It is the last completed window,
+published under the same spinlock as the reading. Telemetry and the history
+record are unchanged: one value per reading.
+
+The boot log now names the acquisition actually performed, e.g. `Soil moisture
+every 60 s, settle 2000 ms, 20 sample(s) per window (every 100 ms), median of
+the last 1` — the coalesced settle of the pins that switch, not every probe's
+configured one, so a bank with no power pin logs `settle 0 ms, 1 sample(s)`.
+Until 2.23.0 only the period was logged, so the 10-02 and 10-16 changes on
+`cfd0` could not be read back from the device's own logs.
 
 ---
 
@@ -19,13 +100,15 @@ So the handler carries its state in statics and does a little each call:
 
 | state | what happens |
 |---|---|
-| the sample is due | energise the bank, note `now + settleMs`, return |
-| still settling | return |
-| the settle has elapsed | read the probes, de-energise, return |
+| the sample is due | energise the bank, note when it came up, return |
+| still settling, a window sample is due | read the probes into the window, return |
+| still settling, nothing due | return |
+| the settle has elapsed | read once more, take the tail median, de-energise, return |
 | nothing due | return |
 
 and then sets its own period to the time until whichever deadline is next, so
-the scheduler wakes it exactly twice per sample rather than polling. **The
+the scheduler wakes it once per window sample plus once to power up, rather
+than polling — twice per reading with the default single sample. **The
 reentrancy is the contract and the period is only an optimisation**: woken
 early it returns, woken late it acts, and a config change takes effect at the
 next wake-up either way.
@@ -159,8 +242,12 @@ cap it justified was invented.
 
 ## The snapshot lock
 
-`sensorsReadMoisture()` computes its values **outside** `g_moistureSnapshotMux`
-and the critical section is a 32-byte `memcpy`. The first version called
+`sensorsFinishMoisture()` computes its values **outside**
+`g_moistureSnapshotMux`; the critical section is copies only — 32 bytes of
+readings, the health reports, and since 2.23.0 the four windows (~1.1 KB in
+all). `moistureCapture()` copies one ~270-byte window out under the same lock.
+That is the largest interrupt-off copy on this core, and it is still a copy:
+the tail median, the health update and the accumulator all run before it. The first version called
 `getAverage()` inside it — four probes at a 60-sample window, walked twice
 each, with interrupts disabled on that core — and the board panicked with
 `InterruptWDTTimoutCPU1`. `probeHealthVerdict()` and `probeHealthStepSd()` are

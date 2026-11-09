@@ -274,7 +274,21 @@ This exists because this document has been wrong: it claimed no page loaded a CD
   - **Heap with TLS up: Free 135–139 KB, Min Free 100–106 KB, Largest Block 101 KB**, against the 179–185 / 98–123 / 151–167 measured on the 2026-09-17 bench where the link was down. Still a different machine from the WROOM-32's 53 KB largest block.
   - **What is NOT established**: that the patched filesystem survives long-term wear the way a `mklittlefs`-built one would (it is the same bytes, so there is no reason it should not, and that is an argument rather than a measurement), and the retired `b580` has not been read back since — it was confirmed off the network before the new board went live and then set aside.
 
+- **The acquisition time is a first-order term in the reading** (2026-11-09, device `cfd0`, measured on the self-hosted ThingsBoard archive, 441 298 rows, 09-17 .. 11-09). The operator confirmed the software restarts below were acquisition-time changes; the delta is the 40 min after minus the 40 min before, in ADC counts (higher is drier):
+
+  | restart | change | Z1 | Espada | Z3 | Arranjo |
+  |---|---|---|---|---|---|
+  | 09-28 19:49 | settle 50 -> 100 ms | +83 | +155 | +81 | +238 |
+  | 09-28 21:04-21:30 | settle 100 -> 1000 ms, period 1 -> 60 s | +18 | +183 | +27 | +219 |
+  | 10-02 03:54 | acquisition time, values not recorded | +215 | +423 | +234 | +242 |
+  | 10-10 17:54 | period 60 -> 120 -> 60 s (boot log) | ~0 | ~0 | ~0 | ~0 |
+  | 10-16 01:56 | acquisition time, ending at settle 2000 ms | -53 | -319 | -42 | -222 |
+
+  **Longer powered time reads drier** both times the direction is known, the period alone moves nothing, and no plateau is in evidence up to 1000 ms. Up to ~420 counts is comparable to a week of drying, so a calibration is valid for ONE acquisition protocol only. **Handling a probe is a step too**: every reinsertion of probes 1 and 3 between 10-02 and 10-30 brought them back wetter (+15 points each in total), and an air test on 10-30 12:16 .. 12:51 pinned both at ADC 4095 with Sd 0, proving probe and channel alive. **Queued MQTT payloads are stamped on arrival**: the 10-17 12:07 .. 12:54 outage arrived as 9 points within 0.5 s at 12:54:04.
+
 **Unverified — written, compiles, never run on hardware:**
+
+- **Several samples per acquisition window (firmware 2.23.0).** `io.soilMoistureSampleMs` and `io.soilMoistureTailSamples`, `include/core/probe_sampling.h`, the `capture` block of `/moisture.json` (the curve behind `?capture=1`), and the acquisition named in the boot log. The task's whole schedule — begin/step/wait against the 50 ms floor, the late-wake rule, the final sample that escapes the floor, the 64-sample window and the tail median — is host-tested (`test_probe_sampling`, 18 cases); a review pass found the floor delaying the final sample and probe health being fed the median, both fixed before anything flashed. Not established: that the defaults (0 / 1) publish exactly what 2.22.0 published on the device, that 2 KB more static RAM is harmless on a WROOM board, and what a curve looks like on a real probe.
 
 - **The configurable moisture sampling period (firmware 2.21.0).** `io.soilMoisturePeriodSec`, and the `moisture` task the probe read moved to. Six envs build, `pio test -e native` passes at **211 cases** (unchanged by this change — neither `sensors.cpp` nor `tasks.cpp` is reachable from `[env:native]`), `check_lines.py` green. **Nothing was flashed and no board was touched, and no period other than the 1 s default has run on a device** — at 1 s the behaviour is identical to 2.20.0. `espgarden2` +1 004 B flash and +40 B static RAM; `espgarden_s3` +1 032 B and the same +40 B. What ran on the host and against the simulator, and what did not, is in [docs/soil-moisture-sampling.md](soil-moisture-sampling.md).
 

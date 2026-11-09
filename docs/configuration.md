@@ -136,6 +136,12 @@ uploading the filesystem:
                                           //   anything outside that is
                                           //   absurd, warned about at boot,
                                           //   and the previous value kept.
+        "soilMoistureSampleMs": 0,        // a conversion every N ms while
+                                          //   the bank is energised; 0 is one
+                                          //   at the end of the settle.
+        "soilMoistureTailSamples": 1,     // the reading is the median of the
+                                          //   last N samples of the window,
+                                          //   1..64. See soil-moisture-sampling.md
         "soilMoisture": [                 // bare pin, or an object:
             36,
             {"pin": 35, "name": "Bed 2",  // optional power gating: the

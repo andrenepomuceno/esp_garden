@@ -15,6 +15,8 @@ void
 handleMoistureJson(AsyncWebServerRequest* request)
 {
     const MoistureModelState& state = moistureModelState();
+    const bool withCurve = request->hasParam("capture") &&
+                           request->getParam("capture")->value() == "1";
 
     JSONVar doc;
 
@@ -59,6 +61,26 @@ handleMoistureJson(AsyncWebServerRequest* request)
           probeVerdictName(health.verdict);
         doc["probes"][p]["health"]["stepSd"] = (double)health.stepSd;
         doc["probes"][p]["health"]["samples"] = (int)health.samples;
+
+        const MoistureCapture capture = moistureCapture(p);
+        doc["probes"][p]["capture"]["intervalMs"] = (int)config.moistureSampleMs;
+        doc["probes"][p]["capture"]["tailSamples"] =
+          (int)config.moistureTailSamples;
+        doc["probes"][p]["capture"]["tailUsed"] = (int)capture.tailUsed;
+        doc["probes"][p]["capture"]["settledAdc"] = (double)capture.settledAdc;
+        doc["probes"][p]["capture"]["dropped"] =
+          (int)probe_sampling::dropped(capture.window);
+        doc["probes"][p]["capture"]["count"] = (int)capture.window.count;
+        if (withCurve) {
+            doc["probes"][p]["capture"]["ms"] = JSON.parse("[]");
+            doc["probes"][p]["capture"]["adc"] = JSON.parse("[]");
+            for (unsigned k = 0; k < capture.window.count; ++k) {
+                doc["probes"][p]["capture"]["ms"][k] =
+                  (int)capture.window.elapsedMs[k];
+                doc["probes"][p]["capture"]["adc"][k] =
+                  (int)capture.window.adc[k];
+            }
+        }
 
         double totalWeight = 0.0;
         for (int c = 0; c < MOISTURE_CLASS_COUNT; ++c) {

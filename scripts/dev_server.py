@@ -326,8 +326,10 @@ class Handler(BaseHTTPRequestHandler):
             # states worth checking (bands that overlap, a model short of
             # watering events, a device that has never trained) take days to
             # reach on real hardware and seconds here.
+            query = parse_qs(url.query)
             self._send_json(moisture_snapshot(
-                parse_qs(url.query).get("scenario", [""])[0]))
+                query.get("scenario", [""])[0],
+                query.get("capture", [""])[0] == "1"))
         elif path == "/capabilities.json":
             # Mirrors src/web_capabilities.cpp, derived from the same
             # predicates rather than a copied list, so the two cannot drift.

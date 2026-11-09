@@ -255,6 +255,8 @@ class ConfigFile
     uint16_t soilMoistureSettleMs[MOISTURE_MAX];
 
     int moisturePeriodSec;
+    uint16_t moistureSampleMs;
+    uint16_t moistureTailSamples;
 
     // Display labels. /data.json keys Inputs by these, so they are what the
     // dashboard, the history charts and the table show. They are labels, not

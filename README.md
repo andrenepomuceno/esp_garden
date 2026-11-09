@@ -103,7 +103,7 @@ writes `data/config.json` from a template with the same refusals.
 | [docs/authentication.md](docs/authentication.md) | The nonce + SHA-256 login, roles, sessions, the partition table and the reservoir interlock |
 | [docs/web-interface.md](docs/web-interface.md) | The pages, the endpoints and the `/data.json` contract |
 | [docs/soil-moisture.md](docs/soil-moisture.md) | The Dry/Humid/Wet classifier, its calibration and why it refuses |
-| [docs/soil-moisture-sampling.md](docs/soil-moisture-sampling.md) | `io.soilMoisturePeriodSec` and the task that reads the probe bank |
+| [docs/soil-moisture-sampling.md](docs/soil-moisture-sampling.md) | `io.soilMoisturePeriodSec`, the acquisition window (`io.soilMoistureSampleMs`, `io.soilMoistureTailSamples`) and the task that reads the probe bank |
 | [docs/evapotranspiration.md](docs/evapotranspiration.md) | Hargreaves-Samani ET0, and why it ships disabled |
 | [docs/cloud-cover.md](docs/cloud-cover.md) | The clear-sky reference and its clearness index |
 | [docs/telemetry.md](docs/telemetry.md) | ThingSpeak and ThingsBoard, RPC and cloud FOTA, TalkBack |

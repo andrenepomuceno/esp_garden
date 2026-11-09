@@ -50,6 +50,8 @@
   "io": {
     "button": 18,
     "soilMoisturePeriodSec": 1,
+    "soilMoistureSampleMs": 0,
+    "soilMoistureTailSamples": 1,
     "relays": [
       {
         "pin": 10,

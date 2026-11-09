@@ -65,7 +65,7 @@ Two endpoint behaviours worth knowing, because neither has a button:
 | `/users.html`, `/users.js` | GET | **public** | account management page (data behind it is ADMIN) |
 | `/schedules.html`, `/schedules.js` | GET | **public** | scheduled watering editor |
 | `/moisture.html`, `/moisture.js` | GET | **public** | the classifier's inference and fitted parameters |
-| `/moisture.json` | GET | session | per-probe class means, spreads, priors, separation, watering response, absorption &tau;, and which gate refused an unclassified probe |
+| `/moisture.json` | GET | session | per-probe class means, spreads, priors, separation, watering response, absorption &tau;, which gate refused an unclassified probe, and the last acquisition window (`capture`: the sample times and ADC values, see [soil-moisture-sampling.md](soil-moisture-sampling.md)) |
 | `/capabilities.json` | GET | session | per-kind maxima, the kinds this build has drivers for, and the usable pins — so the UI never restates a rule the firmware owns |
 | `/spiffs/upload` | POST | **ADMIN** | replace ONE file instead of rewriting the partition |
 | `/updateEnable`, `/update` | POST | **ADMIN** | OTA arm + upload |

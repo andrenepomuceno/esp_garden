@@ -88,6 +88,9 @@ static MoistureReading g_moistureSnapshot[MOISTURE_MAX] = {};
 static ProbeHealth g_probeHealth[MOISTURE_MAX];
 static ProbeHealthReport g_probeHealthSnapshot[MOISTURE_MAX] = {};
 
+static probe_sampling::Window g_moistureWindow[MOISTURE_MAX];
+static MoistureCapture g_moistureCaptureSnapshot[MOISTURE_MAX] = {};
+
 // Enough readings to regress on before a verdict, and how the evidence ages.
 // At the 1 Hz io task a window of 600 with a half-life every 600 keeps roughly
 // twenty minutes of it in hand: long enough to be sure, short enough that a
@@ -124,6 +127,25 @@ probeHealthReport(unsigned index)
     }
     portENTER_CRITICAL(&g_moistureSnapshotMux);
     out = g_probeHealthSnapshot[index];
+    portEXIT_CRITICAL(&g_moistureSnapshotMux);
+    return out;
+}
+
+uint16_t
+sensorsMoistureSettleMs()
+{
+    return probe_power::settleMsForTick(g_probePower, config.moistureCount);
+}
+
+MoistureCapture
+moistureCapture(unsigned index)
+{
+    MoistureCapture out = {};
+    if (index >= MOISTURE_MAX) {
+        return out;
+    }
+    portENTER_CRITICAL(&g_moistureSnapshotMux);
+    out = g_moistureCaptureSnapshot[index];
     portEXIT_CRITICAL(&g_moistureSnapshotMux);
     return out;
 }
@@ -303,6 +325,10 @@ sensorsSetup()
 uint16_t
 sensorsMoisturePowerUp()
 {
+    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
+        probe_sampling::reset(g_moistureWindow[i]);
+    }
+
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         const uint8_t pin = config.soilMoisturePowerPin[i];
         if (pin == ConfigFile::kNoPin) {
@@ -333,20 +359,41 @@ moisturePowerDown()
 }
 
 void
-sensorsReadMoisture()
+sensorsSampleMoisture(uint32_t elapsedMs)
 {
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         const uint8_t pin = config.soilMoisturePin[i];
 
         (void)analogRead(pin);
         const int second = analogRead(pin);
-        probeHealthAdd(g_probeHealth[i], second);
+        probe_sampling::add(g_moistureWindow[i], elapsedMs, (uint16_t)second);
+    }
+}
+
+void
+sensorsFinishMoisture()
+{
+    float settled[MOISTURE_MAX] = {};
+    uint16_t used[MOISTURE_MAX] = {};
+
+    for (unsigned i = 0; i < config.moistureCount; ++i) {
+        unsigned tailUsed = 0;
+        const double adc = probe_sampling::tailMedian(
+          g_moistureWindow[i], config.moistureTailSamples, &tailUsed);
+        settled[i] = (float)adc;
+        used[i] = (uint16_t)tailUsed;
+        if (tailUsed == 0) {
+            continue;
+        }
+
+        const probe_sampling::Window& window = g_moistureWindow[i];
+        probeHealthAdd(g_probeHealth[i], window.adc[window.count - 1]);
 
         if (g_probeHealth[i].samples >= g_probeHealthWindow) {
             probeHealthDecay(g_probeHealth[i], g_probeHealthDecay);
         }
 
-        const double pct = ADC_TO_PERCENT(second);
+        const double pct = ADC_TO_PERCENT(adc);
         g_soilMoisture[i].add(config.moistureInvert[i] ? (100.0 - pct) : pct);
     }
 
@@ -370,6 +417,11 @@ sensorsReadMoisture()
     portENTER_CRITICAL(&g_moistureSnapshotMux);
     memcpy(g_moistureSnapshot, fresh, sizeof(fresh));
     memcpy(g_probeHealthSnapshot, health, sizeof(health));
+    for (unsigned i = 0; i < MOISTURE_MAX; ++i) {
+        g_moistureCaptureSnapshot[i].window = g_moistureWindow[i];
+        g_moistureCaptureSnapshot[i].tailUsed = used[i];
+        g_moistureCaptureSnapshot[i].settledAdc = settled[i];
+    }
     portEXIT_CRITICAL(&g_moistureSnapshotMux);
 }
 

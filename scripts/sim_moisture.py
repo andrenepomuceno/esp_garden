@@ -430,7 +430,125 @@ def moisture_state(index: int, value: float, models: list = None) -> str:
     return "Wet"
 
 
-def moisture_snapshot(scenario: str = None) -> dict:
+CAPTURE_CAPACITY = 64
+CAPTURE_TASK_FLOOR_MS = 50
+CAPTURE_SIM_TAU_MS = 400.0
+NO_PIN = 255
+
+
+def json_number(value) -> bool:
+    """JSON.typeof(node) == "number": a bool is not one, as in cJSON."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def json_int(value) -> int:
+    """JSONVar::operator int(): valueint for a number, 0 for anything else."""
+    return int(value) if json_number(value) else 0
+
+
+def capture_settings() -> tuple:
+    """io.soilMoistureSampleMs / TailSamples as loadSoilMoisture() keeps them."""
+    io_cfg = SIM_CONFIG.get("io", {})
+    interval, tail = 0, 1
+    value = io_cfg.get("soilMoistureSampleMs")
+    if json_number(value) and 0 <= value <= 65535:
+        interval = int(value)
+    value = io_cfg.get("soilMoistureTailSamples")
+    if json_number(value) and 1 <= value <= CAPTURE_CAPACITY:
+        tail = int(value)
+    return interval, tail
+
+
+def capture_next_sample_at(elapsed: int, settle: int, interval: int) -> int:
+    """probe_sampling::nextSampleAt()."""
+    if interval == 0 or elapsed >= settle:
+        return settle
+    return min((elapsed // interval + 1) * interval, settle)
+
+
+def capture_schedule(settle: int, interval: int) -> list:
+    """The wake times probe_sampling::begin/step/waitMs produce at the task floor."""
+    next_at = capture_next_sample_at(0, settle, interval)
+    taken, now, times = 0, 0, []
+    while True:
+        if now >= next_at:
+            taken += 1
+            times.append(now)
+            if now >= settle:
+                return times
+            next_at = capture_next_sample_at(now, settle, interval)
+        minimum = 1 if taken > 0 and next_at >= settle else CAPTURE_TASK_FLOOR_MS
+        now += max(next_at - now, minimum)
+
+
+def capture_settle_ms() -> int:
+    """probe_power::settleMsForTick() over the probes loadProbePower() parses."""
+    from dev_server import PIN_FAMILY, PIN_RULES
+
+    top = PIN_RULES[PIN_FAMILY]["max_gpio"]
+    probes = []
+    for node in probe_nodes():
+        pin, always, settle = NO_PIN, False, 10
+        if isinstance(node, dict):
+            if "powerPin" in node:
+                value = json_int(node["powerPin"])
+                pin = NO_PIN if value < 0 or value > top else value
+            flag = node.get("powerAlways")
+            if isinstance(flag, bool):
+                always = flag
+            elif json_number(flag):
+                always = flag != 0
+            value = node.get("settleMs")
+            if json_number(value) and 0 <= value <= 65535:
+                settle = int(value)
+        probes.append((pin, always, settle))
+
+    always_on = {pin for pin, always, _ in probes if pin != NO_PIN and always}
+    return max([settle for pin, _, settle in probes
+                if pin != NO_PIN and pin not in always_on] or [0])
+
+
+def moisture_invert(index: int) -> bool:
+    """config.moistureInvert[]: a boolean, or a number read as != 0."""
+    entries = SIM_CONFIG.get("moisture")
+    entry = (entries[index] if isinstance(entries, list) and index < len(entries)
+             and isinstance(entries[index], dict) else {})
+    value = entry.get("invert", True)
+    if isinstance(value, bool):
+        return value
+    return value != 0 if json_number(value) else True
+
+
+def moisture_capture(index: int, reading, with_curve: bool) -> dict:
+    """The `capture` block of one probe, mirroring handleMoistureJson()."""
+    interval, tail = capture_settings()
+    out = {"intervalMs": interval, "tailSamples": tail, "tailUsed": 0,
+           "settledAdc": 0.0, "dropped": 0, "count": 0}
+    times, adc = [], []
+    if reading is not None:
+        settle = capture_settle_ms()
+        times = capture_schedule(settle, interval)
+        final = (100.0 - reading) if moisture_invert(index) else reading
+        final_adc = final * 4095.0 / 100.0
+        span = 1.0 - math.exp(-(settle + 1) / CAPTURE_SIM_TAU_MS)
+        adc = [int(round(final_adc * (1.0 - math.exp(-(t + 1) / CAPTURE_SIM_TAU_MS))
+                         / span)) for t in times]
+        out["dropped"] = max(0, len(times) - CAPTURE_CAPACITY)
+        times, adc = times[-CAPTURE_CAPACITY:], adc[-CAPTURE_CAPACITY:]
+        tail_values = sorted(adc[-tail:])
+        n = len(tail_values)
+        out["tailUsed"] = n
+        out["settledAdc"] = float(
+            tail_values[n // 2] if n % 2
+            else (tail_values[n // 2 - 1] + tail_values[n // 2]) / 2.0)
+    out["count"] = len(times)
+    if with_curve:
+        out["ms"], out["adc"] = times, adc
+    return out
+
+
+def moisture_snapshot(scenario: str = None,
+                      with_curve: bool = False) -> dict:
     """GET /moisture.json -- mirrors handleMoistureJson() in src/web_moisture.cpp."""
     # Imported here rather than at module scope: sim_state imports this module
     # for the probe accessors and the model, so a top-level import back would
@@ -444,7 +562,7 @@ def moisture_snapshot(scenario: str = None) -> dict:
     calibration = moisture_calibration()
 
     with STATE.lock:
-        scanned = len(STATE.history)
+        scanned = STATE.history.stored
         readings = []
         for i in range(len(models)):
             sensor = STATE.moisture_sensor(i)
@@ -519,6 +637,7 @@ def moisture_snapshot(scenario: str = None) -> dict:
 
         reading = readings[i]
         sampled = reading is not None
+        probe["capture"] = moisture_capture(i, reading, with_curve)
         if sampled:
             probe["reading"] = reading
 

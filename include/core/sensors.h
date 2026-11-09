@@ -2,6 +2,7 @@
 
 #include "BuildConfig.h"
 #include "core/accumulator_v2.h"
+#include "core/probe_sampling.h"
 #include <Arduino.h>
 
 // Every sensor exists in every build. Whether one is FITTED is a runtime
@@ -103,10 +104,24 @@ sensorsReadIo();
 uint16_t
 sensorsMoisturePowerUp();
 
-// Samples the probe bank, de-energises it and publishes the snapshot. Call it
-// only once the settle above has elapsed.
+uint16_t
+sensorsMoistureSettleMs();
+
 void
-sensorsReadMoisture();
+sensorsSampleMoisture(uint32_t elapsedMs);
+
+void
+sensorsFinishMoisture();
+
+struct MoistureCapture
+{
+    probe_sampling::Window window;
+    uint16_t tailUsed;
+    float settledAdc;
+};
+
+MoistureCapture
+moistureCapture(unsigned index);
 
 // Brings up whichever ambient sensor is declared: constructs the DHT driver on
 // its configured pin, or starts the I2C bus and probes for the SHT40. Separate

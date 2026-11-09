@@ -240,6 +240,8 @@ ConfigFile::ConfigFile()
     logLevel = LOG_INFO;
 
     moisturePeriodSec = 1;
+    moistureSampleMs = 0;
+    moistureTailSamples = 1;
 
     // ~24 h at one record per minute, 57.6 KB of the 512 KB FILESYSTEM.
     historyRecords = 1440;

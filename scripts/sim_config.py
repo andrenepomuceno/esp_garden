@@ -61,6 +61,8 @@ SIM_CONFIG = {
     "io": {
         "button": 0,
         "soilMoisturePeriodSec": 1,
+        "soilMoistureSampleMs": 0,
+        "soilMoistureTailSamples": 1,
         "relays": [
             {"pin": 19, "on": 0, "name": "Watering"},
             {"pin": 16, "on": 0, "name": "Relay 2"},
@@ -141,8 +143,10 @@ def config_masked() -> dict:
         if doc.get(section, {}).get(key):
             doc[section][key] = CONFIG_SECRET_MASK
     io = doc.get("io")
-    if isinstance(io, dict) and "soilMoisturePeriodSec" not in io:
-        io["soilMoisturePeriodSec"] = 1
+    if isinstance(io, dict):
+        io.setdefault("soilMoisturePeriodSec", 1)
+        io.setdefault("soilMoistureSampleMs", 0)
+        io.setdefault("soilMoistureTailSamples", 1)
     return doc
 
 
