@@ -302,6 +302,24 @@ This exists because this document has been wrong: it claimed no page loaded a CD
 
 **Unverified — written, compiles, never run on hardware:**
 
+- **Firmware 2.24.0: the published value at exactly the settle, one ping per address, and the `timing` block.**
+  - **Gate.** Six envs build, `pio test -e native` passes at **234 cases** (5
+    new, on `valueAt`, `settledValue` and `lateMs`), `check_lines.py` green.
+  - **What the host cases prove.** The arithmetic, against a window shaped
+    like Espada's: 1800 / 400, 1900 / 416, then a final at 2300 / 480. It
+    publishes 432 at 2000 and reports 300 ms late. An on-time final is
+    published unchanged, and a lone late sample is published raw.
+  - **What they do not prove.** `sensorsFinishMoisture()`, the snapshot, the
+    route, and the claim that `ping(addr, 1)` removes the 1.06 s hold. None of
+    those is reachable from `[env:native]`.
+  - **What the change rests on, measured on 2.23.0.**
+    - A window that could not sample until 1062 ms.
+    - A first window after boot that landed at 2212 ms.
+    - Espada's single-sample reading more than 0.6 points dry in 22 % of
+      2.22.0's publishes and 16 % of 2.23.0's (2054 and 95 samples).
+    - ESP32Ping's `delay(interval * 1000)` between pings, read in the
+      library source.
+
 - **The parts of firmware 2.23.0 that have NOT run.** A tail above 1, a window past 64 samples (`dropped` > 0), the boot refusal of a non-numeric or out-of-range key, the tail-exceeds-window warning, and any WROOM-32 board (where the ~2 KB of extra static RAM sits beside a ~53 KB largest free block). The whole schedule — begin/step/wait against the 50 ms floor, the late-wake rule, the final sample that escapes the floor, the 64-sample window and the tail median — is host-tested (`test_probe_sampling`, 18 cases); a review pass found the floor delaying the final sample and probe health being fed the median, both fixed before anything flashed.
 
 - **The configurable moisture sampling period (firmware 2.21.0).** `io.soilMoisturePeriodSec`, and the `moisture` task the probe read moved to. Six envs build, `pio test -e native` passes at **211 cases** (unchanged by this change — neither `sensors.cpp` nor `tasks.cpp` is reachable from `[env:native]`), `check_lines.py` green. **Nothing was flashed and no board was touched, and no period other than the 1 s default has run on a device** — at 1 s the behaviour is identical to 2.20.0. `espgarden2` +1 004 B flash and +40 B static RAM; `espgarden_s3` +1 032 B and the same +40 B. What ran on the host and against the simulator, and what did not, is in [docs/soil-moisture-sampling.md](soil-moisture-sampling.md).

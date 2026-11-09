@@ -228,6 +228,64 @@ test_an_empty_window_reports_no_samples_used(void)
     TEST_ASSERT_EQUAL_UINT(0, used);
 }
 
+static Window
+lateWindow(void)
+{
+    Window window = emptyWindow();
+    add(window, 1800, 400);
+    add(window, 1900, 416);
+    add(window, 2300, 480);
+    return window;
+}
+
+static void
+test_an_on_time_final_sample_is_published_unchanged(void)
+{
+    Window window = emptyWindow();
+    add(window, 1900, 416);
+    add(window, 2000, 431);
+    TEST_ASSERT_EQUAL_DOUBLE(431.0, valueAt(window, 2000));
+    TEST_ASSERT_EQUAL_DOUBLE(431.0, settledValue(window, 1, 2000, nullptr));
+    TEST_ASSERT_EQUAL_UINT32(0, lateMs(window, 2000));
+}
+
+static void
+test_a_late_final_sample_is_interpolated_back_to_the_settle(void)
+{
+    const Window window = lateWindow();
+    TEST_ASSERT_EQUAL_DOUBLE(432.0, valueAt(window, 2000));
+    TEST_ASSERT_EQUAL_DOUBLE(432.0, settledValue(window, 1, 2000, nullptr));
+    TEST_ASSERT_EQUAL_UINT32(300, lateMs(window, 2000));
+}
+
+static void
+test_the_tail_median_sees_the_interpolated_final_not_the_late_one(void)
+{
+    const Window window = lateWindow();
+    unsigned used = 0;
+    TEST_ASSERT_EQUAL_DOUBLE(416.0, settledValue(window, 3, 2000, &used));
+    TEST_ASSERT_EQUAL_UINT(3, used);
+    TEST_ASSERT_EQUAL_DOUBLE(424.0, settledValue(window, 2, 2000, nullptr));
+}
+
+static void
+test_a_late_single_sample_has_nothing_to_interpolate_from(void)
+{
+    Window window = emptyWindow();
+    add(window, 2212, 467);
+    TEST_ASSERT_EQUAL_DOUBLE(467.0, valueAt(window, 2000));
+    TEST_ASSERT_EQUAL_UINT32(212, lateMs(window, 2000));
+}
+
+static void
+test_the_raw_tail_median_ignores_the_settle(void)
+{
+    const Window window = lateWindow();
+    TEST_ASSERT_EQUAL_DOUBLE(480.0, tailMedian(window, 1, nullptr));
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, valueAt(emptyWindow(), 2000));
+    TEST_ASSERT_EQUAL_UINT32(0, lateMs(emptyWindow(), 2000));
+}
+
 void
 run_probe_sampling_tests(void)
 {
@@ -249,4 +307,9 @@ run_probe_sampling_tests(void)
     RUN_TEST(test_an_even_tail_averages_the_two_middle_samples);
     RUN_TEST(test_a_tail_longer_than_the_window_uses_every_sample_and_says_so);
     RUN_TEST(test_an_empty_window_reports_no_samples_used);
+    RUN_TEST(test_an_on_time_final_sample_is_published_unchanged);
+    RUN_TEST(test_a_late_final_sample_is_interpolated_back_to_the_settle);
+    RUN_TEST(test_the_tail_median_sees_the_interpolated_final_not_the_late_one);
+    RUN_TEST(test_a_late_single_sample_has_nothing_to_interpolate_from);
+    RUN_TEST(test_the_raw_tail_median_ignores_the_settle);
 }

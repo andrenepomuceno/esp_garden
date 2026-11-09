@@ -32,6 +32,14 @@ handleMoistureJson(AsyncWebServerRequest* request)
     doc["gates"]["minEvents"] = (int)g_moistureMinEvents;
     doc["gates"]["decayPerRun"] = g_moistureDecayPerRun;
 
+    const MoistureTiming timing = moistureTiming();
+    doc["timing"]["settleMs"] = (double)timing.settleMs;
+    doc["timing"]["lastLateMs"] = (double)timing.lastLateMs;
+    doc["timing"]["windows"] = (double)timing.windows;
+    doc["timing"]["lateWindows"] = (double)timing.lateWindows;
+    doc["timing"]["lateMaxMs"] = (double)timing.lateMaxMs;
+    doc["timing"]["lateTotalMs"] = (double)timing.lateTotalMs;
+
     static const char* const classKey[MOISTURE_CLASS_COUNT] = { "dry",
                                                                 "humid",
                                                                 "wet" };
@@ -68,6 +76,7 @@ handleMoistureJson(AsyncWebServerRequest* request)
           (int)config.moistureTailSamples;
         doc["probes"][p]["capture"]["tailUsed"] = (int)capture.tailUsed;
         doc["probes"][p]["capture"]["settledAdc"] = (double)capture.settledAdc;
+        doc["probes"][p]["capture"]["rawAdc"] = (int)capture.rawAdc;
         doc["probes"][p]["capture"]["dropped"] =
           (int)probe_sampling::dropped(capture.window);
         doc["probes"][p]["capture"]["count"] = (int)capture.window.count;

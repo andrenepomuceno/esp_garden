@@ -90,6 +90,8 @@ static ProbeHealthReport g_probeHealthSnapshot[MOISTURE_MAX] = {};
 
 static probe_sampling::Window g_moistureWindow[MOISTURE_MAX];
 static MoistureCapture g_moistureCaptureSnapshot[MOISTURE_MAX] = {};
+static MoistureTiming g_moistureTiming = {};
+static MoistureTiming g_moistureTimingSnapshot = {};
 
 // Enough readings to regress on before a verdict, and how the evidence ages.
 // At the 1 Hz io task a window of 600 with a half-life every 600 keeps roughly
@@ -146,6 +148,15 @@ moistureCapture(unsigned index)
     }
     portENTER_CRITICAL(&g_moistureSnapshotMux);
     out = g_moistureCaptureSnapshot[index];
+    portEXIT_CRITICAL(&g_moistureSnapshotMux);
+    return out;
+}
+
+MoistureTiming
+moistureTiming()
+{
+    portENTER_CRITICAL(&g_moistureSnapshotMux);
+    const MoistureTiming out = g_moistureTimingSnapshot;
     portEXIT_CRITICAL(&g_moistureSnapshotMux);
     return out;
 }
@@ -371,15 +382,17 @@ sensorsSampleMoisture(uint32_t elapsedMs)
 }
 
 void
-sensorsFinishMoisture()
+sensorsFinishMoisture(uint32_t settleMs)
 {
     float settled[MOISTURE_MAX] = {};
     uint16_t used[MOISTURE_MAX] = {};
+    uint16_t raw[MOISTURE_MAX] = {};
+    uint32_t late = 0;
 
     for (unsigned i = 0; i < config.moistureCount; ++i) {
         unsigned tailUsed = 0;
-        const double adc = probe_sampling::tailMedian(
-          g_moistureWindow[i], config.moistureTailSamples, &tailUsed);
+        const double adc = probe_sampling::settledValue(
+          g_moistureWindow[i], config.moistureTailSamples, settleMs, &tailUsed);
         settled[i] = (float)adc;
         used[i] = (uint16_t)tailUsed;
         if (tailUsed == 0) {
@@ -387,7 +400,9 @@ sensorsFinishMoisture()
         }
 
         const probe_sampling::Window& window = g_moistureWindow[i];
-        probeHealthAdd(g_probeHealth[i], window.adc[window.count - 1]);
+        raw[i] = window.adc[window.count - 1];
+        late = probe_sampling::lateMs(window, settleMs);
+        probeHealthAdd(g_probeHealth[i], raw[i]);
 
         if (g_probeHealth[i].samples >= g_probeHealthWindow) {
             probeHealthDecay(g_probeHealth[i], g_probeHealthDecay);
@@ -414,6 +429,17 @@ sensorsFinishMoisture()
         health[i].samples = g_probeHealth[i].samples;
     }
 
+    g_moistureTiming.settleMs = settleMs;
+    g_moistureTiming.lastLateMs = late;
+    ++g_moistureTiming.windows;
+    if (late > 0) {
+        ++g_moistureTiming.lateWindows;
+        g_moistureTiming.lateTotalMs += late;
+        if (late > g_moistureTiming.lateMaxMs) {
+            g_moistureTiming.lateMaxMs = late;
+        }
+    }
+
     portENTER_CRITICAL(&g_moistureSnapshotMux);
     memcpy(g_moistureSnapshot, fresh, sizeof(fresh));
     memcpy(g_probeHealthSnapshot, health, sizeof(health));
@@ -421,7 +447,9 @@ sensorsFinishMoisture()
         g_moistureCaptureSnapshot[i].window = g_moistureWindow[i];
         g_moistureCaptureSnapshot[i].tailUsed = used[i];
         g_moistureCaptureSnapshot[i].settledAdc = settled[i];
+        g_moistureCaptureSnapshot[i].rawAdc = raw[i];
     }
+    g_moistureTimingSnapshot = g_moistureTiming;
     portEXIT_CRITICAL(&g_moistureSnapshotMux);
 }
 

@@ -5,7 +5,73 @@ Default **1**. Editable in `/config.html`, under the **Io** tab.
 
 Added in firmware 2.21.0. The two-phase read and the removal of the 250 ms
 settle cap are 2.22.0. Several samples per window, `io.soilMoistureSampleMs` and
-`io.soilMoistureTailSamples`, are 2.23.0.
+`io.soilMoistureTailSamples`, are 2.23.0. The value at exactly the settle and
+the `timing` block are 2.24.0.
+
+---
+
+## The value at the settle, not at the wake (2.24.0)
+
+**The problem.** No probe on `cfd0` reaches a plateau within the window. At
+2000 ms the reading still climbs 2 to 19 counts per 100 ms, so a final sample
+taken late reads drier.
+
+The task is cooperative, and other tasks hold the scheduler:
+
+- **`checkInternet` held it for ~1.06 s every 15 s.** It called
+  `Ping.ping(addr, 2)`, and ESP32Ping waits `PING_DEFAULT_INTERVAL` (1 s)
+  between the two pings.
+- **Something else holds it for 180–400 ms, about every 1.2 s.** Not
+  identified yet.
+
+On Espada, 22 % of 2.22.0's published samples sat more than 0.6 points below
+their neighbours (median 0.94 points, up to 3.98). A probe repeats to ±1–3
+counts, so that is timing, not noise.
+
+**Two fixes.**
+
+- **`Ping.ping(addr, 1)`.** The three addresses are already the retry, so the
+  1 s wait between two pings to the same address bought nothing. On a dead
+  link the cost is now three of the library's 1 s ping timeouts instead of
+  six plus three 1 s waits. That is arithmetic from the library source; a dead
+  link has not been timed. A link is declared lost after three missing replies
+  instead of six.
+- **The published value is read at exactly `settleMs`.** It is the linear
+  interpolation between the last sample at or before the settle and the late
+  final (`probe_sampling::valueAt`). An on-time final is returned unchanged. A
+  window with nothing before the settle cannot be interpolated and is
+  published raw, as before. That is the default, `soilMoistureSampleMs` 0; the
+  correction needs a window. With a tail above 1, the median runs over the
+  last N samples with the final replaced by its value at the settle
+  (`settledValue`).
+
+The near-linear creep at the end of the window is what makes a straight line
+the right model there. Over a 1 s gap on Espada the error is a few counts,
+against the 40–160 the late reading cost.
+
+**What is visible.** Each probe's `capture` block carries `rawAdc`, the
+uncorrected final sample, beside `settledAdc`, the published value. A
+top-level `timing` block covers the window as a whole:
+
+| key | meaning |
+|---|---|
+| `settleMs` | the settle the last window was read at |
+| `lastLateMs` | how far past it the last final sample landed |
+| `windows` | windows completed since boot |
+| `lateWindows` | how many of them were late |
+| `lateMaxMs` | the latest one |
+| `lateTotalMs` | the sum, so a mean is `lateTotalMs / lateWindows` |
+
+**A settle under the 50 ms floor is late on every window, by design.** The
+compiled 10 ms is read at 50 ms, so it reports 40 ms late each time. That is
+true, and there is nothing to correct it with: there is no sample before the
+settle to interpolate from.
+
+**A spike in the bracketing sample leaks in only when the final is late**, and
+then in proportion to how late. An on-time window publishes the final sample
+alone. A tail above 1 is the guard against spikes.
+
+**Probe health still sees the raw final sample**, for the reason given below.
 
 ---
 
@@ -32,8 +98,9 @@ the data. The window answers it at every reading for no extra powered time.
 **What is reported.** The median of the tail, not the mean of the window: the
 reading is still rising during the window, so a mean would mix the transient in
 and depend on the curve's shape. With the defaults nothing about the published
-value changes, so turning the curve on (`soilMoistureSampleMs` alone) does not
-start a new calibration epoch. Raising `soilMoistureTailSamples` does. A tail
+value changes. Turning the curve on (`soilMoistureSampleMs` alone) does not start
+a new calibration epoch. From 2.24.0 it changes only the windows whose final
+sample was late, and moves each back to what an on-time sample would have read. Raising `soilMoistureTailSamples` does. A tail
 longer than the window uses every sample it holds, and `/moisture.json` says how
 many (`tailUsed`).
 
@@ -72,7 +139,9 @@ The interval accepts 0..65535 like `settleMs`.
 
 **`/moisture.json` carries it per probe** under `capture`: `intervalMs`,
 `tailSamples`, `tailUsed`, `settledAdc` (the reported value in ADC counts,
-before the polarity flip), `dropped` and `count`. The curve itself — the
+before the polarity flip), `rawAdc` (the final sample as read, 2.24.0),
+`dropped` and `count`. The window-level `timing` block is described in the
+2.24.0 section above. The curve itself — the
 parallel arrays `ms` and `adc`, `[]` before the first window — is added only
 with **`?capture=1`**: at 64 samples on four probes it is ~512 cJSON nodes, tens
 of KB of small allocations on a WROOM-32 whose largest free block is ~53 KB,

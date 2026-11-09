@@ -130,8 +130,44 @@ samplesPerWindow(uint32_t settleMs, uint32_t intervalMs, uint32_t floorMs)
     }
 }
 
+inline uint32_t
+lateMs(const Window& window, uint32_t targetMs)
+{
+    if (window.count == 0) {
+        return 0;
+    }
+    const uint32_t last = window.elapsedMs[window.count - 1];
+    return last > targetMs ? last - targetMs : 0;
+}
+
 inline double
-tailMedian(const Window& window, unsigned tail, unsigned* used)
+valueAt(const Window& window, uint32_t targetMs)
+{
+    if (window.count == 0) {
+        return 0.0;
+    }
+    const unsigned last = window.count - 1;
+    const uint32_t lastMs = window.elapsedMs[last];
+    if (lastMs <= targetMs) {
+        return window.adc[last];
+    }
+    for (unsigned i = last; i-- > 0;) {
+        const uint32_t ms = window.elapsedMs[i];
+        if (ms <= targetMs) {
+            const double fraction =
+              (double)(targetMs - ms) / (double)(lastMs - ms);
+            return window.adc[i] +
+                   fraction * ((double)window.adc[last] - window.adc[i]);
+        }
+    }
+    return window.adc[last];
+}
+
+inline double
+settledValue(const Window& window,
+             unsigned tail,
+             uint32_t targetMs,
+             unsigned* used)
 {
     unsigned n = tail < window.count ? tail : window.count;
     if (used != nullptr) {
@@ -141,10 +177,13 @@ tailMedian(const Window& window, unsigned tail, unsigned* used)
         return 0.0;
     }
 
-    uint16_t sorted[kCapacity];
-    memcpy(sorted, window.adc + (window.count - n), n * sizeof(sorted[0]));
+    double sorted[kCapacity];
+    for (unsigned i = 0; i < n; ++i) {
+        sorted[i] = window.adc[window.count - n + i];
+    }
+    sorted[n - 1] = valueAt(window, targetMs);
     for (unsigned i = 1; i < n; ++i) {
-        const uint16_t value = sorted[i];
+        const double value = sorted[i];
         unsigned j = i;
         while (j > 0 && sorted[j - 1] > value) {
             sorted[j] = sorted[j - 1];
@@ -157,6 +196,12 @@ tailMedian(const Window& window, unsigned tail, unsigned* used)
         return sorted[n / 2];
     }
     return (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0;
+}
+
+inline double
+tailMedian(const Window& window, unsigned tail, unsigned* used)
+{
+    return settledValue(window, tail, 0xFFFFFFFFu, used);
 }
 
 } // namespace probe_sampling

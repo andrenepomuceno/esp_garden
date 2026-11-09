@@ -111,17 +111,31 @@ void
 sensorsSampleMoisture(uint32_t elapsedMs);
 
 void
-sensorsFinishMoisture();
+sensorsFinishMoisture(uint32_t settleMs);
 
 struct MoistureCapture
 {
     probe_sampling::Window window;
     uint16_t tailUsed;
     float settledAdc;
+    uint16_t rawAdc;
 };
 
 MoistureCapture
 moistureCapture(unsigned index);
+
+struct MoistureTiming
+{
+    uint32_t settleMs;
+    uint32_t lastLateMs;
+    uint32_t windows;
+    uint32_t lateWindows;
+    uint32_t lateMaxMs;
+    uint32_t lateTotalMs;
+};
+
+MoistureTiming
+moistureTiming();
 
 // Brings up whichever ambient sensor is declared: constructs the DHT driver on
 // its configured pin, or starts the I2C bus and probes for the SHT40. Separate

@@ -11,7 +11,7 @@ TalkBack, an MQTT drain) stalls every other background task for its duration.
 | `io` | 1 s | Read the luminosity, water-level, flow and float inputs and rebuild the `/data.json` payload |
 | `moisture` | `io.soilMoisturePeriodSec` | Read the soil-moisture probe bank. Separate from `io` because that task also paces the relay, cloud and ET0 events and the `/data.json` cache, none of which may slow down with the ADC |
 | `ambient` | 1 s | Read air temperature and humidity from whichever part is fitted — a DHT11 on one wire or an SHT40 on I²C. One task for both: a task per sensor kind is how a firmware reaches the 16-slot cap `addTask()` overruns silently |
-| `checkInternet` | 15 s | Ping DNS servers, update connectivity state |
+| `checkInternet` | 15 s | Ping DNS servers, one ping each until one answers, and update connectivity state. Until 2.24.0 it sent two per address, and ESP32Ping waits 1 s between them, which held the cooperative pump for ~1.06 s every 15 s |
 | `history` | `history.periodSec` | Append one I/O snapshot to the newest segment |
 | `schedules` | 20 s | Fire any schedule that is due |
 | `mqtt` | 1 min | Publish averaged sensor data to the configured backend |

@@ -132,7 +132,7 @@ moistureTaskHandler()
             sensorsSampleMoisture(elapsed);
         }
         if (action == probe_sampling::kSampleAndFinish) {
-            sensorsFinishMoisture();
+            sensorsFinishMoisture(cycle.settleMs);
         }
     }
 
@@ -288,7 +288,7 @@ checkInternetTaskHandler()
     static time_t connectionLostTime = 0;
 
     for (int i = 0; i < addresListLen; ++i) {
-        bool success = Ping.ping(addressList[i], 2); // retry at least one time
+        bool success = Ping.ping(addressList[i], 1);
         if (success) {
             if (!g_hasInternet) {
                 logger.info("Internet connection detected!");

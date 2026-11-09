@@ -9,6 +9,7 @@ limit scripts/check_lines.py enforces.
 from __future__ import annotations
 
 import math
+import time
 
 from sim_config import SIM_CONFIG
 
@@ -523,7 +524,7 @@ def moisture_capture(index: int, reading, with_curve: bool) -> dict:
     """The `capture` block of one probe, mirroring handleMoistureJson()."""
     interval, tail = capture_settings()
     out = {"intervalMs": interval, "tailSamples": tail, "tailUsed": 0,
-           "settledAdc": 0.0, "dropped": 0, "count": 0}
+           "settledAdc": 0.0, "rawAdc": 0, "dropped": 0, "count": 0}
     times, adc = [], []
     if reading is not None:
         settle = capture_settle_ms()
@@ -531,8 +532,8 @@ def moisture_capture(index: int, reading, with_curve: bool) -> dict:
         final = (100.0 - reading) if moisture_invert(index) else reading
         final_adc = final * 4095.0 / 100.0
         span = 1.0 - math.exp(-(settle + 1) / CAPTURE_SIM_TAU_MS)
-        adc = [int(round(final_adc * (1.0 - math.exp(-(t + 1) / CAPTURE_SIM_TAU_MS))
-                         / span)) for t in times]
+        adc = [min(4095, int(round(final_adc * (1.0 - math.exp(-(t + 1) / CAPTURE_SIM_TAU_MS))
+                                   / span))) for t in times]
         out["dropped"] = max(0, len(times) - CAPTURE_CAPACITY)
         times, adc = times[-CAPTURE_CAPACITY:], adc[-CAPTURE_CAPACITY:]
         tail_values = sorted(adc[-tail:])
@@ -541,6 +542,7 @@ def moisture_capture(index: int, reading, with_curve: bool) -> dict:
         out["settledAdc"] = float(
             tail_values[n // 2] if n % 2
             else (tail_values[n // 2 - 1] + tail_values[n // 2]) / 2.0)
+        out["rawAdc"] = adc[-1]
     out["count"] = len(times)
     if with_curve:
         out["ms"], out["adc"] = times, adc
@@ -563,6 +565,7 @@ def moisture_snapshot(scenario: str = None,
 
     with STATE.lock:
         scanned = STATE.history.stored
+        windows = int((time.time() - STATE.boot_time) // STATE.moisture_period_s)
         readings = []
         for i in range(len(models)):
             sensor = STATE.moisture_sensor(i)
@@ -584,6 +587,10 @@ def moisture_snapshot(scenario: str = None,
     samples = int(scanned * 0.62) * labelled
     outliers = int(samples * 0.004)
 
+    settle = capture_settle_ms()
+    late = max(0, capture_schedule(settle, capture_settings()[0])[-1] - settle)
+    late_windows = windows if late > 0 else 0
+
     payload = {
         "trainedAt": trained_at,
         "recordsScanned": scanned,
@@ -596,6 +603,14 @@ def moisture_snapshot(scenario: str = None,
             "minSeparation": MOISTURE_MIN_SEPARATION,
             "minEvents": MOISTURE_MIN_EVENTS,
             "decayPerRun": MOISTURE_DECAY_PER_RUN,
+        },
+        "timing": {
+            "settleMs": settle,
+            "lastLateMs": late if windows else 0,
+            "windows": windows,
+            "lateWindows": late_windows,
+            "lateMaxMs": late if late_windows else 0,
+            "lateTotalMs": late * late_windows,
         },
         "probes": [],
     }
