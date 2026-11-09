@@ -300,25 +300,23 @@ This exists because this document has been wrong: it claimed no page loaded a CD
   - **Window-to-window repeatability is ±1..3 counts**, so the tail median buys little here; what matters is WHEN the reading is taken.
   - Heap with sampling on: 142 KB free, 110 KB low-water, 119 KB largest block.
 
+- **The value at the settle, on the device** (2026-11-09, `cfd0`, firmware 2.24.0 from `12c94a4`, ELF in `backups/elf/`). `deploy_ota.py --firmware-only`, 11.8 s, history 9 003 -> 9 006. Twenty consecutive windows were polled from 13:32 to 13:52, at settle 2000 ms, interval 100, tail 1.
+  - **The 1 s hold is gone.** The largest in-window gap was **573 ms** across 39 gaps, median 334 ms. On 2.23.0 one window in six could not start until 1062 ms.
+  - **Late finals are still common, and are now corrected.** `timing` read 9 late of 25 windows since boot: max 230 ms, mean 97 ms. In the polled set six were late, by 7 to 171 ms. Corrected late values against on-time windows:
+
+    | Probe | On-time median (n = 14) | Late, raw | Late, corrected |
+    |---|---|---|---|
+    | Espada | 425.0 | 431.0 | 423.8 |
+    | Zona 3 | 285.5 | 291.5 | 286.7 |
+    | Arranjo | 1157.5 | 1160.5 | 1154.6 |
+
+    The 171 ms window read Espada 444 raw and published 421.9.
+  - **A ~300 ms hold remains**, twice per window, about 1.2–1.3 s apart: a 1 s task taking ~300 ms. The suspect is `webUpdateDataCache()`, not yet proven. It calls `FILESYSTEM.usedBytes()` and `totalBytes()` every second, and in arduino-esp32 2.0.17 both go through `esp_littlefs_info(&total, &used)`, which traverses the whole filesystem (`lfs_fs_size`). That is read in the source and not timed on the device.
+  - **Spikes exist but are rare.** Espada's final step was +56 once, against +12..+14 normally, and Arranjo dipped −29 once mid-window. Each was a single sample. A tail above 1 would reject them.
+
 **Unverified — written, compiles, never run on hardware:**
 
-- **Firmware 2.24.0: the published value at exactly the settle, one ping per address, and the `timing` block.**
-  - **Gate.** Six envs build, `pio test -e native` passes at **234 cases** (5
-    new, on `valueAt`, `settledValue` and `lateMs`), `check_lines.py` green.
-  - **What the host cases prove.** The arithmetic, against a window shaped
-    like Espada's: 1800 / 400, 1900 / 416, then a final at 2300 / 480. It
-    publishes 432 at 2000 and reports 300 ms late. An on-time final is
-    published unchanged, and a lone late sample is published raw.
-  - **What they do not prove.** `sensorsFinishMoisture()`, the snapshot, the
-    route, and the claim that `ping(addr, 1)` removes the 1.06 s hold. None of
-    those is reachable from `[env:native]`.
-  - **What the change rests on, measured on 2.23.0.**
-    - A window that could not sample until 1062 ms.
-    - A first window after boot that landed at 2212 ms.
-    - Espada's single-sample reading more than 0.6 points dry in 22 % of
-      2.22.0's publishes and 16 % of 2.23.0's (2054 and 95 samples).
-    - ESP32Ping's `delay(interval * 1000)` between pings, read in the
-      library source.
+- **The parts of 2.24.0 that have NOT run.** A dead internet link with one ping per address: three 1 s timeouts is library arithmetic, never timed. A tail above 1 with the interpolated final. A settle under the floor reporting 40 ms late every window, which is exercised only in the simulator. Any WROOM-32 board.
 
 - **The parts of firmware 2.23.0 that have NOT run.** A tail above 1, a window past 64 samples (`dropped` > 0), the boot refusal of a non-numeric or out-of-range key, the tail-exceeds-window warning, and any WROOM-32 board (where the ~2 KB of extra static RAM sits beside a ~53 KB largest free block). The whole schedule — begin/step/wait against the 50 ms floor, the late-wake rule, the final sample that escapes the floor, the 64-sample window and the tail median — is host-tested (`test_probe_sampling`, 18 cases); a review pass found the floor delaying the final sample and probe health being fed the median, both fixed before anything flashed.
 

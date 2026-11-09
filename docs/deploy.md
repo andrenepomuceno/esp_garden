@@ -114,5 +114,13 @@ immediately and reports a failure on a flash that landed.
   which is why it is the verdict and not the watcher.
 - History 9 671 -> 9 675 records, filesystem 748 / 2432 KB on both sides.
 
+**Later the same day, 2.23.0 -> 2.24.0, `--firmware-only`:**
+
+- Same `--credentials`. Config backed up, 1820 chars, no masks; every relay
+  idle.
+- `/update` 200 in **11.8 s**, version read back as **2.24.0**. The watcher
+  again saw no downtime.
+- History 9 003 -> 9 006 records, filesystem 716 / 2432 KB on both sides.
+
 **Still not exercised:** the family refusal and the relay refusal. Both are
 checked on every run and both have always passed.
