@@ -301,9 +301,27 @@ per subsystem: prose belongs there, not in code comments and not in this file.
 - Feature flags live in `include/BuildConfig.h` (`FW_VERSION`, `USE_WEBSERVER`, `USE_MQTT`, `USE_OTA`, `USE_THINGSPEAK`, `USE_TALKBACK`, `USE_WATERING_PWM`), along with the caps `RELAY_MAX` and `MOISTURE_MAX`. **`USE_THINGSPEAK` and `USE_TALKBACK` both ship at 0.** A flag is only real where it is honoured at EVERY site — `USE_TALKBACK` sat here at 1 for months and was read nowhere, which reads as "the feature is off" while the socket opens anyway. **`platformio.ini` carries no hardware flags at all** — what a board has is in its own `config.json`, and the envs differ only by `board`.
 - `FW_VERSION` is the version ThingsBoard compares an offered package against and the string `/data.json` reports as `Status.Firmware`. **Bump it in the same commit as the change it names**, or a FOTA of that change is a no-op the broker reports as success.
 - **No AI co-author trailers** in commits. **Never `git add -A`** — stage explicitly. **Commits and pushes no longer need to be asked for** (standing authorization from the repo owner), but the gate does not move: five envs build, `pio test -e native` passes and `python scripts/check_lines.py` is green before a commit exists. Never commit `data/config.json` or anything under `backups/`.
-- Commit format: imperative + conventional tag (`feat | fix | refactor | chore | docs | test | perf | style`), e.g. `fix(tasks): construct DHT after config load`.
+- Commit format: imperative + conventional tag (`feat | fix | refactor | add | chore | docs | test | perf | style | build | ci`), e.g. `fix(tasks): construct DHT after config load`. The body says why, and the measured effect when there is one. **Write the message to a file and `git commit -F <file>`** — backticks inside `-m` are command substitution, and this repo's messages are full of them. One commit per validated unit, with the docs it changes in the same commit.
+- **Never force-push, never rewrite or `--amend` published history**, and nothing destructive (`reset --hard`, deleting a branch, discarding the user's uncommitted changes) without an explicit yes.
 - **Never overwrite `data/config.json`** (gitignored, holds a real device's credentials) and never commit real credentials — only `data/config.template.json` is tracked.
 - **Prose belongs in `docs/`, not in code comments and not here.** A comment is not documentation. When a file being changed carries a large explanatory comment block, the block goes to `docs/` and out of the source. `README.md` stays an entry point and an index; this file stays the operating guide.
+- **No machine-specific paths in code** (`C:\Users\...`, `/home/...`); resolve from `ROOT` or an argument, as every tool in `scripts/` does. Generated files are never hand-edited: change the source or the generator and regenerate (`.pio/assets/` from `data/`, the clear-sky header from `cloud_fit.py`).
+- DRY at the THIRD repetition, and no abstraction for hypothetical reuse. Past ~700 lines a file is a candidate to split; the 1000-line gate is where it must.
+
+---
+
+## Working rules
+
+- **Fail loudly rather than emit a plausible number.** A missing value is never silently replaced by a default — warn, degrade visibly or refuse. A refusal names the constraint, the numbers and where they came from. Validate before anything is written to disk or flash.
+- **Read the exit code of the right command**: `cmd | tail -1; echo $?` reports `tail`. A search that answers "nothing found" must be distinguishable from one that could not search.
+- **Secrets never pass through the chat, a command line, a log or a transcript.** Never ask for a password or token; the operator types it into a terminal or a file. Tools read credentials inside the process (`.chave_tb*`, the `ota` block of a config). **Inspect a config through a key filter, never `cat` or `grep`** — the documents are minified to one line, so any match prints every credential in it.
+- **Anything that changes state off this workstation needs an explicit request**: a firmware or filesystem OTA, `POST /spiffs/upload`, `POST /config.json`, `/control`, a ThingsBoard RPC, anything on the VPS. A `GET` against a device is a read, but still costs the board: one login per run, strictly sequential, nothing else in flight while a tool is collecting.
+- **Clean up what you start** — `dev_server.py`, `telemetry_ui.py`, monitors, scratch files.
+- **Subagents**: at most 3–5 in parallel, and ONE at a time inside WSL (it has fallen over at three). A subagent that writes gets `isolation: "worktree"`; one that reads `fullbot-firmware` is told "read only, report back", and that repo's `git status` is checked afterwards. In any other repository the only place this project writes is its `tasks/inbox/`.
+
+## Tasks
+
+Pending work is one Markdown file per task in `tasks/inbox/`, in the format `tasks/README.md` describes; on closing it gets a `## Result` and moves to `tasks/done/`. **`tasks/` is not versioned**, so it is a plain `mv`. A request that arrives in the middle of other work becomes a card at once, and cards touching the same code are done in one pass.
 
 ---
 
@@ -318,4 +336,4 @@ per subsystem: prose belongs there, not in code comments and not in this file.
 - [ ] `python scripts/check_lines.py` passes
 - [ ] **[What has actually run](docs/verification-log.md) is still honest** — anything that ran moved up *because it ran*, and anything newly written went into the unverified list
 - [ ] No number in this file without an execution behind it
-- [ ] Conventional commit message suggested — **no commit unless the user asked**
+- [ ] Committed once the gate above is green (standing authorization), message through `git commit -F`
