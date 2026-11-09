@@ -104,5 +104,15 @@ immediately and reports a failure on a flash that landed.
   at 712 / 2432 KB, which is the whole point: the app slot was rewritten and the
   filesystem partition was not.
 
+**2026-11-09, 2.22.0 -> 2.23.0 on the same board, `--firmware-only`:**
+
+- `--credentials` pointed at a `cfd0` config backup, because the default
+  `data/config.json` on this workstation is `6224`'s.
+- `/updateEnable` 200, `/update` 200 in **20.0 s**, version read back as
+  **2.23.0**. The liveness watcher reported `went down: False` — the reboot was
+  shorter than its poll — and the version check is what confirmed the flash,
+  which is why it is the verdict and not the watcher.
+- History 9 671 -> 9 675 records, filesystem 748 / 2432 KB on both sides.
+
 **Still not exercised:** the family refusal and the relay refusal. Both are
 checked on every run and both have always passed.

@@ -99,7 +99,7 @@ class Device:
         return json.loads(self._request(query))
 
     def post_config(self, document):
-        """UNEXERCISED against the garden. Only moisture_fit.py --push reaches it.
+        """First used against the garden on 2026-11-09 (cfd0, a masked round trip).
 
         The document goes in a FORM FIELD called `config`, not as a raw JSON
         body: `handleConfigPost` reads `request->getParam("config", true)` and
